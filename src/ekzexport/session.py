@@ -12,16 +12,19 @@ JSON_HEADERS = {
     'Accept': 'application/json, text/plain, */*'
 }
 
+def mfa_from_stdin():
+    return input('Enter 2FA code (wait for SMS): ')
 
 class Session:
     """Represents a session with the EKZ API."""
-    def __init__(self, username: str, password: str, login_immediately=False):
+    def __init__(self, username: str, password: str, login_immediately=False, mfa_provider = mfa_from_stdin):
         self._session = requests.Session()
         self._session.headers.update({'User-Agent': 'ekzexport'})
         self._username = username
         self._password = password
         self._login_immediately = login_immediately
         self._logged_in = False
+        self._mfa_provider = mfa_provider
 
     def __enter__(self):
         if self._login_immediately:
@@ -60,7 +63,7 @@ class Session:
                 raise Exception('myEKZ appears to be offline for maintenance')
         else:
             authurl = twofaform[0]['action']
-            code = input('Enter 2FA code (wait for SMS): ')
+            code = self._mfa_provider()
             
             r = self._session.post(authurl, data={'code': code})
             r.raise_for_status()
