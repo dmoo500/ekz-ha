@@ -3,6 +3,7 @@ import json
 import os
 import os.path
 import traceback
+from datetime import date, datetime, timedelta
 
 import click
 
@@ -16,6 +17,9 @@ from .timeutil import format_api_date
 from .util import Installation, pass_installation, pass_session, DataSelection, pass_data
 from .exporters import ALL_EXPORT_COMMANDS
 
+import pytz
+
+ZRH = pytz.timezone("Europe/Zurich")
 
 @click.group()
 @click.option('--user', default=None, help='Username')
@@ -71,6 +75,93 @@ def overview(session: Session):
 
     console = Console()
     console.print(contracts)
+
+def is_dst(dt,timeZone):
+   aware_dt = timeZone.localize(dt)
+   return aware_dt.dst() != timedelta(0,0)
+   
+def is_dst_switchover_date(dt, timeZone):
+    day_after = dt + timedelta(days=1)
+    return is_dst(day_after, timeZone) != is_dst(dt, timeZone)
+
+
+@cli.command()
+@pass_session
+def get_all(session: Session):
+    """Get an overview over available contracts."""
+    contracts = Table(title='Contracts', box=box.MINIMAL_HEAVY_HEAD)
+    contracts.add_column('Installation ID')
+    contracts.add_column('Address')
+    contracts.add_column('Move-in Date')
+    contracts.add_column('Move-out Date')
+
+    all_data = dict()
+    try:
+        with open('data.json', 'r') as file:
+            all_data = json.load(file)
+    except:
+        pass
+
+    for anlage, values in all_data.items():
+        values = [v for v in values if v['status'] != 'NOT_AVAILABLE'  and v['status'] != 'MISSING']
+        values = [list(g)[0] for k, g in itertools.groupby(values, lambda v: v['timestamp'])] # deduplicate
+        all_data[anlage] = values
+    
+
+    for c in session.installation_selection_data['contracts']:
+        address = 'N/A'
+        for s in session.installation_selection_data['evbs']:
+            if s['vstelle'] == c['vstelle']:
+                address = (f"{s['address']['street']} {s['address']['houseNumber']}, "
+                           f"{s['address']['postalCode']} {s['address']['city']}")
+                break
+        contracts.add_row(c['anlage'], address, c['einzdat'], c['auszdat'])
+        # Get data for this Anlage
+        year = datetime.strptime(c['einzdat'], "%Y-%m-%d").year
+        month = datetime.strptime(c['einzdat'], "%Y-%m-%d").month
+        from_date = datetime.strptime(c['einzdat'], "%Y-%m-%d")
+        to_date = datetime.strptime(c['auszdat'], "%Y-%m-%d") if c['auszdat'] is not None  else datetime.now()
+        
+        if c['auszdat'] is not None:
+            print("skipping old property")
+            continue
+        
+        existing_values = []
+        if c['anlage'] in all_data.keys():
+            existing_values = all_data[c['anlage']]
+            existing_values_by_date = dict((k, len(list(g))) for k, g in itertools.groupby(existing_values, lambda v: datetime.strptime(v['date'], '%Y-%m-%d')))
+            
+            
+            while from_date in existing_values_by_date:
+                hours_per_day = 23 if is_dst_switchover_date(from_date, ZRH) and from_date.month < 6 else 25 if is_dst_switchover_date(from_date, ZRH) else 24
+                expected_measurements = hours_per_day * 4
+                if existing_values_by_date[from_date] < expected_measurements:
+                    break
+                from_date = from_date + timedelta(days=1)
+            print("cannot skip this day as there are too few data points:")
+            print(from_date)
+            print(existing_values_by_date[from_date])
+        
+        end_of_month = from_date + timedelta(days=(32 - from_date.day)) # guaranteed to be in the next month
+        end_of_month =  end_of_month - timedelta(days=end_of_month.day)
+        
+        monthly_data = [existing_values]
+        while from_date <= to_date:
+            d = session.get_consumption_data(c['anlage'], 'PK_VERB_15MIN',
+                                             format_api_date(from_date), format_api_date(end_of_month))
+            monthly_data.append((dict(x, tariff='NT') for x in d['seriesNt']['values'] if x['status'] != 'NOT_AVAILABLE' and x['status'] != 'MISSING'))
+            monthly_data.append((dict(x, tariff='HT') for x in d['seriesHt']['values'] if x['status'] != 'NOT_AVAILABLE' and x['status'] != 'MISSING'))
+            from_date = end_of_month + timedelta(days=1)
+            end_of_month = from_date + timedelta(days=32) # guaranteed to be in the next month
+            end_of_month =  end_of_month - timedelta(days=end_of_month.day)
+
+        values = sorted(itertools.chain(*monthly_data), key=lambda x: x['timestamp'])
+        values = [list(g)[0] for k, g in itertools.groupby(values, lambda v: v['timestamp'])] # deduplicate
+        values = sorted(values, key=lambda x: x['timestamp'])
+        all_data[c['anlage']] = values
+        
+    with open('data.json', 'w') as file:
+        json.dump(all_data, file)
 
 
 @cli.group('installation')

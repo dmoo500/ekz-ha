@@ -18,6 +18,7 @@ setup(
     package_dir={'': 'src'},
     install_requires=[
         'requests',
+        'pytz',
         'click',
         'beautifulsoup4',
         'rich',
