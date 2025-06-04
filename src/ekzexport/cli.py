@@ -248,7 +248,20 @@ for cmd in ALL_EXPORT_COMMANDS:
     export_group.add_command(cmd)
 
 
+from typing import Any
+
+from homeassistant.components.recorder.statistics import (
+    async_add_external_statistics,
+    async_import_statistics,
+)
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
+
 def main():
+    
+    print("Only HA")
+    return 0
     try:
         cli()
     except Exception as e:

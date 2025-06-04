@@ -24,6 +24,7 @@ setup(
         'rich',
         'platformdirs',
         'tzdata',
+        'homeassistant==2024.6.0',
     ],
     extras_require={
         'influx': ['influxdb-client'],
@@ -37,13 +38,13 @@ setup(
         ],
     },
     classifiers=[
-            "License :: OSI Approved :: Apache Software License",
             "Natural Language :: English",
             "Operating System :: OS Independent",
             "Programming Language :: Python",
             "Programming Language :: Python :: 3.10",
             "Programming Language :: Python :: 3.11",
             "Programming Language :: Python :: 3.12",
+            "Programming Language :: Python :: 3.13",
             "Programming Language :: Python :: 3 :: Only",
         ],
 )
