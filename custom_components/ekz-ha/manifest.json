@@ -6,7 +6,8 @@
   "documentation": "https://www.github.com/stefanloerwald/ekz-ha",
   "iot_class": "cloud_polling",
   "requirements": [
-    "aiohttp>=3.12.7"
+    "aiohttp>=3.12.7",
+    "beautifulsoup4>=4.13.4"
   ],
   "version": "0.0.1",
   "config_flow": true

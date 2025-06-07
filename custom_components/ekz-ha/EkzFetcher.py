@@ -1,42 +1,44 @@
-from .session import Session
-import json
-import itertools
+"""Interaction with the EKZ API."""
+
 from datetime import datetime, timedelta
+import itertools
+import zoneinfo
+
+from .session import Session
 from .timeutil import format_api_date
-import pytz
 
-ZRH = pytz.timezone("Europe/Zurich")
+ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 
 
-def is_dst(dt, timeZone) -> bool:
+def is_dst(dt: datetime, timeZone) -> bool:
+    """Determine whether the given date is during daylight savings or not."""
     aware_dt = timeZone.localize(dt)
     return aware_dt.dst() != timedelta(0, 0)
 
 
-def is_dst_switchover_date(dt, timeZone) -> bool:
+def is_dst_switchover_date(dt: datetime, timeZone) -> bool:
+    """Determine whether a day is the day on which daylight savings starts/ends."""
     day_after = dt + timedelta(days=1)
     return is_dst(day_after, timeZone) != is_dst(dt, timeZone)
 
 
 class EkzFetcher:
-    def __init__(self, user: str, password: str):
+    """Fetches data from EKZ."""
+
+    def __init__(self, user: str, password: str) -> None:
         """Construct an instance of EkzFetcher."""
         self.user = user
         self.password = password
-        self.session = Session(self.user, self.password, login_immediately=True)
+        self.session = Session(self.user, self.password)
 
-    async def getInstallations(self) -> list:
+    async def getInstallations(self) -> list[str]:
+        """Return the installation IDs."""
         installations = await self.session.installation_selection_data()
         return [c["anlage"] for c in installations["contracts"]]
 
     async def fetch(self) -> dict:
         """Fetch new data from EKZ."""
         all_data = {}
-        # try:
-        #     with open("data.json", "r") as file:
-        #         all_data = json.load(file)
-        # except:
-        #     pass
 
         for anlage, values in all_data.items():
             values = [
@@ -52,17 +54,6 @@ class EkzFetcher:
 
         installations = await self.session.installation_selection_data()
         for c in installations["contracts"]:
-            # address = "N/A"
-            # for s in installations["evbs"]:
-            #     if s["vstelle"] == c["vstelle"]:
-            #         address = (
-            #             f"{s['address']['street']} {s['address']['houseNumber']}, "
-            #             f"{s['address']['postalCode']} {s['address']['city']}"
-            #         )
-            #         break
-            # Get data for this Anlage
-            # year = datetime.strptime(c["einzdat"], "%Y-%m-%d").year
-            # month = datetime.strptime(c["einzdat"], "%Y-%m-%d").month
             from_date = datetime.strptime(c["einzdat"], "%Y-%m-%d")
             to_date = (
                 datetime.strptime(c["auszdat"], "%Y-%m-%d")
@@ -136,27 +127,22 @@ class EkzFetcher:
             ]  # deduplicate
             values = sorted(values, key=lambda x: x["timestamp"])
 
-            def total(key, group):
+            def total(group):
                 group = list(group)
-                t = {
+                return {
                     "value": sum([x["value"] for x in group]),
                     "date": min([x["date"] for x in group]),
                     "time": min([x["time"] for x in group]),
                     "timestamp": min([x["timestamp"] for x in group]),
                 }
-                return t
 
             values = [
-                total(key, g)
-                for key, g in itertools.groupby(
+                total(g)
+                for _, g in itertools.groupby(
                     values, lambda v: str(v["timestamp"])[0:10]
                 )
             ]
             values = sorted(values, key=lambda x: x["timestamp"])
             all_data[c["anlage"]] = values
 
-        # with open("data.json", "w") as file:
-        #     json.dump(all_data, file)
-        # print(all_data)
-        # pass
         return all_data

@@ -1,16 +1,14 @@
-import logging
+"""Entities for EKZ installations."""
 
 from homeassistant import core
 from homeassistant.components.number import NumberEntity
+from homeassistant.components.number.const import NumberDeviceClass
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
 )
-from homeassistant.util import slugify
 
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_platform(
@@ -18,8 +16,6 @@ async def async_setup_platform(
 ):
     """Set up the sensor platform."""
     coordinator = hass.data[DOMAIN]["coordinator"]
-    _LOGGER.info(coordinator.installations)
-    # TODO get the installation IDs from the API
     sensors = [
         EkzEntity(coordinator, installationId)
         for installationId in coordinator.installations
@@ -35,6 +31,7 @@ class EkzEntity(CoordinatorEntity, NumberEntity):
     ) -> None:
         """Construct an instance of EkzEntity."""
         super().__init__(coordinator)
+        self._attr_device_class = NumberDeviceClass.ENERGY
         self.installationId = installationId
 
     @property

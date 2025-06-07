@@ -1,3 +1,5 @@
+"""Constants for EKZ integration."""
+
 from datetime import timedelta
 
 DOMAIN = "ekz_ha"

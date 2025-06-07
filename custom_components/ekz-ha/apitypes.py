@@ -1,7 +1,11 @@
-from typing import TypedDict, List, Optional
+"""Strong types for the EKZ API."""
+
+from typing import TypedDict
 
 
 class Address(TypedDict):
+    """Represents the address associated with an installation."""
+
     addressNumber: str
     street: str
     houseNumber: str
@@ -14,6 +18,7 @@ class Address(TypedDict):
 
 class ISDContract(TypedDict):
     """Used for the contracts property in InstallationSelectionData."""
+
     gpart: str
     vkonto: str
     vertrag: str
@@ -21,25 +26,28 @@ class ISDContract(TypedDict):
     vstelle: str
     haus: str
     einzdat: str
-    auszdat: Optional[str]
+    auszdat: str | None
     sparte: str
 
 
 class ISDAnlage(TypedDict):
     """Used for the eanl property in InstallationSelectionData."""
+
     anlage: str
     sparte: str
     vstelle: str
     anlart: str
     spebene: str
-    zzenergietraeger: Optional[str]
-    zzevgstat: Optional[str]
-    zzevganlage: Optional[str]
+    zzenergietraeger: str | None
+    zzevgstat: str | None
+    zzevganlage: str | None
     eanlhTariftyp: str
     eanlhAbleinh: str
 
 
 class ISDStelle(TypedDict):
+    """Who knows what this is, but we don't explicitly need it."""
+
     vstelle: str
     haus: str
     eigent: str
@@ -55,14 +63,16 @@ class ISDStelle(TypedDict):
 
 
 class ISDFkkVkp(TypedDict):
+    """Who knows what this is, but we don't explicitly need it."""
+
     vkont: str
     gpart: str
     opbuk: str
     stdbk: str
-    abrwe: Optional[str]
-    abwra: Optional[str]
-    abwma: Optional[str]
-    ebvty: Optional[str]
+    abrwe: str | None
+    abwra: str | None
+    abwma: str | None
+    ebvty: str | None
     abvty: str
     ezawe: str
     azawe: str
@@ -73,15 +83,18 @@ class ISDFkkVkp(TypedDict):
 
 
 class InstallationSelectionData(TypedDict):
-    """Return schema for /consumption-view/v1/installation-selection-data?installationVariant=CONSUMPTION"""
-    contracts: List[ISDContract]
-    eanl: List[ISDAnlage]
-    evbs: List[ISDStelle]
-    fkkvkp: List[ISDFkkVkp]
-    commonData: Optional[str]
+    """Return schema for /consumption-view/v1/installation-selection-data?installationVariant=CONSUMPTION."""
+
+    contracts: list[ISDContract]
+    eanl: list[ISDAnlage]
+    evbs: list[ISDStelle]
+    fkkvkp: list[ISDFkkVkp]
+    commonData: str | None
 
 
 class IDProperty(TypedDict):
+    """Who knows what this is, but we don't explicitly need it."""
+
     property: str
     ab: str
     bis: str
@@ -89,10 +102,13 @@ class IDProperty(TypedDict):
 
 class InstallationData(TypedDict):
     """Return schema for /consumption-view/v1/installation-data?installationId=..."""
-    status: List[IDProperty]
+
+    status: list[IDProperty]
 
 
 class Value(TypedDict):
+    """Consumption data."""
+
     value: float
     timestamp: int
     date: str
@@ -101,20 +117,23 @@ class Value(TypedDict):
 
 
 class Series(TypedDict):
+    """Consumption data during the specified time period."""
+
     level: str
-    energyType: Optional[str]
-    sourceType: Optional[str]
+    energyType: str | None
+    sourceType: str | None
     tariffType: str
     ab: str
     bis: str
-    values: List[Value]
+    values: list[Value]
 
 
 class ConsumptionData(TypedDict):
     """Return schema for /consumption-view/v1/consumption-data?installationId=..."""
-    series: Optional[Series]
-    seriesHt: Optional[Series]
-    seriesNetz: Optional[Series]
-    seriesNetzHt: Optional[Series]
-    seriesNetzHt: Optional[Series]
-    seriesNt: Optional[Series]
+
+    series: Series | None
+    seriesHt: Series | None
+    seriesNetz: Series | None
+    seriesNetzHt: Series | None
+    seriesNetzHt: Series | None
+    seriesNt: Series | None

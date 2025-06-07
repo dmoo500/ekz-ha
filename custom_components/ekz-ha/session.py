@@ -1,17 +1,16 @@
-from functools import cached_property
+"""Interact with EKZ."""
 
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
 
-from .apitypes import *
-import aiohttp
+from config.custom_components.ekz_ha.apitypes import (
+    ConsumptionData,
+    InstallationData,
+    InstallationSelectionData,
+)
 
 HTML_HEADERS = {"Accept": "text/html,application/xhtml+xml,application/xml"}
 JSON_HEADERS = {"Accept": "application/json, text/plain, */*"}
-
-
-def mfa_from_stdin():
-    return input("Enter 2FA code (wait for SMS): ")
 
 
 class Session:
@@ -21,30 +20,13 @@ class Session:
         self,
         username: str,
         password: str,
-        login_immediately=False,
-        mfa_provider=mfa_from_stdin,
-    ):
+    ) -> None:
+        """Construct an instance of the EKZ session."""
         self._session = aiohttp.ClientSession()
         self._session.headers.add("User-Agent", "ekz-ha")
         self._username = username
         self._password = password
-        self._login_immediately = login_immediately
         self._logged_in = False
-        self._mfa_provider = mfa_provider
-
-    def __enter__(self):
-        if self._login_immediately:
-            self._ensure_logged_in()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self._logged_in:
-            r = self._session.post(
-                "https://my.ekz.ch/logout",
-                headers=HTML_HEADERS,
-                data={"_csrf": self.get_csrf_token()},
-            )
-            r.raise_for_status()
 
     async def _ensure_logged_in(self):
         if self._logged_in:
@@ -54,20 +36,16 @@ class Session:
             "https://my.ekz.ch/verbrauch/", headers=HTML_HEADERS
         ) as r:
             if not r.ok:
-                raise ValueError("Bad")
+                raise ValueError("EKZ seems unreachable")
             html = await r.text()
-
-            if not r.ok:
-                raise ValueError("Bad")
 
             # Find the login form and get the action URL, so we can submit credentials.
             soup = BeautifulSoup(html, "html.parser")
             loginform = soup.select("form[id=kc-form-login]")
             if not loginform:
                 if "Es tut uns leid" in html:
-                    raise Exception("myEKZ appears to be offline for maintenance")
-                else:
-                    raise Exception("Login form not found on page")
+                    raise ValueError("myEKZ appears to be offline for maintenance")
+                raise ValueError("Login form not found on page")
             authurl = loginform[0]["action"]
 
             async with self._session.post(
@@ -75,59 +53,60 @@ class Session:
             ) as r:
                 html = await r.text()
                 if not r.ok:
-                    raise ValueError("Bad")
+                    raise ValueError("Login failed. Bad user/password?")
                 # Find the 2FA form, if available and get the action URL.
                 soup = BeautifulSoup(html, "html.parser")
                 twofaform = soup.select("form[id=kc-sms-code-login-form]")
                 if not twofaform:
                     if "Es tut uns leid" in html:
-                        raise Exception("myEKZ appears to be offline for maintenance")
+                        raise ValueError("myEKZ appears to be offline for maintenance")
                 else:
-                    authurl = twofaform[0]["action"]
-                    code = self._mfa_provider()
-
-                    async with self._session.post(authurl, data={"code": code}) as r:
-                        if not r.ok:
-                            raise ValueError("Bad")
+                    raise ValueError(
+                        "2FA is incompatible with the EKZ HA integration. Please disable 2FA at https://login.ekz.ch/auth/realms/myEKZ/account/?referrer=cos-myekz-webapp&referrer_uri=https://my.ekz.ch/nutzerdaten/#/account-security/signing-in."
+                    )
 
                 self._logged_in = True
 
-    async def get_csrf_token(self):
-        await self._ensure_logged_in()
-        async with self._session.get(
-            "https://my.ekz.ch/api/portal-services/csrf/v1/token", headers=JSON_HEADERS
-        ) as r:
-            r.raise_for_status()
-            return r.json()["token"]
-
     async def installation_selection_data(self) -> InstallationSelectionData:
+        """Fetch the available installations."""
         await self._ensure_logged_in()
         async with self._session.get(
             "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-selection-data"
             "?installationVariant=CONSUMPTION",
             headers=JSON_HEADERS,
         ) as r:
-            r.raise_for_status()
+            if not r.ok:
+                # We may have timed out. Mark as not logged in and return an empty object.
+                self._logged_in = False
+                return InstallationSelectionData()
             return await r.json()
 
     async def get_installation_data(self, installation_id: str) -> InstallationData:
+        """Fetch the metadata for an installation."""
         await self._ensure_logged_in()
         async with self._session.get(
             "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-data"
             "?installationId=" + installation_id,
             headers=JSON_HEADERS,
         ) as r:
-            r.raise_for_status()
+            if not r.ok:
+                # We may have timed out. Mark as not logged in and return an empty object.
+                self._logged_in = False
+                return InstallationData()
             return await r.json()
 
     async def get_consumption_data(
         self, installation_id: str, data_type: str, date_from: str, date_to: str
     ) -> ConsumptionData:
+        """Fetch the consumption date at the given intallation in the date range provided."""
         await self._ensure_logged_in()
         async with self._session.get(
             f"https://my.ekz.ch/api/portal-services/consumption-view/v1/consumption-data"
             f"?installationId={installation_id}&from={date_from}&to={date_to}&type={data_type}",
             headers=JSON_HEADERS,
         ) as r:
-            r.raise_for_status()
+            if not r.ok:
+                # We may have timed out. Mark as not logged in and return an empty object.
+                self._logged_in = False
+                return ConsumptionData()
             return await r.json()
