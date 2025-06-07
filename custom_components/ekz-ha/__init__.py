@@ -6,7 +6,7 @@ import zoneinfo
 
 import voluptuous as vol
 
-from config.custom_components.ekz_ha.EkzFetcher import EkzFetcher
+from .EkzFetcher import EkzFetcher
 from homeassistant import config_entries, core
 from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.config_entries import ConfigEntry

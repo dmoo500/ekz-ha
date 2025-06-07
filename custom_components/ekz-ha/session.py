@@ -3,7 +3,7 @@
 import aiohttp
 from bs4 import BeautifulSoup
 
-from config.custom_components.ekz_ha.apitypes import (
+from .apitypes import (
     ConsumptionData,
     InstallationData,
     InstallationSelectionData,
