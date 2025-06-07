@@ -1,0 +1,8 @@
+ekz_ha:
+  name: Test Service
+  description: A simple test
+  fields:
+    value:
+      name: Value
+      description: Change a distant value
+      example: "hello there!"

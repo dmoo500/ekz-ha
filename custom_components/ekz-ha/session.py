@@ -4,22 +4,28 @@ import requests
 from bs4 import BeautifulSoup
 
 from .apitypes import *
+import aiohttp
 
-HTML_HEADERS = {
-    'Accept': 'text/html,application/xhtml+xml,application/xml'
-}
-JSON_HEADERS = {
-    'Accept': 'application/json, text/plain, */*'
-}
+HTML_HEADERS = {"Accept": "text/html,application/xhtml+xml,application/xml"}
+JSON_HEADERS = {"Accept": "application/json, text/plain, */*"}
+
 
 def mfa_from_stdin():
-    return input('Enter 2FA code (wait for SMS): ')
+    return input("Enter 2FA code (wait for SMS): ")
+
 
 class Session:
     """Represents a session with the EKZ API."""
-    def __init__(self, username: str, password: str, login_immediately=False, mfa_provider = mfa_from_stdin):
-        self._session = requests.Session()
-        self._session.headers.update({'User-Agent': 'ekzexport'})
+
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        login_immediately=False,
+        mfa_provider=mfa_from_stdin,
+    ):
+        self._session = aiohttp.ClientSession()
+        self._session.headers.add("User-Agent", "ekz-ha")
         self._username = username
         self._password = password
         self._login_immediately = login_immediately
@@ -33,69 +39,95 @@ class Session:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._logged_in:
-            r = self._session.post('https://my.ekz.ch/logout', headers=HTML_HEADERS,
-                                   data={'_csrf': self.get_csrf_token()})
+            r = self._session.post(
+                "https://my.ekz.ch/logout",
+                headers=HTML_HEADERS,
+                data={"_csrf": self.get_csrf_token()},
+            )
             r.raise_for_status()
 
-    def _ensure_logged_in(self):
+    async def _ensure_logged_in(self):
         if self._logged_in:
             return
-        r = self._session.get('https://my.ekz.ch/verbrauch/', headers=HTML_HEADERS)
-        r.raise_for_status()
 
-        # Find the login form and get the action URL, so we can submit credentials.
-        soup = BeautifulSoup(r.text, 'html.parser')
-        loginform = soup.select('form[id=kc-form-login]')
-        if not loginform:
-            if 'Es tut uns leid' in r.text:
-                raise Exception('myEKZ appears to be offline for maintenance')
-            else:
-                raise Exception('Login form not found on page')
-        authurl = loginform[0]['action']
+        async with self._session.get(
+            "https://my.ekz.ch/verbrauch/", headers=HTML_HEADERS
+        ) as r:
+            if not r.ok:
+                raise ValueError("Bad")
+            html = await r.text()
 
-        r = self._session.post(authurl, data={'username': self._username, 'password': self._password})
-        r.raise_for_status()
-        # Find the 2FA form, if available and get the action URL.
-        soup = BeautifulSoup(r.text, 'html.parser')
-        twofaform = soup.select('form[id=kc-sms-code-login-form]')
-        if not twofaform:
-            if 'Es tut uns leid' in r.text:
-                raise Exception('myEKZ appears to be offline for maintenance')
-        else:
-            authurl = twofaform[0]['action']
-            code = self._mfa_provider()
-            
-            r = self._session.post(authurl, data={'code': code})
+            if not r.ok:
+                raise ValueError("Bad")
+
+            # Find the login form and get the action URL, so we can submit credentials.
+            soup = BeautifulSoup(html, "html.parser")
+            loginform = soup.select("form[id=kc-form-login]")
+            if not loginform:
+                if "Es tut uns leid" in html:
+                    raise Exception("myEKZ appears to be offline for maintenance")
+                else:
+                    raise Exception("Login form not found on page")
+            authurl = loginform[0]["action"]
+
+            async with self._session.post(
+                authurl, data={"username": self._username, "password": self._password}
+            ) as r:
+                html = await r.text()
+                if not r.ok:
+                    raise ValueError("Bad")
+                # Find the 2FA form, if available and get the action URL.
+                soup = BeautifulSoup(html, "html.parser")
+                twofaform = soup.select("form[id=kc-sms-code-login-form]")
+                if not twofaform:
+                    if "Es tut uns leid" in html:
+                        raise Exception("myEKZ appears to be offline for maintenance")
+                else:
+                    authurl = twofaform[0]["action"]
+                    code = self._mfa_provider()
+
+                    async with self._session.post(authurl, data={"code": code}) as r:
+                        if not r.ok:
+                            raise ValueError("Bad")
+
+                self._logged_in = True
+
+    async def get_csrf_token(self):
+        await self._ensure_logged_in()
+        async with self._session.get(
+            "https://my.ekz.ch/api/portal-services/csrf/v1/token", headers=JSON_HEADERS
+        ) as r:
             r.raise_for_status()
-        
-        self._logged_in = True
+            return r.json()["token"]
 
-    def get_csrf_token(self):
-        self._ensure_logged_in()
-        r = self._session.get('https://my.ekz.ch/api/portal-services/csrf/v1/token', headers=JSON_HEADERS)
-        r.raise_for_status()
-        return r.json()['token']
+    async def installation_selection_data(self) -> InstallationSelectionData:
+        await self._ensure_logged_in()
+        async with self._session.get(
+            "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-selection-data"
+            "?installationVariant=CONSUMPTION",
+            headers=JSON_HEADERS,
+        ) as r:
+            r.raise_for_status()
+            return await r.json()
 
-    @cached_property
-    def installation_selection_data(self) -> InstallationSelectionData:
-        self._ensure_logged_in()
-        r = self._session.get('https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-selection-data'
-                              '?installationVariant=CONSUMPTION', headers=JSON_HEADERS)
-        r.raise_for_status()
-        return r.json()
+    async def get_installation_data(self, installation_id: str) -> InstallationData:
+        await self._ensure_logged_in()
+        async with self._session.get(
+            "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-data"
+            "?installationId=" + installation_id,
+            headers=JSON_HEADERS,
+        ) as r:
+            r.raise_for_status()
+            return await r.json()
 
-    def get_installation_data(self, installation_id: str) -> InstallationData:
-        self._ensure_logged_in()
-        r = self._session.get('https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-data'
-                              '?installationId=' + installation_id, headers=JSON_HEADERS)
-        r.raise_for_status()
-        return r.json()
-
-    def get_consumption_data(self, installation_id: str, data_type: str,
-                             date_from: str, date_to: str) -> ConsumptionData:
-        self._ensure_logged_in()
-        r = self._session.get(f'https://my.ekz.ch/api/portal-services/consumption-view/v1/consumption-data'
-                              f'?installationId={installation_id}&from={date_from}&to={date_to}&type={data_type}',
-                              headers=JSON_HEADERS)
-        r.raise_for_status()
-        return r.json()
+    async def get_consumption_data(
+        self, installation_id: str, data_type: str, date_from: str, date_to: str
+    ) -> ConsumptionData:
+        await self._ensure_logged_in()
+        async with self._session.get(
+            f"https://my.ekz.ch/api/portal-services/consumption-view/v1/consumption-data"
+            f"?installationId={installation_id}&from={date_from}&to={date_to}&type={data_type}",
+            headers=JSON_HEADERS,
+        ) as r:
+            r.raise_for_status()
+            return await r.json()

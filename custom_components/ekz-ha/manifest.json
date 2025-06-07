@@ -1,17 +1,13 @@
 {
-  "domain": "your_domain_name",
+  "domain": "ekz_ha",
   "name": "EKZ",
-  "codeowners": ["stefanloerwald"],
+  "codeowners": ["@stefanloerwald"],
   "dependencies": [],
   "documentation": "https://www.github.com/stefanloerwald/ekz-ha",
-  "integration_type": "entity",
   "iot_class": "cloud_polling",
   "requirements": [
-        "requests",
-        "pytz",
-        "click",	
-        "beautifulsoup4",
-        "rich",
-        "platformdirs",
-        "tzdata"]
+    "aiohttp>=3.12.7"
+  ],
+  "version": "0.0.1",
+  "config_flow": true
 }
