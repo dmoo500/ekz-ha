@@ -10,13 +10,13 @@ from .timeutil import format_api_date
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 
 
-def is_dst(dt: datetime, timeZone) -> bool:
+def is_dst(dt: datetime, timeZone: zoneinfo.ZoneInfo) -> bool:
     """Determine whether the given date is during daylight savings or not."""
-    aware_dt = timeZone.localize(dt)
+    aware_dt = dt.replace(tzinfo=timeZone)
     return aware_dt.dst() != timedelta(0, 0)
 
 
-def is_dst_switchover_date(dt: datetime, timeZone) -> bool:
+def is_dst_switchover_date(dt: datetime, timeZone: zoneinfo.ZoneInfo) -> bool:
     """Determine whether a day is the day on which daylight savings starts/ends."""
     day_after = dt + timedelta(days=1)
     return is_dst(day_after, timeZone) != is_dst(dt, timeZone)
@@ -35,6 +35,114 @@ class EkzFetcher:
         """Return the installation IDs."""
         installations = await self.session.installation_selection_data()
         return [c["anlage"] for c in installations["contracts"]]
+
+    async def fetchNewInstallationData(
+        self, installationId: str, last_full_day: str, last_full_day_sum: float
+    ) -> dict:
+        """Fetch data from the last_full_day onwards for a given installation."""
+        from_date = datetime.strptime(last_full_day[0:10], "%Y-%m-%d")
+        all_fetched_data = [[]]
+        to_date = datetime.now()
+
+        end_of_month = from_date + timedelta(
+            days=(32 - from_date.day)
+        )  # guaranteed to be in the next month
+        end_of_month = end_of_month - timedelta(days=end_of_month.day)
+        while from_date <= to_date:
+            d = await self.session.get_consumption_data(
+                installationId,
+                "PK_VERB_15MIN",
+                format_api_date(from_date),
+                format_api_date(end_of_month),
+            )
+            if "seriesNt" in d and d["seriesNt"] is not None:
+                all_fetched_data.append(
+                    dict(x, tariff="NT")
+                    for x in d["seriesNt"]["values"]
+                    if x["status"] != "NOT_AVAILABLE" and x["status"] != "MISSING"
+                )
+            if "seriesHt" in d and d["seriesHt"] is not None:
+                all_fetched_data.append(
+                    dict(x, tariff="HT")
+                    for x in d["seriesHt"]["values"]
+                    if x["status"] != "NOT_AVAILABLE" and x["status"] != "MISSING"
+                )
+            from_date = end_of_month + timedelta(days=1)
+            end_of_month = from_date + timedelta(
+                days=32
+            )  # guaranteed to be in the next month
+            end_of_month = end_of_month - timedelta(days=end_of_month.day)
+        values = sorted(
+            itertools.chain(*all_fetched_data), key=lambda x: x["timestamp"]
+        )
+        values = [
+            list(g)[0] for _, g in itertools.groupby(values, lambda v: v["timestamp"])
+        ]  # deduplicate
+        values = sorted(values, key=lambda x: x["timestamp"])
+
+        # Aggregate per day
+        def total(group):
+            group = list(group)
+            return {
+                "value": sum([x["value"] for x in group]),
+                "date": min([x["date"] for x in group]),
+                "time": min([x["time"] for x in group]),
+                "timestamp": min([str(x["timestamp"])[0:10] + "0000" for x in group]),
+            }
+
+        values = [
+            total(g)
+            for _, g in itertools.groupby(values, lambda v: str(v["timestamp"])[0:10])
+        ]
+        values = sorted(values, key=lambda x: x["timestamp"])
+
+        # Find the last day that has 24 entries. Or 23 or 25, if it's daylight savings switchover...
+        max_date = None
+        for k, v in itertools.groupby(values, lambda v: v["date"]):
+            date = datetime.strptime(k, "%Y-%m-%d")
+            expected_hours_per_day = (
+                23
+                if is_dst_switchover_date(date, ZRH) and date.month < 6
+                else 25
+                if is_dst_switchover_date(date, ZRH)
+                else 24
+            )
+            if len(list(v)) == expected_hours_per_day:
+                if max_date is None or date > max_date:
+                    max_date = date
+
+        running_sum = last_full_day_sum
+        statistics = []
+        for value in values:
+            statistics.append(
+                {
+                    "start": datetime.strptime(
+                        str(value["timestamp"]), "%Y%m%d%H%M%S"
+                    ).astimezone(tz=ZRH),
+                    "sum": (running_sum := running_sum + value["value"]),
+                    "state": value["value"],
+                }
+            )
+            date = datetime.strptime(value["date"], "%Y-%m-%d")
+            if date == max_date:
+                last_full_day_sum = running_sum
+        last_full_day = max_date
+        return {
+            "statistics": statistics,
+            "last_full_day": last_full_day,
+            "last_full_day_sum": last_full_day_sum,
+        }
+
+    async def fetchEntireHistory(self, installationId: str) -> dict:
+        """Fetch all data from EKZ for a given installation."""
+        installations = await self.session.installation_selection_data()
+        from_date = None
+        for c in installations["contracts"]:
+            if c["anlage"] == installationId:
+                from_date = c["einzdat"]
+        if from_date is None:
+            raise ValueError("No matching installation...")
+        return await self.fetchNewInstallationData(installationId, from_date, 0)
 
     async def fetch(self) -> dict:
         """Fetch new data from EKZ."""

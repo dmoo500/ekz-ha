@@ -99,31 +99,27 @@ class EkzCoordinator(DataUpdateCoordinator):
         This is the place to pre-process the data to lookup tables
         so entities can quickly look up their data.
         """
-        # TODO identify date range that needs updating
-        # existing_stats = await async_list_statistic_ids(
-        #     self.hass,
-        #     {
-        #         f"input_number.electricity_consumption_ekz_{key}"
-        #         for key in self.installations
-        #     },
-        # )
-        self.hass.async_create_task(
-            async_load_platform(self.hass, "sensor", DOMAIN, {}, self.config)
-        )
-        new_data = await self.ekz_fetcher.fetch()
-        for key in new_data:
-            values = new_data[key]
-            running_sum = 0
-            statistics = [
-                {
-                    "start": datetime.strptime(
-                        str(value["timestamp"]), "%Y%m%d%H%M%S"
-                    ).astimezone(tz=ZRH),
-                    "sum": (running_sum := running_sum + value["value"]),
-                    "state": value["value"],
-                }
-                for value in values
-            ]
+        if self.installations is None or self.installations == []:
+            self.installations = await self.ekz_fetcher.getInstallations()
+        for key in self.installations:
+            last_full_day = self.hass.states.get(
+                f"input_text.electricity_consumption_ekz_{key}_last_full_day_update"
+            )
+            last_update_total = self.hass.states.get(
+                f"input_number.electricity_consumption_ekz_{key}_last_update_total"
+            )
+            if last_full_day is None or last_update_total is None:
+                _LOGGER.info(
+                    f"Initializing info for EKZ installation {key} from scratch"
+                )
+                result = await self.ekz_fetcher.fetchEntireHistory(key)
+            else:
+                _LOGGER.info(f"Incrementally updating info for EKZ installation {key}")
+                result = await self.ekz_fetcher.fetchNewInstallationData(
+                    key,
+                    last_full_day.as_dict()["state"],
+                    float(last_update_total.as_dict()["state"]),
+                )
             async_import_statistics(
                 self.hass,
                 {
@@ -133,8 +129,20 @@ class EkzCoordinator(DataUpdateCoordinator):
                     "name": None,
                     "unit_of_measurement": "kWh",
                 },
-                statistics,
+                result["statistics"],
             )
+            self.hass.states.async_set(
+                f"input_text.electricity_consumption_ekz_{key}_last_full_day_update",
+                result["last_full_day"],
+            )
+            self.hass.states.async_set(
+                f"input_number.electricity_consumption_ekz_{key}_last_update_total",
+                result["last_full_day_sum"],
+            )
+
+        self.hass.async_create_task(
+            async_load_platform(self.hass, "sensor", DOMAIN, {}, self.config)
+        )
 
 
 async def async_setup_entry(hass: core.HomeAssistant, config: ConfigEntry) -> bool:
