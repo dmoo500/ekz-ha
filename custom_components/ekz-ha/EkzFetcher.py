@@ -8,6 +8,7 @@ from .session import Session
 from .timeutil import format_api_date
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
+UTC = zoneinfo.ZoneInfo("Etc/UTC")
 
 
 def is_dst(dt: datetime, timeZone: zoneinfo.ZoneInfo) -> bool:
@@ -118,7 +119,7 @@ class EkzFetcher:
                 {
                     "start": datetime.strptime(
                         str(value["timestamp"]), "%Y%m%d%H%M%S"
-                    ).astimezone(tz=ZRH),
+                    ).astimezone(tz=UTC),
                     "sum": (running_sum := running_sum + value["value"]),
                     "state": value["value"],
                 }
