@@ -44,17 +44,6 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-# TODO consider deleting.
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up the platform.
-
-    @NOTE: `config` is the full dict from `configuration.yaml`.
-
-    :returns: A boolean to indicate that initialization was successful.
-    """
-    return True
-
-
 class EkzCoordinator(DataUpdateCoordinator):
     """Coordinates data fetching from EKZ."""
 
@@ -105,6 +94,9 @@ class EkzCoordinator(DataUpdateCoordinator):
         """
         if self.installations is None or self.installations == []:
             self.installations = await self.ekz_fetcher.getInstallations()
+            self.hass.async_create_task(
+                async_load_platform(self.hass, "sensor", DOMAIN, {}, self.config)
+            )
         for key in self.installations:
             last_full_day = self.hass.states.get(
                 f"input_text.electricity_consumption_ekz_{key}_last_full_day_update"
@@ -214,7 +206,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                 f"input_number.electricity_consumption_ekz_{key}_last_update_total",
                 result["last_full_day_sum"],
             )
-
 
 
 async def async_setup_entry(hass: core.HomeAssistant, config: ConfigEntry) -> bool:
