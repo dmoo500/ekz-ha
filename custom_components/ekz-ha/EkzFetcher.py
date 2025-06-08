@@ -8,7 +8,7 @@ from .session import Session
 from .timeutil import format_api_date
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
-UTC = zoneinfo.ZoneInfo("Etc/UTC")
+UTC = zoneinfo.ZoneInfo("UTC")
 
 
 def is_dst(dt: datetime, timeZone: zoneinfo.ZoneInfo) -> bool:
