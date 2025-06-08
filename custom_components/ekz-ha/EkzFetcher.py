@@ -142,7 +142,22 @@ class EkzFetcher:
                 from_date = c["einzdat"]
         if from_date is None:
             raise ValueError("No matching installation...")
-        return await self.fetchNewInstallationData(installationId, from_date, 0)
+        results = await self.fetchNewInstallationData(installationId, from_date, 0)
+
+        def average(g):
+            g = list(g)
+            total = sum(x["state"] for x in g)
+            return total / len(g)
+
+        averages = {
+            key: average(g)
+            for key, g in itertools.groupby(
+                results["statistics"],
+                lambda v: v["start"].month * 100 + v["start"].hour,
+            )
+        }
+        results["averages"] = averages
+        return results
 
     async def fetch(self) -> dict:
         """Fetch new data from EKZ."""

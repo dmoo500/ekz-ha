@@ -79,7 +79,10 @@ class Session:
                 # We may have timed out. Mark as not logged in and return an empty object.
                 self._logged_in = False
                 return InstallationSelectionData()
-            return await r.json()
+            data = await r.json()
+            if data == []:
+                self._logged_in = False
+            return data
 
     async def get_installation_data(self, installation_id: str) -> InstallationData:
         """Fetch the metadata for an installation."""
@@ -93,7 +96,10 @@ class Session:
                 # We may have timed out. Mark as not logged in and return an empty object.
                 self._logged_in = False
                 return InstallationData()
-            return await r.json()
+            data = await r.json()
+            if data == []:
+                self._logged_in = False
+            return data
 
     async def get_consumption_data(
         self, installation_id: str, data_type: str, date_from: str, date_to: str
@@ -109,4 +115,7 @@ class Session:
                 # We may have timed out. Mark as not logged in and return an empty object.
                 self._logged_in = False
                 return ConsumptionData()
-            return await r.json()
+            data = await r.json()
+            if data == []:
+                self._logged_in = False
+            return data

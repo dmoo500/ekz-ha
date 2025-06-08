@@ -65,7 +65,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         update_interval: timedelta,
         config,
     ) -> None:
-        """Initialize EKZ§ coordinator."""
+        """Initialize EKZ coordinator."""
         super().__init__(
             hass,
             _LOGGER,
@@ -81,6 +81,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.ekz_fetcher = ekz_fetcher
         self.config = config
         self.installations = []
+        self.consumption_averages = {}
 
     async def _async_setup(self):
         """Set up the coordinator.
@@ -92,6 +93,9 @@ class EkzCoordinator(DataUpdateCoordinator):
         coordinator.async_config_entry_first_refresh.
         """
         self.installations = await self.ekz_fetcher.getInstallations()
+        self.hass.async_create_task(
+            async_load_platform(self.hass, "sensor", DOMAIN, {}, self.config)
+        )
 
     async def _async_update_data(self):
         """Fetch data from API endpoint.
@@ -108,17 +112,88 @@ class EkzCoordinator(DataUpdateCoordinator):
             last_update_total = self.hass.states.get(
                 f"input_number.electricity_consumption_ekz_{key}_last_update_total"
             )
+            last_get_all = self.hass.states.get(
+                f"input_text.electricity_consumption_ekz_{key}_last_get_all"
+            )
+            if last_get_all is not None:
+                last_get_all_date = datetime.strptime(
+                    last_get_all.as_dict()["state"], "%Y-%m-%d %H:%M:%S"
+                )
+                # TODO perform the full update more rarely, e.g. once a month
+                if last_get_all_date + timedelta(days=1) < datetime.now():
+                    # force full update by pretending last_full_day is None
+                    last_full_day = None
+            else:
+                last_full_day = None
             if last_full_day is None or last_update_total is None:
                 _LOGGER.info(
                     f"Initializing info for EKZ installation {key} from scratch"
                 )
                 result = await self.ekz_fetcher.fetchEntireHistory(key)
+                self.hass.states.async_set(
+                    f"input_text.electricity_consumption_ekz_{key}_last_get_all",
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
             else:
                 _LOGGER.info(f"Incrementally updating info for EKZ installation {key}")
                 result = await self.ekz_fetcher.fetchNewInstallationData(
                     key,
                     last_full_day.as_dict()["state"],
                     float(last_update_total.as_dict()["state"]),
+                )
+            averages = None
+            if "averages" in result:
+                if self.consumption_averages is None:
+                    self.consumption_averages = {}
+                self.consumption_averages[key] = result["averages"]
+                averages = result["averages"]
+            else:
+                if self.consumption_averages is None:
+                    if key in self.consumption_averages:
+                        averages = self.consumption_averages[key]
+            if averages is not None and len(result["statistics"]) > 0:
+                # For all times for which we have a value in result["statistics"], we now want to set the sum/state to 0 (overriding previous predictions).
+                # For all times from the highest timestamp to now, we try to find a prediction.
+                predictions = [
+                    {"start": x["start"], "sum": 0, "state": 0}
+                    for x in result["statistics"]
+                ]
+                last_actual = result["statistics"][len(result["statistics"]) - 1]
+                last_actual["start"] = last_actual["start"] + timedelta(hours=1)
+                running_total = 0
+                while last_actual["start"] < datetime.now().astimezone(tz=ZRH):
+                    mh_key = (
+                        last_actual["start"].month * 100 + last_actual["start"].hour
+                    )
+                    if mh_key in averages:
+                        running_total += averages[mh_key]
+                        predictions.append(
+                            {
+                                "start": last_actual["start"],
+                                "sum": running_total,
+                                "stage": averages[mh_key],
+                            }
+                        )
+                    else:
+                        running_total += last_actual["state"]
+                        predictions.append(
+                            {
+                                "start": last_actual["start"],
+                                "sum": running_total,
+                                "stage": last_actual["state"],
+                            }
+                        )
+                    last_actual["start"] = last_actual["start"] + timedelta(hours=1)
+                async_import_statistics(
+                    self.hass,
+                    {
+                        "has_sum": True,
+                        "source": "recorder",
+                        "statistic_id": f"input_number.electricity_consumption_ekz_{key}_predictions",
+                        "name": None,
+                        "unit_of_measurement": "kWh",
+                    },
+                    predictions,
                 )
             async_import_statistics(
                 self.hass,
@@ -140,9 +215,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                 result["last_full_day_sum"],
             )
 
-        self.hass.async_create_task(
-            async_load_platform(self.hass, "sensor", DOMAIN, {}, self.config)
-        )
 
 
 async def async_setup_entry(hass: core.HomeAssistant, config: ConfigEntry) -> bool:
