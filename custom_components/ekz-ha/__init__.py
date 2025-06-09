@@ -198,25 +198,26 @@ class EkzCoordinator(DataUpdateCoordinator):
                     },
                     predictions,
                 )
-            async_import_statistics(
-                self.hass,
-                {
-                    "has_sum": True,
-                    "source": "recorder",
-                    "statistic_id": f"sensor.ekz_electricity_consumption_{key}",
-                    "name": None,
-                    "unit_of_measurement": "kWh",
-                },
-                result["statistics"],
-            )
-            self.hass.states.async_set(
-                f"sensor.ekz_electricity_consumption_{key}_internal_last_day",
-                result["last_full_day"],
-            )
-            self.hass.states.async_set(
-                f"sensor.ekz_electricity_consumption_{key}_internal_last_sum",
-                result["last_full_day_sum"],
-            )
+            if len(result["statistics"]) > 0:
+                async_import_statistics(
+                    self.hass,
+                    {
+                        "has_sum": True,
+                        "source": "recorder",
+                        "statistic_id": f"sensor.ekz_electricity_consumption_{key}",
+                        "name": None,
+                        "unit_of_measurement": "kWh",
+                    },
+                    result["statistics"],
+                )
+                self.hass.states.async_set(
+                    f"sensor.ekz_electricity_consumption_{key}_internal_last_day",
+                    result["last_full_day"],
+                )
+                self.hass.states.async_set(
+                    f"sensor.ekz_electricity_consumption_{key}_internal_last_sum",
+                    result["last_full_day_sum"],
+                )
 
 
 async def async_setup_entry(hass: core.HomeAssistant, config: ConfigEntry) -> bool:

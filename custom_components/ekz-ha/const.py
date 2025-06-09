@@ -4,4 +4,4 @@ from datetime import timedelta
 
 DOMAIN = "ekz_ha"
 
-DEFAULT_SCAN_INTERVAL = timedelta(hours=2)
+DEFAULT_SCAN_INTERVAL = timedelta(minutes=52)
