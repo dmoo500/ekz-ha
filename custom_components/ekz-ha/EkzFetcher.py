@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 import itertools
+import math
 import zoneinfo
 
 from .session import Session
@@ -113,6 +114,7 @@ class EkzFetcher:
                     max_date = date
 
         running_sum = last_full_day_sum
+        last_full_day_sum = math.inf
         statistics = []
         for value in values:
             statistics.append(
@@ -126,8 +128,11 @@ class EkzFetcher:
             )
             date = datetime.strptime(value["date"], "%Y-%m-%d")
             if date == max_date:
-                last_full_day_sum = running_sum
+                # The next time we run, we start with data from the last_full_day, so the running_sum needs
+                # to correspond to the _start_ of that last_full_day.
+                last_full_day_sum = min(running_sum, last_full_day_sum)
         last_full_day = max_date
+
         return {
             "statistics": statistics,
             "last_full_day": last_full_day,

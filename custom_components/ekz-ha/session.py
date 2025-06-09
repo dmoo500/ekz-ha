@@ -1,13 +1,13 @@
 """Interact with EKZ."""
 
+import logging
+
 import aiohttp
 from bs4 import BeautifulSoup
 
-from .apitypes import (
-    ConsumptionData,
-    InstallationData,
-    InstallationSelectionData,
-)
+from .apitypes import ConsumptionData, InstallationData, InstallationSelectionData
+
+_LOGGER = logging.getLogger(__name__)
 
 HTML_HEADERS = {"Accept": "text/html,application/xhtml+xml,application/xml"}
 JSON_HEADERS = {"Accept": "application/json, text/plain, */*"}
@@ -26,6 +26,13 @@ class Session:
         self._session.headers.add("User-Agent", "ekz-ha")
         self._username = username
         self._password = password
+        self._logged_in = False
+
+    async def _init_session(self):
+        if self._session is not None:
+            await self._session.close()
+        self._session = aiohttp.ClientSession()
+        self._session.headers.add("User-Agent", "ekz-ha")
         self._logged_in = False
 
     async def _ensure_logged_in(self):
@@ -77,11 +84,17 @@ class Session:
         ) as r:
             if not r.ok:
                 # We may have timed out. Mark as not logged in and return an empty object.
-                self._logged_in = False
+                _LOGGER.warning(
+                    "Refreshing session as fetching InstallationSelectionData failed"
+                )
+                await self._init_session()
                 return InstallationSelectionData()
             data = await r.json()
             if data == []:
-                self._logged_in = False
+                _LOGGER.warning(
+                    "Refreshing session as fetching InstallationSelectionData returned empty results"
+                )
+                await self._init_session()
             return data
 
     async def get_installation_data(self, installation_id: str) -> InstallationData:
@@ -94,11 +107,17 @@ class Session:
         ) as r:
             if not r.ok:
                 # We may have timed out. Mark as not logged in and return an empty object.
-                self._logged_in = False
+                _LOGGER.warning(
+                    "Refreshing session as fetching InstallationData failed"
+                )
+                await self._init_session()
                 return InstallationData()
             data = await r.json()
             if data == []:
-                self._logged_in = False
+                _LOGGER.warning(
+                    "Refreshing session as fetching InstallationData returned empty results"
+                )
+                await self._init_session()
             return data
 
     async def get_consumption_data(
@@ -113,9 +132,13 @@ class Session:
         ) as r:
             if not r.ok:
                 # We may have timed out. Mark as not logged in and return an empty object.
-                self._logged_in = False
+                _LOGGER.warning("Refreshing session as fetching ConsumptionData failed")
+                await self._init_session()
                 return ConsumptionData()
             data = await r.json()
             if data == []:
-                self._logged_in = False
+                _LOGGER.warning(
+                    "Refreshing session as fetching ConsumptionData returned empty results"
+                )
+                await self._init_session()
             return data

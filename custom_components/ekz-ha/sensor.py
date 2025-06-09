@@ -16,13 +16,20 @@ async def async_setup_platform(
 ):
     """Set up the sensor platform."""
     coordinator = hass.data[DOMAIN]["coordinator"]
-    sensors = [
-        EkzEntity(coordinator, installationId)
-        for installationId in coordinator.installations
-    ] + [
-        EkzPredictionEntity(coordinator, installationId)
-        for installationId in coordinator.installations
-    ]
+    sensors = (
+        [
+            EkzEntity(coordinator, installationId)
+            for installationId in coordinator.installations
+        ]
+        + [
+            EkzPredictionEntity(coordinator, installationId)
+            for installationId in coordinator.installations
+        ]
+        + [
+            EkzLastRunningSumEntity(coordinator, installationId)
+            for installationId in coordinator.installations
+        ]
+    )
 
     async_add_entities(sensors, True)
 
@@ -36,27 +43,16 @@ class EkzEntity(CoordinatorEntity, NumberEntity):
         """Construct an instance of EkzEntity."""
         super().__init__(coordinator)
         self._attr_device_class = NumberDeviceClass.ENERGY
-        self.installationId = installationId
-
-    @property
-    def unit_of_measurement(self) -> str:
-        """Return the unit of measurement of this entity, if any."""
-        return "kWh"
+        self._attr_native_unit_of_measurement = "kWh"
+        self._attr_unique_id = (
+            f"input_number.ekz_electricity_consumption_{installationId}"
+        )
+        self._attr_name = f"Electricity consumption EKZ {installationId}"
 
     @property
     def icon(self) -> str:
         """Icon to use in the frontend."""
         return "mdi:lightning-bolt"
-
-    @property
-    def entity_id(self) -> str:
-        """Return the entity id of the sensor."""
-        return f"input_number.electricity_consumption_ekz_{self.installationId}"
-
-    @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        return f"Electricity consumption EKZ {self.installationId}"
 
 
 class EkzPredictionEntity(CoordinatorEntity, NumberEntity):
@@ -68,26 +64,32 @@ class EkzPredictionEntity(CoordinatorEntity, NumberEntity):
         """Construct an instance of EkzPredictionEntity."""
         super().__init__(coordinator)
         self._attr_device_class = NumberDeviceClass.ENERGY
-        self.installationId = installationId
-
-    @property
-    def unit_of_measurement(self) -> str:
-        """Return the unit of measurement of this entity, if any."""
-        return "kWh"
+        self._attr_native_unit_of_measurement = "kWh"
+        self._attr_unique_id = (
+            f"input_number.ekz_electricity_consumption_{installationId}_prediction"
+        )
+        self._attr_name = f"Electricity consumption prediction EKZ {installationId}"
 
     @property
     def icon(self) -> str:
         """Icon to use in the frontend."""
         return "mdi:lightning-bolt"
 
-    @property
-    def entity_id(self) -> str:
-        """Return the entity id of the sensor."""
-        return (
-            f"input_number.electricity_consumption_ekz_{self.installationId}_prediction"
-        )
+
+class EkzLastRunningSumEntity(CoordinatorEntity, NumberEntity):
+    """Represents the electricity consumption prediction of an EKZ installation."""
+
+    def __init__(
+        self, coordinator: DataUpdateCoordinator[str], installationId: str
+    ) -> None:
+        """Construct an instance of EkzLastRunningSumEntity."""
+        super().__init__(coordinator)
+        self._attr_device_class = NumberDeviceClass.ENERGY
+        self._attr_native_unit_of_measurement = "kWh"
+        self._attr_unique_id = f"input_number.ekz_electricity_consumption_{installationId}_internal_last_sum"
+        self._attr_name = f"Internal entity for EKZ {installationId}: last running sum"
 
     @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        return f"Electricity consumption prediction EKZ {self.installationId}"
+    def icon(self) -> str:
+        """Icon to use in the frontend."""
+        return "mdi:lightning-bolt"
