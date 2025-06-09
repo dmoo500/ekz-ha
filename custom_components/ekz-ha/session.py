@@ -29,7 +29,7 @@ class Session:
         self._logged_in = False
 
     def _init_session(self):
-        if self.session is None:
+        if self._session is None:
             self._session = aiohttp.ClientSession()
             self._session.headers.add("User-Agent", "ekz-ha")
             self._logged_in = False
