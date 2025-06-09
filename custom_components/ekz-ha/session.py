@@ -28,12 +28,11 @@ class Session:
         self._password = password
         self._logged_in = False
 
-    async def _init_session(self):
-        if self._session is not None:
-            await self._session.close()
-        self._session = aiohttp.ClientSession()
-        self._session.headers.add("User-Agent", "ekz-ha")
-        self._logged_in = False
+    def _init_session(self):
+        if self.session is None:
+            self._session = aiohttp.ClientSession()
+            self._session.headers.add("User-Agent", "ekz-ha")
+            self._logged_in = False
 
     async def _reset_session(self):
         if self._session is not None:
@@ -44,7 +43,7 @@ class Session:
     async def _ensure_logged_in(self):
         if self._logged_in:
             return
-        await self._init_session()
+        self._init_session()
 
         async with self._session.get(
             "https://my.ekz.ch/verbrauch/", headers=HTML_HEADERS
