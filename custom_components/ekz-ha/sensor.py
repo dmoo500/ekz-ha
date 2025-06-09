@@ -112,6 +112,7 @@ class EkzLastFullDayEntity(CoordinatorEntity, DateEntity):
         self._attr_unique_id = (
             f"sensor.ekz_electricity_consumption_{installationId}_internal_last_day"
         )
+        self._attr_native_value = None
         self._attr_name = f"Internal entity for EKZ {installationId}: last full day"
 
     @property
@@ -135,6 +136,7 @@ class EkzLastGetAllEntity(CoordinatorEntity, DateEntity):
         self._attr_unique_id = (
             f"sensor.ekz_electricity_consumption_{installationId}_internal_last_all"
         )
+        self._attr_native_value = None
         self._attr_name = f"Internal entity for EKZ {installationId}: last get all"
 
     @property
@@ -145,3 +147,4 @@ class EkzLastGetAllEntity(CoordinatorEntity, DateEntity):
     def set_value(self, value: date) -> None:
         """Change the date."""
         self._attr_native_value = value
+    
