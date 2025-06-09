@@ -44,9 +44,7 @@ class EkzEntity(CoordinatorEntity, NumberEntity):
         super().__init__(coordinator)
         self._attr_device_class = NumberDeviceClass.ENERGY
         self._attr_native_unit_of_measurement = "kWh"
-        self._attr_unique_id = (
-            f"input_number.ekz_electricity_consumption_{installationId}"
-        )
+        self._attr_unique_id = f"sensor.ekz_electricity_consumption_{installationId}"
         self._attr_name = f"Electricity consumption EKZ {installationId}"
 
     @property
@@ -66,7 +64,7 @@ class EkzPredictionEntity(CoordinatorEntity, NumberEntity):
         self._attr_device_class = NumberDeviceClass.ENERGY
         self._attr_native_unit_of_measurement = "kWh"
         self._attr_unique_id = (
-            f"input_number.ekz_electricity_consumption_{installationId}_prediction"
+            f"sensor.ekz_electricity_consumption_{installationId}_prediction"
         )
         self._attr_name = f"Electricity consumption prediction EKZ {installationId}"
 
@@ -86,7 +84,9 @@ class EkzLastRunningSumEntity(CoordinatorEntity, NumberEntity):
         super().__init__(coordinator)
         self._attr_device_class = NumberDeviceClass.ENERGY
         self._attr_native_unit_of_measurement = "kWh"
-        self._attr_unique_id = f"input_number.ekz_electricity_consumption_{installationId}_internal_last_sum"
+        self._attr_unique_id = (
+            f"sensor.ekz_electricity_consumption_{installationId}_internal_last_sum"
+        )
         self._attr_name = f"Internal entity for EKZ {installationId}: last running sum"
 
     @property

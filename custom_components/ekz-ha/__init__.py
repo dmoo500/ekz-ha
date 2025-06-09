@@ -102,7 +102,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 f"input_text.ekz_electricity_consumption_{key}_last_full_day_update"
             )
             last_update_total = self.hass.states.get(
-                f"input_number.ekz_electricity_consumption_{key}_internal_last_sum"
+                f"sensor.ekz_electricity_consumption_{key}_internal_last_sum"
             )
             last_get_all = self.hass.states.get(
                 f"input_text.ekz_electricity_consumption_{key}_last_get_all"
@@ -186,7 +186,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                     {
                         "has_sum": True,
                         "source": "recorder",
-                        "statistic_id": f"input_number.ekz_electricity_consumption_{key}_predictions",
+                        "statistic_id": f"sensor.ekz_electricity_consumption_{key}_predictions",
                         "name": None,
                         "unit_of_measurement": "kWh",
                     },
@@ -197,7 +197,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 {
                     "has_sum": True,
                     "source": "recorder",
-                    "statistic_id": f"input_number.ekz_electricity_consumption_{key}",
+                    "statistic_id": f"sensor.ekz_electricity_consumption_{key}",
                     "name": None,
                     "unit_of_measurement": "kWh",
                 },
@@ -208,7 +208,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 result["last_full_day"],
             )
             self.hass.states.async_set(
-                f"input_number.ekz_electricity_consumption_{key}_internal_last_sum",
+                f"sensor.ekz_electricity_consumption_{key}_internal_last_sum",
                 result["last_full_day_sum"],
             )
 
