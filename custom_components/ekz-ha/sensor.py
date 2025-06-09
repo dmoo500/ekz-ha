@@ -1,9 +1,9 @@
 """Entities for EKZ installations."""
 
 from homeassistant import core
+from homeassistant.components.date import DateEntity
 from homeassistant.components.number import NumberEntity
 from homeassistant.components.number.const import NumberDeviceClass
-from homeassistant.components.text import TextEntity
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -99,7 +99,7 @@ class EkzLastRunningSumEntity(CoordinatorEntity, NumberEntity):
         self._attr_name = f"Internal entity for EKZ {installationId}: last running sum"
 
 
-class EkzLastFullDayEntity(CoordinatorEntity, TextEntity):
+class EkzLastFullDayEntity(CoordinatorEntity, DateEntity):
     """Represents the electricity consumption prediction of an EKZ installation."""
 
     def __init__(
@@ -118,7 +118,7 @@ class EkzLastFullDayEntity(CoordinatorEntity, TextEntity):
         return "mdi:lightning-bolt"
 
 
-class EkzLastGetAllEntity(CoordinatorEntity, TextEntity):
+class EkzLastGetAllEntity(CoordinatorEntity, DateEntity):
     """Represents the electricity consumption prediction of an EKZ installation."""
 
     def __init__(
