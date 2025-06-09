@@ -9,6 +9,6 @@
     "aiohttp>=3.0.0",
     "beautifulsoup4>=4.0.0"
   ],
-  "version": "0.1.6",
+  "version": "0.1.7",
   "config_flow": true
 }

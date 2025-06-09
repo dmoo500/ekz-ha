@@ -35,9 +35,16 @@ class Session:
         self._session.headers.add("User-Agent", "ekz-ha")
         self._logged_in = False
 
+    async def _reset_session(self):
+        if self._session is not None:
+            await self._session.close()            
+        self._session = None
+        self._logged_in = False
+
     async def _ensure_logged_in(self):
         if self._logged_in:
             return
+        await self._init_session()
 
         async with self._session.get(
             "https://my.ekz.ch/verbrauch/", headers=HTML_HEADERS
@@ -87,14 +94,14 @@ class Session:
                 _LOGGER.warning(
                     "Refreshing session as fetching InstallationSelectionData failed"
                 )
-                await self._init_session()
+                await self._reset_session()
                 return InstallationSelectionData()
             data = await r.json()
             if data == []:
                 _LOGGER.warning(
                     "Refreshing session as fetching InstallationSelectionData returned empty results"
                 )
-                await self._init_session()
+                await self._reset_session()
             return data
 
     async def get_installation_data(self, installation_id: str) -> InstallationData:
@@ -110,14 +117,14 @@ class Session:
                 _LOGGER.warning(
                     "Refreshing session as fetching InstallationData failed"
                 )
-                await self._init_session()
+                await self._reset_session()
                 return InstallationData()
             data = await r.json()
             if data == []:
                 _LOGGER.warning(
                     "Refreshing session as fetching InstallationData returned empty results"
                 )
-                await self._init_session()
+                await self._reset_session()
             return data
 
     async def get_consumption_data(
@@ -133,12 +140,12 @@ class Session:
             if not r.ok:
                 # We may have timed out. Mark as not logged in and return an empty object.
                 _LOGGER.warning("Refreshing session as fetching ConsumptionData failed")
-                await self._init_session()
+                await self._reset_session()
                 return ConsumptionData()
             data = await r.json()
             if data == []:
                 _LOGGER.warning(
                     "Refreshing session as fetching ConsumptionData returned empty results"
                 )
-                await self._init_session()
+                await self._reset_session()
             return data
