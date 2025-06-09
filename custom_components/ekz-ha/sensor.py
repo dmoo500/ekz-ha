@@ -3,6 +3,7 @@
 from homeassistant import core
 from homeassistant.components.number import NumberEntity
 from homeassistant.components.number.const import NumberDeviceClass
+from homeassistant.components.text import TextEntity
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -27,6 +28,14 @@ async def async_setup_platform(
         ]
         + [
             EkzLastRunningSumEntity(coordinator, installationId)
+            for installationId in coordinator.installations
+        ]
+        + [
+            EkzLastFullDayEntity(coordinator, installationId)
+            for installationId in coordinator.installations
+        ]
+        + [
+            EkzLastGetAllEntity(coordinator, installationId)
             for installationId in coordinator.installations
         ]
     )
@@ -88,6 +97,39 @@ class EkzLastRunningSumEntity(CoordinatorEntity, NumberEntity):
             f"sensor.ekz_electricity_consumption_{installationId}_internal_last_sum"
         )
         self._attr_name = f"Internal entity for EKZ {installationId}: last running sum"
+
+
+class EkzLastFullDayEntity(CoordinatorEntity, TextEntity):
+    """Represents the electricity consumption prediction of an EKZ installation."""
+
+    def __init__(
+        self, coordinator: DataUpdateCoordinator[str], installationId: str
+    ) -> None:
+        """Construct an instance of EkzLastFullDayEntity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = (
+            f"sensor.ekz_electricity_consumption_{installationId}_internal_last_day"
+        )
+        self._attr_name = f"Internal entity for EKZ {installationId}: last full day"
+
+    @property
+    def icon(self) -> str:
+        """Icon to use in the frontend."""
+        return "mdi:lightning-bolt"
+
+
+class EkzLastGetAllEntity(CoordinatorEntity, TextEntity):
+    """Represents the electricity consumption prediction of an EKZ installation."""
+
+    def __init__(
+        self, coordinator: DataUpdateCoordinator[str], installationId: str
+    ) -> None:
+        """Construct an instance of EkzLastGetAllEntity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = (
+            f"sensor.ekz_electricity_consumption_{installationId}_internal_last_all"
+        )
+        self._attr_name = f"Internal entity for EKZ {installationId}: last get all"
 
     @property
     def icon(self) -> str:

@@ -99,13 +99,13 @@ class EkzCoordinator(DataUpdateCoordinator):
             )
         for key in self.installations:
             last_full_day = self.hass.states.get(
-                f"input_text.ekz_electricity_consumption_{key}_last_full_day_update"
+                f"sensor.ekz_electricity_consumption_{key}_internal_last_day"
             )
             last_update_total = self.hass.states.get(
                 f"sensor.ekz_electricity_consumption_{key}_internal_last_sum"
             )
             last_get_all = self.hass.states.get(
-                f"input_text.ekz_electricity_consumption_{key}_last_get_all"
+                f"sensor.ekz_electricity_consumption_{key}_last_get_all"
             )
             if last_get_all is not None:
                 last_get_all_date = datetime.strptime(
@@ -129,7 +129,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 )
                 result = await self.ekz_fetcher.fetchEntireHistory(key)
                 self.hass.states.async_set(
-                    f"input_text.ekz_electricity_consumption_{key}_last_get_all",
+                    f"sensor.ekz_electricity_consumption_{key}_last_get_all",
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 )
             else:
@@ -156,6 +156,12 @@ class EkzCoordinator(DataUpdateCoordinator):
                     for x in result["statistics"]
                 ]
                 last_actual = result["statistics"][len(result["statistics"]) - 1]
+                # Copy
+                last_actual = {
+                    "start": last_actual["start"],
+                    "sum": last_actual["sum"],
+                    "state": last_actual["state"],
+                }
                 last_actual["start"] = last_actual["start"] + timedelta(hours=1)
                 running_total = 0
                 while last_actual["start"] < datetime.now().astimezone(tz=ZRH):
@@ -204,7 +210,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 result["statistics"],
             )
             self.hass.states.async_set(
-                f"input_text.ekz_electricity_consumption_{key}_last_full_day_update",
+                f"sensor.ekz_electricity_consumption_{key}_internal_last_day",
                 result["last_full_day"],
             )
             self.hass.states.async_set(
