@@ -1,5 +1,7 @@
 """Entities for EKZ installations."""
 
+from datetime import date
+
 from homeassistant import core
 from homeassistant.components.date import DateEntity
 from homeassistant.components.number import NumberEntity
@@ -117,6 +119,10 @@ class EkzLastFullDayEntity(CoordinatorEntity, DateEntity):
         """Icon to use in the frontend."""
         return "mdi:lightning-bolt"
 
+    def set_value(self, value: date) -> None:
+        """Change the date."""
+        self._attr_native_value = value
+
 
 class EkzLastGetAllEntity(CoordinatorEntity, DateEntity):
     """Represents the electricity consumption prediction of an EKZ installation."""
@@ -135,3 +141,7 @@ class EkzLastGetAllEntity(CoordinatorEntity, DateEntity):
     def icon(self) -> str:
         """Icon to use in the frontend."""
         return "mdi:lightning-bolt"
+
+    def set_value(self, value: date) -> None:
+        """Change the date."""
+        self._attr_native_value = value
