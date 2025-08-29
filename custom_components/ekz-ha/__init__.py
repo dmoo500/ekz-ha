@@ -73,18 +73,8 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.consumption_averages = {}
 
     async def _async_setup(self):
-        """Set up the coordinator.
-
-        This is the place to set up your coordinator,
-        or to load data, that only needs to be loaded once.
-
-        This method will be called automatically during
-        coordinator.async_config_entry_first_refresh.
-        """
+        """Set up the coordinator (nur Installationen laden)."""
         self.installations = await self.ekz_fetcher.getInstallations()
-        self.hass.async_create_task(
-            async_load_platform(self.hass, "sensor", DOMAIN, {}, self.config)
-        )
 
     async def _async_update_data(self):
         """Fetch data from API endpoint.
@@ -94,53 +84,41 @@ class EkzCoordinator(DataUpdateCoordinator):
         """
         if self.installations is None or self.installations == []:
             self.installations = await self.ekz_fetcher.getInstallations()
-            self.hass.async_create_task(
-                async_load_platform(self.hass, "sensor", DOMAIN, {}, self.config)
-            )
+        meta_entities = getattr(self, "meta_entities", None)
+        if not meta_entities:
+            _LOGGER.debug("meta_entities mapping not set or empty during update. Entities may not be initialized yet.")
         for key in self.installations:
-            last_full_day = self.hass.states.get(
-                f"sensor.ekz_electricity_consumption_{key}_internal_last_day"
-            )
-            last_update_total = self.hass.states.get(
-                f"sensor.ekz_electricity_consumption_{key}_internal_last_sum"
-            )
-            last_get_all = self.hass.states.get(
-                f"sensor.ekz_electricity_consumption_{key}_last_get_all"
-            )
-            if last_get_all is not None:
-                last_get_all_date = datetime.strptime(
-                    last_get_all.as_dict()["state"], "%Y-%m-%d %H:%M:%S"
-                )
-                # TODO perform the full update more rarely, e.g. once a month
-                if last_get_all_date + timedelta(days=1) < datetime.now():
-                    # force full update by pretending last_full_day is None
-                    last_full_day = None
+            meta_entity = meta_entities.get(key) if meta_entities else None
+            if meta_entity is not None:
+                _LOGGER.debug(f"Meta entity for {key}: unique_id={getattr(meta_entity, 'unique_id', None)}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
             else:
-                last_full_day = None
-            if (
-                last_full_day is None
-                or last_update_total is None
-                or last_full_day.as_dict()["state"] is None
-                or last_update_total.as_dict()["state"] is None
-                or float(last_update_total.as_dict()["state"]) < 0
-            ):
-                _LOGGER.info(
-                    f"Initializing info for EKZ installation {key} from scratch"
-                )
-                result = await self.ekz_fetcher.fetchEntireHistory(key)
-                self.hass.states.async_set(
-                    f"sensor.ekz_electricity_consumption_{key}_last_get_all",
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                )
-            else:
-                _LOGGER.info(f"Incrementally updating info for EKZ installation {key}")
-                result = await self.ekz_fetcher.fetchNewInstallationData(
-                    key,
-                    last_full_day.as_dict()["state"],
-                    float(last_update_total.as_dict()["state"]),
-                )
+                _LOGGER.debug(f"Meta entity for {key}: None")
+            if meta_entity is None:
+                continue # if no meta entity, skip it - need it to store last_import etc.
+            # Determine contract_start and last_import
+            contract_start = meta_entity._contract_start if meta_entity is not None else None
+            if contract_start is None:
+                contract_start = self.installations[key]["contract_start"]
+                if meta_entity is not None and meta_entity._contract_start is None:
+                    meta_entity.set_contract_start(
+                        datetime.strptime(contract_start, "%Y-%m-%d").date()
+                    )
+                    _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
+            last_import = meta_entity._last_import if meta_entity is not None else None
+            if contract_start is not None and last_import is None:
+                last_import = datetime.strptime(
+                    contract_start, "%Y-%m-%d"
+                ).date()
+
+            result = await self.ekz_fetcher.import_full_history_to_statistics(
+                self.hass, key, last_import, contract_start, meta_entity
+            )
+            _LOGGER.debug(f"Result for {key}: {result}")
+
+            # save averages for later use
             averages = None
             if "averages" in result:
+                _LOGGER.debug(f"Averages for {key}: {result['averages']}")
                 if self.consumption_averages is None:
                     self.consumption_averages = {}
                 self.consumption_averages[key] = result["averages"]
@@ -148,6 +126,7 @@ class EkzCoordinator(DataUpdateCoordinator):
             elif self.consumption_averages is None:
                 if key in self.consumption_averages:
                     averages = self.consumption_averages[key]
+
             if averages is not None and len(result["statistics"]) > 0:
                 # For all times for which we have a value in result["statistics"], we now want to set the sum/state to 0 (overriding previous predictions).
                 # For all times from the highest timestamp to now, we try to find a prediction.
@@ -187,6 +166,10 @@ class EkzCoordinator(DataUpdateCoordinator):
                             }
                         )
                     last_actual["start"] = last_actual["start"] + timedelta(hours=1)
+
+                _LOGGER.debug(
+                    f"Predictions for {key} from {predictions[0]['start']} to {predictions[len(predictions)-1]['start']}: {predictions}"
+                )
                 async_import_statistics(
                     self.hass,
                     {
@@ -199,6 +182,8 @@ class EkzCoordinator(DataUpdateCoordinator):
                     predictions,
                 )
             if len(result["statistics"]) > 0:
+                _LOGGER.debug(f"Statistics for {key}: {result['statistics']}")
+                statistics = result["statistics"]
                 async_import_statistics(
                     self.hass,
                     {
@@ -208,27 +193,32 @@ class EkzCoordinator(DataUpdateCoordinator):
                         "name": None,
                         "unit_of_measurement": "kWh",
                     },
-                    result["statistics"],
+                    statistics
                 )
-                self.hass.states.async_set(
-                    f"sensor.ekz_electricity_consumption_{key}_internal_last_day",
-                    result["last_full_day"],
-                )
-                self.hass.states.async_set(
-                    f"sensor.ekz_electricity_consumption_{key}_internal_last_sum",
-                    result["last_full_day_sum"],
-                )
+                _LOGGER.debug(f"Meta entity: {meta_entity}")
+                if statistics is not None and len(statistics) > 0 and meta_entity is not None:
+                    lastDate = statistics[len(statistics)-1]["start"]
+                    _LOGGER.debug(f"Setting last_import for {key} to {lastDate}")
+                    meta_entity.set_last_import(lastDate)     
+                
 
-
-async def async_setup_entry(hass: core.HomeAssistant, config: ConfigEntry) -> bool:
+async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up integration entry."""
-    scan_interval = config.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-    ekz_fetcher = EkzFetcher(config.data["user"], config.data["password"])
-    coordinator = EkzCoordinator(hass, ekz_fetcher, scan_interval, config)
+    scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    ekz_fetcher = EkzFetcher(entry.data["user"], entry.data["password"])
+    coordinator = EkzCoordinator(hass, ekz_fetcher, scan_interval, entry)
 
     hass.data[DOMAIN] = {
-        "conf": config,
+        "conf": entry,
         "coordinator": coordinator,
     }
     await coordinator.async_refresh()
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     return True
+
+async def async_unload_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
+    if unload_ok:
+        hass.data.pop(DOMAIN, None)
+    return unload_ok

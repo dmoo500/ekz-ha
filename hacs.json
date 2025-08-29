@@ -1,5 +1,5 @@
 {
-  "name": "EKZ",
+  "name": "EKZ (Elektrizitätswerke des Kantons Zürich) Data Fetcher",
   "country": "CH",
   "persistent_directory": "userfiles"
 }

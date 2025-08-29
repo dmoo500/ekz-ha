@@ -1,15 +1,31 @@
-# EKZ Home Assistant integration
 
-This project is a custom integration for [Home Assistant](https://www.home-assistant.io/) to display [EKZ](https://ekz.ch) electricity consumption data.
 
-The project uses large parts of [exzexport](https://github.com/mensi/ekzexport), and benefitted from the code in [homeassistant-statistics](https://github.com/klausj1/homeassistant-statistics) to import into Home Assistant.
+# EKZ Home Assistant Integration (HACS)
 
-## Installing
+This integration allows you to import and analyze EKZ electricity meter data directly in Home Assistant. It is installable via [HACS](https://hacs.xyz/) and supports automatic assignment of devices and entities per installation ID.
 
-The project is in an early stage, where the API is triggered for the entire date range of active installations (i.e. where there is no move-out date). This causes more API calls to EKZ than desirable. As a consequence, it is not yet published on [HACS](https://hacs.xyz), but it can be installed through HACS by adding this repo as a [custom repository](https://www.hacs.xyz/docs/faq/custom_repositories/). Usage is entirely at own risk.
+## Installation via HACS
 
-## Example Usage
+1. Open HACS and select "Custom Repositories".
+2. Add this GitHub repository (`https://github.com/dmoo500/ekz-ha`) as a custom repository (type: Integration).
+3. Search for "EKZ" and install the integration.
+4. Restart Home Assistant.
+5. Add the integration via the user interface and enter your credentials.
 
-When prompted by the integration, enter username and password for the [EKZ](https://ekz.ch) website. The password is stored in homeassistant and used to authenticate with EKZ, but not transmitted anywhere else.
+## How it works
+- For each EKZ installation ID, a separate device is created.
+- The corresponding entities (sensors, meta-entity) are assigned to the respective device.
+- The integration imports consumption data step by step and maintains metadata such as contract start and last import.
 
-Subsequently, this integration will pull data from EKZ every two hours. The data will be entered into entities called `Electricity consumption EKZ {self.installationId}`, with id `input_number.electricity_consumption_ekz_{self.installationId}`. Since data from EKZ is not live, you will not see a current state for these entities, but historic data is available. You can then select the entity you want in the energy dashboard.
+## History
+- Initially, an attempt was made to realize the import via the EKZ Energy Assistant. However, this required an additional add-on for login, which made setup more difficult.
+- Afterwards, the original ekz-ha GitHub repository was found and a fork was created to improve the integration and adapt it to personal requirements. This repository is the result of that work.
+- The integration was extended so that a separate device is created for each installation ID and all related entities refer to it.
+
+## Notes
+- Two-factor authentication (2FA) at EKZ must be disabled for login to work.
+- The integration is optimized for use in Home Assistant and is regularly improved.
+
+## Credits
+- Based on the original repository by [stefanloerwald/ekz-ha](https://github.com/stefanloerwald/ekz-ha).
+- Further developed and adapted by dmoo500.
