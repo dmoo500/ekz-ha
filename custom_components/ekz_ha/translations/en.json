@@ -19,7 +19,7 @@
       },
       "confirm": {
         "title": "EKZ – Confirm Authenticator",
-        "description": "Your current TOTP confirmation code is:\n\n## `{totp_code}`\n\n**TOTP codes are valid for 30 seconds — act quickly.**\n\nIf you are currently registering a new authenticator on [my.ekz.ch](https://my.ekz.ch):\n1. Enter the code above in the EKZ confirmation field.\n2. Enter your desired device name.\n3. Click Save/Confirm on the EKZ website.\n4. Then click **Submit** below.\n\nIf you have already registered the authenticator, simply click **Submit**."
+        "description": "Your current TOTP confirmation code is:\n\n## `{totp_code}`\n\n**TOTP codes are valid for 30 seconds — act quickly.**\n\nIf you are currently registering a new authenticator on my.ekz.ch:\n1. Enter the code above in the EKZ confirmation field.\n2. Enter your desired device name.\n3. Click Save/Confirm on the EKZ website.\n4. Then click **Submit** below.\n\nIf you have already registered the authenticator, simply click **Submit**."
       }
     },
     "error": {

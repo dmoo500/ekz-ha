@@ -19,7 +19,7 @@
       },
       "confirm": {
         "title": "EKZ – Authentifikator bestätigen",
-        "description": "Dein aktueller TOTP-Bestätigungscode lautet:\n\n## `{totp_code}`\n\n**TOTP-Codes sind nur 30 Sekunden gültig – schnell handeln.**\n\nFalls du gerade einen neuen Authentifikator auf [my.ekz.ch](https://my.ekz.ch) registrierst:\n1. Gib den Code oben in das EKZ-Bestätigungsfeld ein.\n2. Gib deinen gewünschten Gerätenamen ein.\n3. Klicke auf Speichern/Bestätigen auf der EKZ-Website.\n4. Klicke anschliessend unten auf **Absenden**.\n\nFalls du den Authentifikator bereits registriert hast, klicke einfach auf **Absenden**."
+        "description": "Dein aktueller TOTP-Bestätigungscode lautet:\n\n## `{totp_code}`\n\n**TOTP-Codes sind nur 30 Sekunden gültig – schnell handeln.**\n\nFalls du gerade einen neuen Authentifikator auf my.ekz.ch registrierst:\n1. Gib den Code oben in das EKZ-Bestätigungsfeld ein.\n2. Gib deinen gewünschten Gerätenamen ein.\n3. Klicke auf Speichern/Bestätigen auf der EKZ-Website.\n4. Klicke anschliessend unten auf **Absenden**.\n\nFalls du den Authentifikator bereits registriert hast, klicke einfach auf **Absenden**."
       }
     },
     "error": {
