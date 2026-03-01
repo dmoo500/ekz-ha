@@ -5,7 +5,7 @@ import logging
 import zoneinfo
 
 from homeassistant import core
-from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+from homeassistant.components.recorder.models import StatisticData, StatisticMeanType, StatisticMetaData
 from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
@@ -150,6 +150,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                     self.hass,
                     StatisticMetaData(
                         has_sum=True,
+                        mean_type=StatisticMeanType.NONE,
                         source="recorder",
                         statistic_id=f"sensor.ekz_electricity_consumption_{key}_predictions",
                         name=None,
@@ -164,6 +165,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                     self.hass,
                     StatisticMetaData(
                         has_sum=True,
+                        mean_type=StatisticMeanType.NONE,
                         source="recorder",
                         statistic_id=f"sensor.ekz_electricity_consumption_{key}",
                         name=None,
