@@ -163,19 +163,30 @@ class EkzFetcher:
             "last_full_day_sum": last_full_day_sum,
         }
 
-    def __init__(self, user: str, password: str) -> None:
+    def __init__(self, user: str, password: str, totp_secret: str | None = None) -> None:
         """Construct an instance of EkzFetcher."""
         self.user = user
         self.password = password
-        self.session = Session(self.user, self.password)
+        self.totp_secret = totp_secret
+        self.session = Session(self.user, self.password, self.totp_secret)
 
     async def getInstallations(self) -> dict:
         """Return a dict of installation IDs for current contracts (auszdat == None) with contract_start (einzdat)."""
-        installations = await self.session.installation_selection_data()
+        _LOGGER = logging.getLogger(__name__)
+        data = await self.session.installation_selection_data()
+        contracts = data.get("contracts") if isinstance(data, dict) else None
+        if not contracts:
+            _LOGGER.warning(
+                "[getInstallations] No contracts found in API response. "
+                "This may indicate a login failure or an empty account. Response: %s",
+                data,
+            )
+            raise ValueError("No contracts returned from EKZ API. Check credentials and that 2FA is disabled.")
         result = {}
-        for c in installations["contracts"]:
+        for c in contracts:
             if c.get("auszdat") is None:
                 result[c["anlage"]] = {
                     "contract_start": c.get("einzdat")
                 }
+        _LOGGER.debug("[getInstallations] Found installations: %s", list(result.keys()))
         return result

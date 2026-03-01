@@ -7,7 +7,8 @@
   "iot_class": "cloud_polling",
   "requirements": [
     "aiohttp>=3.0.0",
-    "beautifulsoup4>=4.0.0"
+    "beautifulsoup4>=4.0.0",
+    "pyotp>=2.9.0"
   ],
   "version": "0.1.9",
   "config_flow": true

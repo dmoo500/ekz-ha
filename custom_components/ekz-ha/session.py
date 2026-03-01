@@ -4,6 +4,7 @@ import logging
 
 import aiohttp
 from bs4 import BeautifulSoup
+import pyotp
 
 from .apitypes import ConsumptionData, InstallationData, InstallationSelectionData
 
@@ -20,12 +21,14 @@ class Session:
         self,
         username: str,
         password: str,
+        totp_secret: str | None = None,
     ) -> None:
         """Construct an instance of the EKZ session."""
         self._session = aiohttp.ClientSession()
         self._session.headers.add("User-Agent", "ekz-ha")
         self._username = username
         self._password = password
+        self._totp_secret = totp_secret.strip().replace(" ", "") if totp_secret else None
         self._logged_in = False
 
     def _init_session(self):
@@ -67,16 +70,41 @@ class Session:
                 html = await r.text()
                 if not r.ok:
                     raise ValueError("Login failed. Bad user/password?")
-                # Find the 2FA form, if available and get the action URL.
+                # Check for TOTP 2FA form
                 soup = BeautifulSoup(html, "html.parser")
-                twofaform = soup.select("form[id=kc-sms-code-login-form]")
-                if not twofaform:
-                    if "Es tut uns leid" in html:
-                        raise ValueError("myEKZ appears to be offline for maintenance")
-                else:
+                otpform = soup.select("form[id=otp]")
+                smscode_form = soup.select("form[id=kc-sms-code-login-form]")
+
+                if otpform:
+                    if not self._totp_secret:
+                        raise ValueError(
+                            "EKZ requires a TOTP code (authenticator app) but no TOTP secret was configured. "
+                            "Please reconfigure the integration and enter the TOTP secret key from your authenticator app."
+                        )
+                    otp_action = otpform[0]["action"]
+                    totp_code = pyotp.TOTP(self._totp_secret).now()
+                    _LOGGER.debug("[EKZ] Submitting TOTP code for 2FA")
+                    async with self._session.post(
+                        otp_action, data={"otp": totp_code}
+                    ) as r:
+                        html = await r.text()
+                        if not r.ok:
+                            raise ValueError("TOTP submission failed. Check your TOTP secret key.")
+                        soup = BeautifulSoup(html, "html.parser")
+                        # If OTP form still present, the code was wrong
+                        if soup.select("form[id=otp]"):
+                            raise ValueError(
+                                "TOTP code was rejected by EKZ. Check that your TOTP secret key is correct and that the system clock is accurate."
+                            )
+                elif smscode_form:
                     raise ValueError(
-                        "2FA is incompatible with the EKZ HA integration. Please disable 2FA at https://login.ekz.ch/auth/realms/myEKZ/account/?referrer=cos-myekz-webapp&referrer_uri=https://my.ekz.ch/nutzerdaten/#/account-security/signing-in."
+                        "EKZ requires an SMS 2FA code, which is not supported. "
+                        "You must disable SMS 2FA and switch to an authenticator app instead. "
+                        "Go to: https://login.ekz.ch/auth/realms/myEKZ/account/?referrer=cos-myekz-webapp"
+                        "&referrer_uri=https://my.ekz.ch/nutzerdaten/#/account-security/signing-in"
                     )
+                elif "Es tut uns leid" in html:
+                    raise ValueError("myEKZ appears to be offline for maintenance")
 
                 self._logged_in = True
 

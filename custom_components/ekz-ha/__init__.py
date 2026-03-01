@@ -181,7 +181,7 @@ class EkzCoordinator(DataUpdateCoordinator):
 async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up integration entry."""
     scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-    ekz_fetcher = EkzFetcher(entry.data["user"], entry.data["password"])
+    ekz_fetcher = EkzFetcher(entry.data["user"], entry.data["password"], entry.data.get("totp_secret"))
     coordinator = EkzCoordinator(hass, ekz_fetcher, scan_interval, entry)
 
     hass.data[DOMAIN] = {
