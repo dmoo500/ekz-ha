@@ -67,7 +67,9 @@ class Session:
             authurl = loginform[0]["action"]
 
             async with self._session.post(
-                authurl, data={"username": self._username, "password": self._password}
+                authurl,
+                data={"username": self._username, "password": self._password},
+                allow_redirects=True,
             ) as r:
                 html = await r.text()
                 if not r.ok:
@@ -80,91 +82,6 @@ class Session:
                 otpform = soup.select("form[id=otp]")
                 smscode_form = soup.select("form[id=kc-sms-code-login-form]")
 
-                # Keycloak credential/device selector — shown when more than one
-                # authenticator is registered (or sometimes even with one).
-                # Try a broad set of known Keycloak form IDs.
-                credential_form = soup.select(
-                    "form[id=select-credential], "
-                    "form[id=kc-select-credential-form], "
-                    "form[id=kc-totp-login-form]"
-                )
-                # Also detect via hidden input inside ANY form (Keycloak ≥ 18 style)
-                if not credential_form:
-                    credential_form = soup.select("form:has(input[name=selectedCredentialId])")
-
-                if credential_form:
-                    cred_action = credential_form[0].get("action") or authurl
-
-                    # Keycloak PatternFly style: radio inputs with name="selectedCredentialId"
-                    # The device label is in the sibling <label for="<input-id>">
-                    #   <span class="pf-c-tile__title">DeviceName</span>
-                    radio_inputs = credential_form[0].select("input[name=selectedCredentialId]")
-
-                    # Build list of (credential_id, device_label) tuples
-                    candidates: list[tuple[str, str]] = []
-                    for inp in radio_inputs:
-                        cred_id = inp.get("value", "")
-                        inp_id = inp.get("id", "")
-                        # Try to find the matching label and extract the title span
-                        label_tag = credential_form[0].select_one(f"label[for={inp_id}]") if inp_id else None
-                        if label_tag:
-                            title_span = label_tag.select_one("span.pf-c-tile__title")
-                            device_label = title_span.get_text(strip=True) if title_span else label_tag.get_text(strip=True)
-                        else:
-                            device_label = cred_id
-                        candidates.append((cred_id, device_label))
-
-                    _LOGGER.warning(
-                        "[EKZ login] Credential selector: available devices: %s",
-                        [(label, cred_id) for cred_id, label in candidates],
-                    )
-
-                    if not candidates:
-                        _LOGGER.warning(
-                            "[EKZ login] Credential selector found but no radio inputs with "
-                            "name=selectedCredentialId. Form HTML:\n%s", str(credential_form[0])[:4000]
-                        )
-                        raise ValueError(
-                            "EKZ showed a device/authenticator selector but no devices could be parsed. "
-                            "Please check the Home Assistant logs and report the HTML as a bug."
-                        )
-
-                    # Select by device_name if provided, otherwise use the pre-checked one or first
-                    chosen_id = None
-                    chosen_label = None
-                    if self._device_name:
-                        for cred_id, label in candidates:
-                            if self._device_name.lower() in label.lower():
-                                chosen_id, chosen_label = cred_id, label
-                                break
-                    if chosen_id is None:
-                        # Fall back to pre-checked radio (checked="checked") or first
-                        for inp in radio_inputs:
-                            if inp.has_attr("checked"):
-                                chosen_id = inp.get("value", "")
-                                chosen_label = next((lbl for cid, lbl in candidates if cid == chosen_id), chosen_id)
-                                break
-                    if chosen_id is None:
-                        chosen_id, chosen_label = candidates[0]
-
-                    _LOGGER.warning(
-                        "[EKZ login] Selecting device '%s' (id=%s)", chosen_label, chosen_id
-                    )
-
-                    async with self._session.post(
-                        cred_action,
-                        data={"selectedCredentialId": chosen_id},
-                        headers=HTML_HEADERS,
-                    ) as r2:
-                        html = await r2.text()
-
-                    soup = BeautifulSoup(html, "html.parser")
-                    all_form_ids = [f.get("id", "<no-id>") for f in soup.select("form")]
-                    _LOGGER.warning(
-                        "[EKZ login] Step: after credential selection. Forms on page: %s", all_form_ids
-                    )
-                    otpform = soup.select("form[id=otp]")
-
                 if otpform:
                     if not self._totp_secret:
                         raise ValueError(
@@ -173,9 +90,58 @@ class Session:
                         )
                     otp_action = otpform[0]["action"]
                     totp_code = pyotp.TOTP(self._totp_secret).now()
-                    _LOGGER.warning("[EKZ login] Submitting TOTP code.")
+
+                    # The OTP form may also contain a device selector (selectedCredentialId).
+                    # Both fields must be submitted together in a single POST.
+                    post_data: dict[str, str] = {"otp": totp_code}
+
+                    radio_inputs = otpform[0].select("input[name=selectedCredentialId]")
+                    if radio_inputs:
+                        # Build list of (credential_id, device_label) from the radio inputs
+                        candidates: list[tuple[str, str]] = []
+                        for inp in radio_inputs:
+                            cred_id = inp.get("value", "")
+                            inp_id = inp.get("id", "")
+                            label_tag = otpform[0].select_one(f"label[for={inp_id}]") if inp_id else None
+                            if label_tag:
+                                title_span = label_tag.select_one("span.pf-c-tile__title")
+                                device_label = title_span.get_text(strip=True) if title_span else label_tag.get_text(strip=True)
+                            else:
+                                device_label = cred_id
+                            candidates.append((cred_id, device_label))
+
+                        _LOGGER.warning(
+                            "[EKZ login] OTP form contains device selector. Available: %s",
+                            [(label, cred_id) for cred_id, label in candidates],
+                        )
+
+                        chosen_id = None
+                        chosen_label = None
+                        if self._device_name:
+                            for cred_id, label in candidates:
+                                if self._device_name.lower() in label.lower():
+                                    chosen_id, chosen_label = cred_id, label
+                                    break
+                        if chosen_id is None:
+                            # Use pre-checked radio first, then fallback to first option
+                            for inp in radio_inputs:
+                                if inp.has_attr("checked"):
+                                    chosen_id = inp.get("value", "")
+                                    chosen_label = next(
+                                        (lbl for cid, lbl in candidates if cid == chosen_id), chosen_id
+                                    )
+                                    break
+                        if chosen_id is None:
+                            chosen_id, chosen_label = candidates[0]
+
+                        _LOGGER.warning(
+                            "[EKZ login] Selecting device '%s' (id=%s)", chosen_label, chosen_id
+                        )
+                        post_data["selectedCredentialId"] = chosen_id
+
+                    _LOGGER.warning("[EKZ login] Submitting OTP form with fields: %s", list(post_data.keys()))
                     async with self._session.post(
-                        otp_action, data={"otp": totp_code}
+                        otp_action, data=post_data, allow_redirects=True
                     ) as r:
                         html = await r.text()
                         if not r.ok:
@@ -198,12 +164,11 @@ class Session:
                     )
                 elif "Es tut uns leid" in html:
                     raise ValueError("myEKZ appears to be offline for maintenance")
-                elif not credential_form:
-                    # No known form found after password — unexpected page state
+                else:
                     _LOGGER.warning(
                         "[EKZ login] No known form found after password submit. "
                         "Forms: %s — treating as logged in (may be redirect page).",
-                        all_form_ids,
+                        [f.get("id", "<no-id>") for f in soup.select("form")],
                     )
 
                 self._logged_in = True
