@@ -28,12 +28,12 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 
 **Setup steps:**
 1. Log in to [my.ekz.ch](https://my.ekz.ch) and open your account security settings.
-2. Click "Add authenticator app" and choose a device name.
+2. Click "Add authenticator app" and choose a device name of your choice.
 3. When the QR code is shown, also reveal the **secret key** (usually labeled "Key", "Secret" or "Schlüssel anzeigen"). It looks like `JBSWY3DPEHPK3PXP`. Copy it.
-4. Scan the QR code with your authenticator app (e.g. Google Authenticator, Aegis, Authy) and confirm the registration with the generated code on the EKZ website.
-5. Enter the secret key from step 3 into the **TOTP Secret** field when configuring this integration.
-
-The integration uses the secret key to automatically generate the correct 6-digit code on every login — no manual interaction required.
+4. Enter the secret key into the **TOTP Secret** field when configuring this integration and save.
+   - If you have **not yet confirmed** the authenticator on the EKZ website, the integration will automatically submit the confirmation code to EKZ during setup — completing the registration transparently.
+   - Afterwards, you can also scan the QR code into your authenticator app as a manual backup.
+5. The integration will use the secret key to generate the correct 6-digit code on every login automatically.
 
 > **Tip:** If you no longer have the secret key from when you set up the authenticator app, remove the existing authenticator in your EKZ account security settings and re-add it, noting down the secret key this time.
 
@@ -53,5 +53,5 @@ The integration uses the secret key to automatically generate the correct 6-digi
 - TOTP-based 2FA support was added after EKZ made 2FA mandatory and removed the option to disable it.
 
 ## Credits
-- Based on the original repository by [stefanloerwald/ekz-ha](https://github.com/stefanloerwald/ekz-ha).
-- Further developed and adapted by dmoo500.
+- Originally started by [stefanloerwald](https://github.com/stefanloerwald/ekz-ha).
+- Forked and actively maintained by [dmoo500](https://github.com/dmoo500/ekz-ha), who implemented all current features including device/entity management, statistics import, TOTP-based 2FA support, and HA 2025 compatibility.

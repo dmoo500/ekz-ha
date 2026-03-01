@@ -1,9 +1,9 @@
 {
   "domain": "ekz_ha",
   "name": "EKZ",
-  "codeowners": ["@stefanloerwald"],
+  "codeowners": ["@dmoo500"],
   "dependencies": [],
-  "documentation": "https://www.github.com/stefanloerwald/ekz-ha",
+  "documentation": "https://www.github.com/dmoo500/ekz-ha",
   "iot_class": "cloud_polling",
   "requirements": [
     "aiohttp>=3.0.0",

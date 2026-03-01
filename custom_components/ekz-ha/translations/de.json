@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "EKZ – Anmeldung",
-        "description": "Gib deine myEKZ-Zugangsdaten ein. EKZ verlangt eine Zwei-Faktor-Authentifizierung (2FA) über eine Authentifikator-App. Du musst den **Geheimschlüssel** aus der App-Einrichtung angeben – nicht den 6-stelligen Code.\n\nFalls du noch keine Authentifikator-App eingerichtet hast, melde dich auf [my.ekz.ch](https://my.ekz.ch) an → Kontosicherheit → Anmeldung und füge ein neues Authentifikator-Gerät hinzu. Wenn der QR-Code angezeigt wird, zeige den Geheimschlüssel an (z. B. `JBSWY3DPEHPK3PXP`) und gib ihn unten ein. SMS-basierte 2FA wird **nicht** unterstützt und muss durch eine Authentifikator-App ersetzt werden.",
+        "title": "EKZ – Zugangsdaten",
+        "description": "Gib deine myEKZ-Zugangsdaten und den TOTP-Geheimschlüssel aus der Authentifikator-App-Einrichtung ein.\n\nFalls du gerade ein neues Authentifikator-Gerät auf my.ekz.ch hinzufügst, zeigt der nächste Schritt den Bestätigungscode an, den du dort eingeben musst.",
         "data": {
           "user": "Benutzername (E-Mail)",
           "password": "Passwort",
@@ -12,13 +12,18 @@
         "data_description": {
           "user": "Die E-Mail-Adresse deines myEKZ-Kontos.",
           "password": "Dein myEKZ-Passwort.",
-          "totp_secret": "Der Geheimschlüssel, der bei der Einrichtung der Authentifikator-App auf my.ekz.ch angezeigt wurde. Dies ist eine Buchstaben-/Zahlenfolge wie `JBSWY3DPEHPK3PXP` – nicht der 6-stellige Code. Die Integration verwendet diesen Schlüssel, um den Anmeldecode automatisch zu generieren."
+          "totp_secret": "Der Geheimschlüssel, der beim Hinzufügen einer Authentifikator-App auf my.ekz.ch angezeigt wird. Dies ist eine Buchstaben-/Zahlenfolge wie `JBSWY3DPEHPK3PXP` – nicht der 6-stellige Code."
         }
+      },
+      "confirm": {
+        "title": "EKZ – Authentifikator bestätigen",
+        "description": "Dein aktueller TOTP-Bestätigungscode lautet:\n\n## `{totp_code}`\n\n**TOTP-Codes sind nur 30 Sekunden gültig – schnell handeln.**\n\nFalls du gerade einen neuen Authentifikator auf [my.ekz.ch](https://my.ekz.ch) registrierst:\n1. Gib den Code oben in das EKZ-Bestätigungsfeld ein.\n2. Gib deinen gewünschten Gerätenamen ein.\n3. Klicke auf Speichern/Bestätigen auf der EKZ-Website.\n4. Klicke anschliessend unten auf **Absenden**.\n\nFalls du den Authentifikator bereits registriert hast, klicke einfach auf **Absenden**."
       }
     },
     "error": {
       "invalid_auth": "Anmeldung fehlgeschlagen. Bitte überprüfe Benutzername und Passwort.",
-      "totp_required": "EKZ erfordert eine Authentifikator-App (TOTP), aber es wurde kein Geheimschlüssel eingegeben. Gib den TOTP-Geheimschlüssel aus der App-Einrichtung ein.",
+      "totp_secret_required": "Ein TOTP-Geheimschlüssel ist erforderlich.",
+      "invalid_totp_secret_format": "Das Format des TOTP-Geheimschlüssels ist ungültig. Es sollte eine Base32-Zeichenfolge wie `JBSWY3DPEHPK3PXP` sein.",
       "invalid_totp": "Der TOTP-Code wurde von EKZ abgelehnt. Stelle sicher, dass der Geheimschlüssel korrekt ist und die Systemzeit stimmt.",
       "sms_2fa_not_supported": "SMS-basierte 2FA wird nicht unterstützt. Wechsle zu einer Authentifikator-App unter my.ekz.ch → Kontosicherheit → Anmeldung.",
       "no_contracts": "Anmeldung erfolgreich, aber für dieses Konto wurden keine aktiven Verträge gefunden.",
