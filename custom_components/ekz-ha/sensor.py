@@ -55,7 +55,12 @@ class EkzEntity(CoordinatorEntity, SensorEntity):
         return self.coordinator.last_sums.get(self.installation_id)
 
     @property
-    def icon(self) -> str:(CoordinatorEntity, SensorEntity):
+    def icon(self) -> str:
+        """Icon to use in the frontend."""
+        return "mdi:lightning-bolt"
+
+
+class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
 
     def __init__(
         self, coordinator: DataUpdateCoordinator[str], installationId: str
