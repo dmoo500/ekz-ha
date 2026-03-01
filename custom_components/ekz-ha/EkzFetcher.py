@@ -98,7 +98,7 @@ class EkzFetcher:
         
         _LOGGER.debug(f"[import_full_history_to_statistics] Total values after deduplication (level={level}): {len(values)}")
         if values is None or values == {} or len(values) == 0:
-            _LOGGER.warning(f"[import_full_history_to_statistics] No data returned from get_consumption_data for installationId={installationId}, period {from_date} to {to_date} by type PK_VERB_15MIN - try with PK_VERB_TAG_METER")
+            _LOGGER.info(f"[import_full_history_to_statistics] No data returned from get_consumption_data for installationId={installationId}, period {from_date} to {to_date} by type PK_VERB_15MIN - try with PK_VERB_TAG_METER")
             data = await self.session.get_consumption_data(
                 installationId,
                 "PK_VERB_TAG_METER",
