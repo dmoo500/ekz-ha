@@ -72,82 +72,98 @@ class Session:
                 html = await r.text()
                 if not r.ok:
                     raise ValueError("Login failed. Bad user/password?")
-                # Check for TOTP 2FA form
+
                 soup = BeautifulSoup(html, "html.parser")
+                all_form_ids = [f.get("id", "<no-id>") for f in soup.select("form")]
+                _LOGGER.warning("[EKZ login] Step: after password. Forms on page: %s", all_form_ids)
+
                 otpform = soup.select("form[id=otp]")
                 smscode_form = soup.select("form[id=kc-sms-code-login-form]")
 
-                # Check for credential/device selector (appears before OTP when multiple
-                # authenticators are registered)
+                # Keycloak credential/device selector — shown when more than one
+                # authenticator is registered (or sometimes even with one).
+                # Try a broad set of known Keycloak form IDs.
                 credential_form = soup.select(
-                    "form[id=select-credential], form[id=kc-select-credential-form]"
+                    "form[id=select-credential], "
+                    "form[id=kc-select-credential-form], "
+                    "form[id=kc-totp-login-form]"
                 )
+                # Also detect via hidden input inside ANY form (Keycloak ≥ 18 style)
+                if not credential_form:
+                    credential_form = soup.select("form:has(input[name=selectedCredentialId])")
+
                 if credential_form:
-                    cred_action = credential_form[0]["action"]
-                    # Find all selectable credential items — Keycloak renders them as
-                    # <a> / <button> elements whose text is the device name, carrying a
-                    # data-kc-id or similar attribute with the credential id.
-                    options = credential_form[0].select(
-                        "input[name=credentialId]"
-                    ) or credential_form[0].select(
-                        "[data-credential-id]"
-                    ) or credential_form[0].select(
-                        "a[id^=credential], button[id^=credential]"
-                    )
-                    _LOGGER.debug(
-                        "[EKZ] Credential selector found. device_name=%s, options=%s",
-                        self._device_name,
-                        [o.get_text(strip=True) for o in options],
-                    )
-                    chosen = None
-                    if options:
-                        if self._device_name:
-                            # Try to match by text content
-                            for opt in options:
-                                label = opt.get_text(strip=True)
-                                cred_id = (
-                                    opt.get("value")
-                                    or opt.get("data-credential-id")
-                                    or opt.get("data-kc-id")
-                                    or opt.get("href", "")
-                                )
-                                if self._device_name.lower() in label.lower():
-                                    chosen = (cred_id, label)
-                                    break
-                        if chosen is None:
-                            # Fall back to first option
-                            opt = options[0]
-                            chosen = (
-                                opt.get("value")
-                                or opt.get("data-credential-id")
-                                or opt.get("data-kc-id")
-                                or opt.get("href", ""),
-                                opt.get_text(strip=True),
-                            )
-                        cred_id, cred_label = chosen
-                        _LOGGER.debug(
-                            "[EKZ] Selecting credential '%s' (id=%s)", cred_label, cred_id
-                        )
-                        # If the credential is a link (href), follow it; otherwise POST
-                        if cred_id and cred_id.startswith("http"):
-                            async with self._session.get(cred_id, headers=HTML_HEADERS) as r:
-                                html = await r.text()
-                                soup = BeautifulSoup(html, "html.parser")
-                                otpform = soup.select("form[id=otp]")
+                    cred_action = credential_form[0].get("action") or authurl
+
+                    # Keycloak PatternFly style: radio inputs with name="selectedCredentialId"
+                    # The device label is in the sibling <label for="<input-id>">
+                    #   <span class="pf-c-tile__title">DeviceName</span>
+                    radio_inputs = credential_form[0].select("input[name=selectedCredentialId]")
+
+                    # Build list of (credential_id, device_label) tuples
+                    candidates: list[tuple[str, str]] = []
+                    for inp in radio_inputs:
+                        cred_id = inp.get("value", "")
+                        inp_id = inp.get("id", "")
+                        # Try to find the matching label and extract the title span
+                        label_tag = credential_form[0].select_one(f"label[for={inp_id}]") if inp_id else None
+                        if label_tag:
+                            title_span = label_tag.select_one("span.pf-c-tile__title")
+                            device_label = title_span.get_text(strip=True) if title_span else label_tag.get_text(strip=True)
                         else:
-                            async with self._session.post(
-                                cred_action,
-                                data={"credentialId": cred_id},
-                                headers=HTML_HEADERS,
-                            ) as r:
-                                html = await r.text()
-                                soup = BeautifulSoup(html, "html.parser")
-                                otpform = soup.select("form[id=otp]")
-                    else:
+                            device_label = cred_id
+                        candidates.append((cred_id, device_label))
+
+                    _LOGGER.warning(
+                        "[EKZ login] Credential selector: available devices: %s",
+                        [(label, cred_id) for cred_id, label in candidates],
+                    )
+
+                    if not candidates:
                         _LOGGER.warning(
-                            "[EKZ] Credential selector found but no options could be parsed. "
-                            "Raw form: %s", credential_form[0]
+                            "[EKZ login] Credential selector found but no radio inputs with "
+                            "name=selectedCredentialId. Form HTML:\n%s", str(credential_form[0])[:4000]
                         )
+                        raise ValueError(
+                            "EKZ showed a device/authenticator selector but no devices could be parsed. "
+                            "Please check the Home Assistant logs and report the HTML as a bug."
+                        )
+
+                    # Select by device_name if provided, otherwise use the pre-checked one or first
+                    chosen_id = None
+                    chosen_label = None
+                    if self._device_name:
+                        for cred_id, label in candidates:
+                            if self._device_name.lower() in label.lower():
+                                chosen_id, chosen_label = cred_id, label
+                                break
+                    if chosen_id is None:
+                        # Fall back to pre-checked radio (checked="checked") or first
+                        for inp in radio_inputs:
+                            if inp.has_attr("checked"):
+                                chosen_id = inp.get("value", "")
+                                chosen_label = next((lbl for cid, lbl in candidates if cid == chosen_id), chosen_id)
+                                break
+                    if chosen_id is None:
+                        chosen_id, chosen_label = candidates[0]
+
+                    _LOGGER.warning(
+                        "[EKZ login] Selecting device '%s' (id=%s)", chosen_label, chosen_id
+                    )
+
+                    async with self._session.post(
+                        cred_action,
+                        data={"selectedCredentialId": chosen_id},
+                        headers=HTML_HEADERS,
+                    ) as r2:
+                        html = await r2.text()
+
+                    soup = BeautifulSoup(html, "html.parser")
+                    all_form_ids = [f.get("id", "<no-id>") for f in soup.select("form")]
+                    _LOGGER.warning(
+                        "[EKZ login] Step: after credential selection. Forms on page: %s", all_form_ids
+                    )
+                    otpform = soup.select("form[id=otp]")
 
                 if otpform:
                     if not self._totp_secret:
@@ -157,7 +173,7 @@ class Session:
                         )
                     otp_action = otpform[0]["action"]
                     totp_code = pyotp.TOTP(self._totp_secret).now()
-                    _LOGGER.debug("[EKZ] Submitting TOTP code for login 2FA")
+                    _LOGGER.warning("[EKZ login] Submitting TOTP code.")
                     async with self._session.post(
                         otp_action, data={"otp": totp_code}
                     ) as r:
@@ -165,6 +181,10 @@ class Session:
                         if not r.ok:
                             raise ValueError("TOTP submission failed. Check your TOTP secret key.")
                         soup = BeautifulSoup(html, "html.parser")
+                        all_form_ids = [f.get("id", "<no-id>") for f in soup.select("form")]
+                        _LOGGER.warning(
+                            "[EKZ login] Step: after TOTP submit. Forms on page: %s", all_form_ids
+                        )
                         if soup.select("form[id=otp]"):
                             raise ValueError(
                                 "TOTP code was rejected by EKZ. Check that your TOTP secret key is correct and that the system clock is accurate."
@@ -178,6 +198,13 @@ class Session:
                     )
                 elif "Es tut uns leid" in html:
                     raise ValueError("myEKZ appears to be offline for maintenance")
+                elif not credential_form:
+                    # No known form found after password — unexpected page state
+                    _LOGGER.warning(
+                        "[EKZ login] No known form found after password submit. "
+                        "Forms: %s — treating as logged in (may be redirect page).",
+                        all_form_ids,
+                    )
 
                 self._logged_in = True
 
