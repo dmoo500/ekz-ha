@@ -3,6 +3,7 @@
   "name": "EKZ",
   "codeowners": ["@dmoo500"],
   "dependencies": [],
+  "after_dependencies": ["recorder"],
   "documentation": "https://www.github.com/dmoo500/ekz-ha",
   "issue_tracker": "https://github.com/dmoo500/ekz-ha/issues",
   "iot_class": "cloud_polling",
