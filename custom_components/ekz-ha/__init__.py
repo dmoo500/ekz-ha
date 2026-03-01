@@ -6,9 +6,9 @@ import zoneinfo
 
 from homeassistant import core
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType, StatisticMetaData
-from homeassistant.components.recorder.statistics import async_import_statistics
+from homeassistant.components.recorder.statistics import async_import_statistics, get_last_statistics
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_SCAN_INTERVAL
+from homeassistant.const import CONF_SCAN_INTERVAL, UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -81,7 +81,25 @@ class EkzCoordinator(DataUpdateCoordinator):
                         datetime.strptime(contract_start, "%Y-%m-%d").date()
                     )
                     _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
+            
+            # Check if we have existing statistics to resume from
             last_import = meta_entity._last_import if meta_entity is not None else None
+            if last_import is None:
+                # Query the statistics database to find the last imported data point
+                statistic_id = f"sensor.ekz_electricity_consumption_{key}"
+                try:
+                    last_stats = await get_last_statistics(self.hass, 1, statistic_id, True, {"sum"})
+                    if last_stats and statistic_id in last_stats:
+                        last_stat_data = last_stats[statistic_id]
+                        if last_stat_data:
+                            last_import_dt = last_stat_data[0]["start"]
+                            last_import = last_import_dt.date()
+                            _LOGGER.info(f"Found existing statistics for {key}, resuming from {last_import}")
+                            if meta_entity is not None:
+                                meta_entity.set_last_import(last_import_dt)
+                except Exception as e:
+                    _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
+                    
             if contract_start is not None and last_import is None:
                 if isinstance(contract_start, str):
                     last_import = datetime.strptime(contract_start, "%Y-%m-%d").date()
@@ -158,6 +176,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                         statistic_id=f"sensor.ekz_electricity_consumption_{key}_predictions",
                         name=None,
                         unit_of_measurement="kWh",
+                        unit_class=UnitOfEnergy.KILO_WATT_HOUR,
                     ),
                     [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
                 )
@@ -177,6 +196,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                         statistic_id=f"sensor.ekz_electricity_consumption_{key}",
                         name=None,
                         unit_of_measurement="kWh",
+                        unit_class=UnitOfEnergy.KILO_WATT_HOUR,
                     ),
                     [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in statistics],
                 )
