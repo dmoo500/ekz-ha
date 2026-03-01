@@ -12,7 +12,7 @@ from homeassistant.const import CONF_SCAN_INTERVAL, UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .EkzFetcher import EkzFetcher
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
@@ -48,6 +48,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.consumption_averages = {}
         self.last_sums: dict[str, float] = {}
         self.last_prediction_sums: dict[str, float] = {}
+        self._normal_interval = update_interval  # remember configured interval for later restore
 
     async def _async_setup(self):
         """Set up the coordinator (nur Installationen laden)."""
@@ -85,7 +86,7 @@ class EkzCoordinator(DataUpdateCoordinator):
             # Check if we have existing statistics to resume from
             last_import = meta_entity._last_import if meta_entity is not None else None
             if last_import is None:
-                # Query the statistics database to find the last imported data point
+                # Query the statistics database to find the last imported data point AND last sum
                 statistic_id = f"sensor.ekz_electricity_consumption_{key}"
                 try:
                     last_stats = await get_last_statistics(self.hass, 1, statistic_id, True, {"sum"})
@@ -97,6 +98,10 @@ class EkzCoordinator(DataUpdateCoordinator):
                             _LOGGER.info(f"Found existing statistics for {key}, resuming from {last_import}")
                             if meta_entity is not None:
                                 meta_entity.set_last_import(last_import_dt)
+                            # Restore last known sum so the running total continues correctly
+                            if key not in self.last_sums and last_stat_data[0].get("sum") is not None:
+                                self.last_sums[key] = last_stat_data[0]["sum"]
+                                _LOGGER.info(f"Restored last_sum for {key}: {self.last_sums[key]}")
                 except Exception as e:
                     _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
                     
@@ -106,11 +111,44 @@ class EkzCoordinator(DataUpdateCoordinator):
                 else:
                     last_import = contract_start
 
+            # Import exactly one 30-day chunk per update cycle.
+            # The meta entity tracks last_import so the next cycle continues where we left off.
             result = await self.ekz_fetcher.import_full_history_to_statistics(
                 self.hass, key, contract_start, meta_entity,
                 running_sum_offset=self.last_sums.get(key, 0.0),
             )
-            _LOGGER.debug(f"Result for {key}: {result}")
+            _LOGGER.debug(f"Chunk result for {key}: from={result.get('from_date')} to={result.get('to_date')}, entries={len(result.get('statistics', []))}")
+            if result.get("statistics"):
+                last_stat = result["statistics"][-1]
+                self.last_sums[key] = last_stat["sum"]
+                _LOGGER.warning(f"Importing chunk of {len(result['statistics'])} statistics for {key}, range {result['statistics'][0]['start']} to {result['statistics'][-1]['start']}")
+                try:
+                    async_import_statistics(
+                        self.hass,
+                        StatisticMetaData(
+                            has_sum=True,
+                            mean_type=StatisticMeanType.NONE,
+                            source="recorder",
+                            statistic_id=f"sensor.ekz_electricity_consumption_{key}",
+                            name=None,
+                            unit_of_measurement="kWh",
+                        ),
+                        [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in result["statistics"]],
+                    )
+                except Exception as e:
+                    _LOGGER.error(f"Failed to import statistics chunk for {key}: {e}")
+            # Automatically adjust polling interval based on catch-up status
+            today = datetime.now(tz=ZRH).date()
+            to_date = result.get("to_date")
+            still_catching_up = to_date is not None and to_date < today
+            if still_catching_up:
+                if self.update_interval != CATCHUP_SCAN_INTERVAL:
+                    _LOGGER.info(f"Catch-up mode for {key}: imported up to {to_date}, switching poll interval to {CATCHUP_SCAN_INTERVAL}")
+                    self.update_interval = CATCHUP_SCAN_INTERVAL
+            else:
+                if self.update_interval != self._normal_interval:
+                    _LOGGER.info(f"Catch-up complete for {key}, restoring poll interval to {self._normal_interval}")
+                    self.update_interval = self._normal_interval
 
             # save averages for later use
             averages = None
@@ -180,35 +218,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                     [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
                 )
                 if predictions:
-                    self.last_prediction_sums[key] = predictions[-1]["sum"]
-            if len(result["statistics"]) > 0:
-                _LOGGER.debug(f"Statistics for {key}: {result['statistics']}")
-                statistics = result["statistics"]
-                last_stat = statistics[-1]
-                self.last_sums[key] = last_stat["sum"]
-                _LOGGER.warning(f"About to import {len(statistics)} statistics for {key}, range {statistics[0]['start']} to {statistics[-1]['start']}")
-                try:
-                    async_import_statistics(
-                        self.hass,
-                        StatisticMetaData(
-                            has_sum=True,
-                            mean_type=StatisticMeanType.NONE,
-                            source="recorder",
-                            statistic_id=f"sensor.ekz_electricity_consumption_{key}",
-                            name=None,
-                            unit_of_measurement="kWh",
-                        ),
-                        [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in statistics],
-                    )
-                    _LOGGER.warning(f"Successfully imported {len(statistics)} statistics for {key}")
-                except Exception as e:
-                    _LOGGER.error(f"Failed to import statistics for {key}: {e}")
-                    raise
-                _LOGGER.debug(f"Meta entity: {meta_entity}")
-                if statistics is not None and len(statistics) > 0 and meta_entity is not None:
-                    lastDate = statistics[len(statistics)-1]["start"]
-                    _LOGGER.debug(f"Setting last_import for {key} to {lastDate}")
-                    meta_entity.set_last_import(lastDate)     
+                    self.last_prediction_sums[key] = predictions[-1]["sum"]     
                 
 
 async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
