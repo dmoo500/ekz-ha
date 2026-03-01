@@ -176,7 +176,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                         statistic_id=f"sensor.ekz_electricity_consumption_{key}_predictions",
                         name=None,
                         unit_of_measurement="kWh",
-                        unit_class=UnitOfEnergy,
                     ),
                     [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
                 )
@@ -196,7 +195,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                         statistic_id=f"sensor.ekz_electricity_consumption_{key}",
                         name=None,
                         unit_of_measurement="kWh",
-                        unit_class=UnitOfEnergy,
                     ),
                     [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in statistics],
                 )
