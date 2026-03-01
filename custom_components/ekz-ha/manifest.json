@@ -11,5 +11,7 @@
     "pyotp>=2.9.0"
   ],
   "version": "0.1.9",
-  "config_flow": true
+  "config_flow": true,
+  "integration_type": "hub",
+  "loggers": ["custom_components.ekz_ha"]
 }
