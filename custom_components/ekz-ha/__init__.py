@@ -99,49 +99,38 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
                     _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
             
-            # One-time migration: check for old statistic_id and clear it
+            # Always query the statistics DB to get the true last import date and sum.
+            # This is reboot-safe: in-memory state is irrelevant, DB is the source of truth.
+            statistic_id = f"sensor.electricity_consumption_ekz_{key}"
+            try:
+                last_stats = await get_last_statistics(self.hass, 1, statistic_id, True, {"sum"})
+                if last_stats and statistic_id in last_stats:
+                    last_stat_data = last_stats[statistic_id]
+                    if last_stat_data:
+                        last_import_dt = last_stat_data[0]["start"]
+                        _LOGGER.info(f"Resuming import for {key} from {last_import_dt} (restored from DB)")
+                        meta_entity.set_last_import(last_import_dt)
+                        if last_stat_data[0].get("sum") is not None:
+                            self.last_sums[key] = last_stat_data[0]["sum"]
+            except Exception as e:
+                _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
+
+            # One-time migration: clear data stored under the old wrong statistic_id
             old_statistic_id = f"sensor.ekz_electricity_consumption_{key}"
             try:
                 from homeassistant.components.recorder.statistics import async_clear_statistics
-                last_stats = await get_last_statistics(self.hass, 1, old_statistic_id, True, {"sum"})
-                if last_stats and old_statistic_id in last_stats:
-                    _LOGGER.info(f"Found old statistics under wrong ID {old_statistic_id}, clearing to restart import with correct ID")
+                old_stats = await get_last_statistics(self.hass, 1, old_statistic_id, True, {"sum"})
+                if old_stats and old_statistic_id in old_stats:
+                    _LOGGER.info(f"Migrating: clearing old statistics under {old_statistic_id}")
                     await async_clear_statistics(self.hass, [old_statistic_id])
-                    # Reset last_import so we restart from beginning
-                    if meta_entity is not None:
-                        meta_entity.set_last_import(None)
-                        meta_entity._last_import = None
-                    last_import = None
             except Exception as e:
                 _LOGGER.debug(f"Migration check failed for {key}: {e}")
-            
-            # Check if we have existing statistics to resume from
-            last_import = meta_entity._last_import if meta_entity is not None else None
-            if last_import is None:
-                # Query the statistics database to find the last imported data point AND last sum
-                statistic_id = f"sensor.electricity_consumption_ekz_{key}"
-                try:
-                    last_stats = await get_last_statistics(self.hass, 1, statistic_id, True, {"sum"})
-                    if last_stats and statistic_id in last_stats:
-                        last_stat_data = last_stats[statistic_id]
-                        if last_stat_data:
-                            last_import_dt = last_stat_data[0]["start"]
-                            last_import = last_import_dt.date()
-                            _LOGGER.info(f"Found existing statistics for {key}, resuming from {last_import}")
-                            if meta_entity is not None:
-                                meta_entity.set_last_import(last_import_dt)
-                            # Restore last known sum so the running total continues correctly
-                            if key not in self.last_sums and last_stat_data[0].get("sum") is not None:
-                                self.last_sums[key] = last_stat_data[0]["sum"]
-                                _LOGGER.info(f"Restored last_sum for {key}: {self.last_sums[key]}")
-                except Exception as e:
-                    _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
-                    
-            if contract_start is not None and last_import is None:
-                if isinstance(contract_start, str):
-                    last_import = datetime.strptime(contract_start, "%Y-%m-%d").date()
-                else:
-                    last_import = contract_start
+
+            # Fall back to contract_start if no statistics exist yet (first-ever import)
+            if meta_entity._last_import is None and contract_start is not None:
+                start = contract_start if not isinstance(contract_start, str) else datetime.strptime(contract_start, "%Y-%m-%d")
+                meta_entity.set_last_import(start)
+                _LOGGER.info(f"No existing statistics for {key}, starting import from contract start {start}")
 
             # Import exactly one 30-day chunk per update cycle.
             # The meta entity tracks last_import so the next cycle continues where we left off.
