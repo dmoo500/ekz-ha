@@ -27,20 +27,23 @@ def is_dst_switchover_date(dt: datetime, timeZone: zoneinfo.ZoneInfo) -> bool:
 
 class EkzFetcher:
 
-    async def import_full_history_to_statistics(self, hass, installationId: str, statistic_id: str, contract_start: str, meta_entity=None):
+    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None):
         """Import data and return as dict for further processing, do not write to statistics directly."""
         _LOGGER = logging.getLogger(__name__)
-        _LOGGER.debug(f"[import_full_history_to_statistics] Start: installationId={installationId}, statistic_id={statistic_id}, contract_start={contract_start}")
+        _LOGGER.debug(f"[import_full_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
         # Determine start date
         if meta_entity is not None and meta_entity._last_import:
             from_date = meta_entity._last_import + timedelta(days=1)
             _LOGGER.debug(f"[import_full_history_to_statistics] Start import from last import: from_date={from_date}")
         else:
-            from_date = datetime.strptime(contract_start, "%Y-%m-%d")
+            if isinstance(contract_start, str):
+                from_date = datetime.strptime(contract_start, "%Y-%m-%d")
+            else:
+                from_date = datetime.combine(contract_start, datetime.min.time())
             _LOGGER.debug(f"[import_full_history_to_statistics] Start import from contract start: from_date={from_date}")
             # Set contract_start in meta_entity if not set
             if meta_entity is not None and meta_entity._contract_start is None:
-                meta_entity.set_contract_start(from_date)
+                meta_entity.set_contract_start(from_date.date())
         # Import exactly one month from from_date
         to_date = from_date + timedelta(days=30)
         _LOGGER.debug(f"[import_full_history_to_statistics] Fetching consumption data: installationId={installationId}, period {from_date} to {to_date}")

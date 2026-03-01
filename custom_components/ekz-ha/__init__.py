@@ -4,14 +4,12 @@ from datetime import datetime, timedelta
 import logging
 import zoneinfo
 
-import voluptuous as vol
-
-from homeassistant import config_entries, core
+from homeassistant import core
+from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
@@ -19,29 +17,6 @@ from .EkzFetcher import EkzFetcher
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 _LOGGER = logging.getLogger(__name__)
-
-
-class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Ekz config flow."""
-
-    # The schema version of the entries that it creates
-    # Home Assistant will call your migrate method if the version changes
-    VERSION = 1
-    MINOR_VERSION = 1
-
-    async def async_step_user(self, user_input):
-        """Configure EKZ login."""
-        if user_input is not None:
-            return self.async_create_entry(title="ekz", data=user_input)
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("user"): str,
-                    vol.Required("password"): str,
-                }
-            ),
-        )
 
 
 class EkzCoordinator(DataUpdateCoordinator):
@@ -106,12 +81,13 @@ class EkzCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
             last_import = meta_entity._last_import if meta_entity is not None else None
             if contract_start is not None and last_import is None:
-                last_import = datetime.strptime(
-                    contract_start, "%Y-%m-%d"
-                ).date()
+                if isinstance(contract_start, str):
+                    last_import = datetime.strptime(contract_start, "%Y-%m-%d").date()
+                else:
+                    last_import = contract_start
 
             result = await self.ekz_fetcher.import_full_history_to_statistics(
-                self.hass, key, last_import, contract_start, meta_entity
+                self.hass, key, contract_start, meta_entity
             )
             _LOGGER.debug(f"Result for {key}: {result}")
 
@@ -153,7 +129,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                             {
                                 "start": last_actual["start"],
                                 "sum": running_total,
-                                "stage": averages[mh_key],
+                                "state": averages[mh_key],
                             }
                         )
                     else:
@@ -162,7 +138,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                             {
                                 "start": last_actual["start"],
                                 "sum": running_total,
-                                "stage": last_actual["state"],
+                                "state": last_actual["state"],
                             }
                         )
                     last_actual["start"] = last_actual["start"] + timedelta(hours=1)
@@ -172,28 +148,28 @@ class EkzCoordinator(DataUpdateCoordinator):
                 )
                 async_import_statistics(
                     self.hass,
-                    {
-                        "has_sum": True,
-                        "source": "recorder",
-                        "statistic_id": f"sensor.ekz_electricity_consumption_{key}_predictions",
-                        "name": None,
-                        "unit_of_measurement": "kWh",
-                    },
-                    predictions,
+                    StatisticMetaData(
+                        has_sum=True,
+                        source="recorder",
+                        statistic_id=f"sensor.ekz_electricity_consumption_{key}_predictions",
+                        name=None,
+                        unit_of_measurement="kWh",
+                    ),
+                    [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
                 )
             if len(result["statistics"]) > 0:
                 _LOGGER.debug(f"Statistics for {key}: {result['statistics']}")
                 statistics = result["statistics"]
                 async_import_statistics(
                     self.hass,
-                    {
-                        "has_sum": True,
-                        "source": "recorder",
-                        "statistic_id": f"sensor.ekz_electricity_consumption_{key}",
-                        "name": None,
-                        "unit_of_measurement": "kWh",
-                    },
-                    statistics
+                    StatisticMetaData(
+                        has_sum=True,
+                        source="recorder",
+                        statistic_id=f"sensor.ekz_electricity_consumption_{key}",
+                        name=None,
+                        unit_of_measurement="kWh",
+                    ),
+                    [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in statistics],
                 )
                 _LOGGER.debug(f"Meta entity: {meta_entity}")
                 if statistics is not None and len(statistics) > 0 and meta_entity is not None:

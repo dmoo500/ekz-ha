@@ -2,10 +2,7 @@
 
 from datetime import date, datetime
 
-from homeassistant import core
-from homeassistant.components.date import DateEntity
-from homeassistant.components.number import NumberEntity
-from homeassistant.components.number.const import NumberDeviceClass
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -30,16 +27,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
     coordinator.meta_entities = meta_entities
     async_add_entities(sensors, True)
 
-class EkzEntity(CoordinatorEntity, NumberEntity):
+class EkzEntity(CoordinatorEntity, SensorEntity):
     """Represents the electricity consumption of an EKZ installation."""
     def __init__(
         self, coordinator: DataUpdateCoordinator[str], installationId: str
     ) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
-        self._attr_device_class = NumberDeviceClass.ENERGY
+        self._attr_device_class = SensorDeviceClass.ENERGY
+        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_native_unit_of_measurement = "kWh"
-        self._attr_unique_id = f"sensor.ekz_electricity_consumption_{installationId}"
+        self._attr_unique_id = f"ekz_electricity_consumption_{installationId}"
         self._attr_name = f"Electricity consumption EKZ {installationId}"
 
     @property
@@ -57,17 +55,18 @@ class EkzEntity(CoordinatorEntity, NumberEntity):
         return "mdi:lightning-bolt"
 
 
-class EkzPredictionEntity(CoordinatorEntity, NumberEntity):
+class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
 
     def __init__(
         self, coordinator: DataUpdateCoordinator[str], installationId: str
     ) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
-        self._attr_device_class = NumberDeviceClass.ENERGY
+        self._attr_device_class = SensorDeviceClass.ENERGY
+        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_native_unit_of_measurement = "kWh"
         self._attr_unique_id = (
-            f"sensor.ekz_electricity_consumption_{installationId}_prediction"
+            f"ekz_electricity_consumption_{installationId}_prediction"
         )
         self._attr_name = f"Electricity consumption prediction EKZ {installationId}"
 
@@ -92,7 +91,7 @@ class EkzMetaEntity(CoordinatorEntity):
     def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
-        self._attr_unique_id = f"sensor.ekz_electricity_consumption_{installationId}_meta"
+        self._attr_unique_id = f"ekz_electricity_consumption_{installationId}_meta"
         self._attr_name = f"EKZ {installationId} Meta"
         self._last_running_sum = None
         self._last_full_day = None
