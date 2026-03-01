@@ -106,7 +106,7 @@ class EkzFetcher:
                 to_date.strftime("%Y-%m-%d"),
             )
             level = get_level(data)
-            _LOGGER.warning(f"[import_full_history_to_statistics] PK_VERB_TAG_METER response level={level}, keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
+            _LOGGER.info(f"[import_full_history_to_statistics] PK_VERB_TAG_METER response level={level}, keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
             values = sortAndFilter(data)
             _LOGGER.debug(f"[import_full_history_to_statistics] Total values after deduplication (TAG_METER, level={level}): {len(values)}")
         
@@ -162,20 +162,20 @@ class EkzFetcher:
         last_import = None
         for i, value in enumerate(values):
             if i < 3:  # Log first 3 entries for debugging
-                _LOGGER.warning(f"[import_full_history_to_statistics] Sample value {i}: raw_timestamp={value['timestamp']}, date={value['date']}, value={value['value']}")
+                _LOGGER.debug(f"[import_full_history_to_statistics] Sample value {i}: raw_timestamp={value['timestamp']}, date={value['date']}, value={value['value']}")
             date_obj = datetime.strptime(value["date"], "%Y-%m-%d")
             if date_obj == max_date:
                 last_full_day_sum = min(running_sum, last_full_day_sum)
             # Fix timezone handling: EKZ timestamps are in Zurich time, need proper conversion to UTC
             normalized_ts = value["timestamp"]
             if i < 3:
-                _LOGGER.warning(f"[import_full_history_to_statistics] Normalized timestamp {i}: {normalized_ts}")
+                _LOGGER.debug(f"[import_full_history_to_statistics] Normalized timestamp {i}: {normalized_ts}")
             # Parse as naive datetime, then set Zurich timezone, then convert to UTC
             stat_dt_naive = datetime.strptime(normalized_ts, "%Y%m%d%H%M%S")
             stat_dt_zurich = stat_dt_naive.replace(tzinfo=ZRH)
             stat_dt = stat_dt_zurich.astimezone(UTC)
             if i < 3:
-                _LOGGER.warning(f"[import_full_history_to_statistics] Converted datetime {i}: naive={stat_dt_naive}, zurich={stat_dt_zurich}, utc={stat_dt}")
+                _LOGGER.debug(f"[import_full_history_to_statistics] Converted datetime {i}: naive={stat_dt_naive}, zurich={stat_dt_zurich}, utc={stat_dt}")
             statistics.append(
                 {
                     "start": stat_dt,
@@ -186,7 +186,7 @@ class EkzFetcher:
             if last_import is None or stat_dt > last_import:
                 last_import = stat_dt
         if statistics:
-            _LOGGER.warning(f"[import_full_history_to_statistics] Statistics range: first={statistics[0]['start']}, last={statistics[-1]['start']}")
+            _LOGGER.debug(f"[import_full_history_to_statistics] Statistics range: first={statistics[0]['start']}, last={statistics[-1]['start']}")
         _LOGGER.debug(f"[import_full_history_to_statistics] Total statistics entries prepared: {len(statistics)}")
         last_full_day = max_date
 

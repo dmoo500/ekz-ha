@@ -8,7 +8,7 @@ from homeassistant import core
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType, StatisticMetaData
 from homeassistant.components.recorder.statistics import async_import_statistics, get_last_statistics
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_SCAN_INTERVAL, UnitOfEnergy
+from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -121,7 +121,7 @@ class EkzCoordinator(DataUpdateCoordinator):
             if result.get("statistics"):
                 last_stat = result["statistics"][-1]
                 self.last_sums[key] = last_stat["sum"]
-                _LOGGER.warning(f"Importing chunk of {len(result['statistics'])} statistics for {key}, range {result['statistics'][0]['start']} to {result['statistics'][-1]['start']}")
+                _LOGGER.info(f"Importing chunk of {len(result['statistics'])} statistics for {key}, range {result['statistics'][0]['start']} to {result['statistics'][-1]['start']}")
                 try:
                     async_import_statistics(
                         self.hass,
@@ -132,6 +132,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                             statistic_id=f"sensor.ekz_electricity_consumption_{key}",
                             name=None,
                             unit_of_measurement="kWh",
+                            unit_class="energy",
                         ),
                         [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in result["statistics"]],
                     )
@@ -214,6 +215,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                         statistic_id=f"sensor.ekz_electricity_consumption_{key}_predictions",
                         name=None,
                         unit_of_measurement="kWh",
+                        unit_class="energy",
                     ),
                     [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
                 )
