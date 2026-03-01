@@ -14,13 +14,14 @@ This integration allows you to import and analyze EKZ electricity meter data dir
 
 ## Configuration
 
-During setup, the following fields are required:
+During setup, the following fields are required or optional:
 
-| Field | Description |
-|---|---|
-| **Username** | Your myEKZ login e-mail address |
-| **Password** | Your myEKZ password |
-| **TOTP Secret** | The secret key from your authenticator app (see below) |
+| Field | Required | Description |
+|---|---|---|
+| **Username** | ✅ | Your myEKZ login e-mail address |
+| **Password** | ✅ | Your myEKZ password |
+| **TOTP Secret** | ✅ | The secret key from your authenticator app (see below) |
+| **Device Name** | ☑️ optional | The name of the authenticator device as shown in your EKZ account (e.g. `Home Assistant`). Only needed if you have **multiple** authenticator devices registered — used to select the correct one during login. Leave empty to use the default/pre-selected device. |
 
 ### Two-Factor Authentication (2FA)
 
@@ -28,7 +29,7 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 
 **Setup steps:**
 1. Log in to [my.ekz.ch](https://my.ekz.ch) and open your account security settings.
-2. Click "Add authenticator app" and choose a device name of your choice.
+2. Click "Add authenticator app" and choose a device name (e.g. `Home Assistant`). **Note this name** — you may enter it as **Device Name** in the integration setup if you have multiple authenticator devices registered.
 3. When the QR code is shown, also reveal the **secret key** (usually labeled "Key", "Secret" or "Schlüssel anzeigen"). It looks like `JBSWY3DPEHPK3PXP`. Copy it.
 4. Enter the secret key into the **TOTP Secret** field when configuring this integration and save.
    - If you have **not yet confirmed** the authenticator on the EKZ website, the integration will automatically submit the confirmation code to EKZ during setup — completing the registration transparently.
@@ -61,7 +62,7 @@ To speed up the backfill without overwhelming the EKZ API, the integration autom
 | Backlog present (historical data not yet fully imported) | **5 minutes** |
 | Caught up (import is up to date) | **20 minutes** |
 
-Once all historical data is imported, the polling interval switches back to normal automatically. Both intervals can be changed in [`const.py`](custom_components/ekz-ha/const.py).
+Once all historical data is imported, the polling interval switches back to normal automatically. Both intervals can be changed in [`const.py`](custom_components/ekz_ha/const.py).
 
 #### Energy Dashboard
 
