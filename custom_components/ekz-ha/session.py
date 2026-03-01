@@ -79,7 +79,7 @@ class Session:
                 all_form_ids = [f.get("id", "<no-id>") for f in soup.select("form")]
                 _LOGGER.warning("[EKZ login] Step: after password. Forms on page: %s", all_form_ids)
 
-                otpform = soup.select("form[id=otp]")
+                otpform = soup.select("form[id=otp], form[id=kc-otp-login-form]")
                 smscode_form = soup.select("form[id=kc-sms-code-login-form]")
 
                 if otpform:
@@ -151,7 +151,7 @@ class Session:
                         _LOGGER.warning(
                             "[EKZ login] Step: after TOTP submit. Forms on page: %s", all_form_ids
                         )
-                        if soup.select("form[id=otp]"):
+                        if soup.select("form[id=otp], form[id=kc-otp-login-form]"):
                             raise ValueError(
                                 "TOTP code was rejected by EKZ. Check that your TOTP secret key is correct and that the system clock is accurate."
                             )
