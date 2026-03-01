@@ -89,7 +89,8 @@ class EkzCoordinator(DataUpdateCoordinator):
                     last_import = contract_start
 
             result = await self.ekz_fetcher.import_full_history_to_statistics(
-                self.hass, key, contract_start, meta_entity
+                self.hass, key, contract_start, meta_entity,
+                running_sum_offset=self.last_sums.get(key, 0.0),
             )
             _LOGGER.debug(f"Result for {key}: {result}")
 

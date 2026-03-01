@@ -27,7 +27,7 @@ def is_dst_switchover_date(dt: datetime, timeZone: zoneinfo.ZoneInfo) -> bool:
 
 class EkzFetcher:
 
-    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None):
+    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0):
         """Import data and return as dict for further processing, do not write to statistics directly."""
         _LOGGER = logging.getLogger(__name__)
         _LOGGER.debug(f"[import_full_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
@@ -57,21 +57,33 @@ class EkzFetcher:
             
         _LOGGER.debug(f"[import_full_history_to_statistics] Consumption data loaded: {len(data.get('seriesNt', {}).get('values', [])) + len(data.get('seriesHt', {}).get('values', []))} values")
         # --- Tagesaggregation und Summenberechnung wie in fetchNewInstallationData ---
-        def sortAndFilter(data):
+        def get_level(d):
+            """Extract the response level (DAY or QUARTER_HOUR) from a consumption data response."""
+            for series_key in ("seriesNt", "seriesHt"):
+                s = d.get(series_key)
+                if s and isinstance(s, dict) and "level" in s:
+                    return s["level"]
+            return d.get("level", "QUARTER_HOUR")
+
+        def normalize_timestamp(ts):
+            """Convert any timestamp format to a 14-digit string YYYYMMDDHHMMSS."""
+            s = str(ts).replace("-", "").replace("T", "").replace(":", "").replace(" ", "")
+            return s[:14].ljust(14, "0")
+
+        def sortAndFilter(d):
             all_fetched_data = [[]]
-            if "seriesNt" in data and data["seriesNt"] is not None:
+            if "seriesNt" in d and d["seriesNt"] is not None:
                 all_fetched_data.append(
                     dict(x, tariff="NT")
-                    for x in data["seriesNt"]["values"]
+                    for x in d["seriesNt"]["values"]
                     if x["status"] != "NOT_AVAILABLE" and x["status"] != "MISSING"
                 )
-            if "seriesHt" in data and data["seriesHt"] is not None:
+            if "seriesHt" in d and d["seriesHt"] is not None:
                 all_fetched_data.append(
                     dict(x, tariff="HT")
-                    for x in data["seriesHt"]["values"]
+                    for x in d["seriesHt"]["values"]
                     if x["status"] != "NOT_AVAILABLE" and x["status"] != "MISSING"
                 )
-            _LOGGER.debug(f"[import_full_history_to_statistics] Total fetched values before aggregation: {all_fetched_data}")
             values = sorted(
                 itertools.chain(*all_fetched_data), key=lambda x: x["timestamp"]
             )
@@ -80,9 +92,11 @@ class EkzFetcher:
             ]  # deduplicate
             values = sorted(values, key=lambda x: x["timestamp"])
             return values
+
+        level = get_level(data)
         values = sortAndFilter(data)
         
-        _LOGGER.debug(f"[import_full_history_to_statistics] Total values after deduplication: {len(values)}")
+        _LOGGER.debug(f"[import_full_history_to_statistics] Total values after deduplication (level={level}): {len(values)}")
         if values is None or values == {} or len(values) == 0:
             _LOGGER.warning(f"[import_full_history_to_statistics] No data returned from get_consumption_data for installationId={installationId}, period {from_date} to {to_date} by type PK_VERB_15MIN - try with PK_VERB_TAG_METER")
             data = await self.session.get_consumption_data(
@@ -91,17 +105,21 @@ class EkzFetcher:
                 from_date.strftime("%Y-%m-%d"),
                 to_date.strftime("%Y-%m-%d"),
             )
+            level = get_level(data)
+            _LOGGER.warning(f"[import_full_history_to_statistics] PK_VERB_TAG_METER response level={level}, keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
             values = sortAndFilter(data)
-            _LOGGER.debug(f"[import_full_history_to_statistics] Total values after deduplication: {len(values)}")
+            _LOGGER.debug(f"[import_full_history_to_statistics] Total values after deduplication (TAG_METER, level={level}): {len(values)}")
         
-        # Aggregate per day
+        is_day_level = (level == "DAY")
+
+        # Aggregate per day (for QUARTER_HOUR: sum multiple slots; for DAY: passthrough with 1 entry per day)
         def total(group):
             group = list(group)
             return {
                 "value": sum([x["value"] for x in group]),
                 "date": min([x["date"] for x in group]),
-                "time": min([x["time"] for x in group]),
-                "timestamp": min([str(x["timestamp"])[0:10] + "0000" for x in group]),
+                "time": min([x.get("time", "00:00") for x in group]),
+                "timestamp": normalize_timestamp(min([str(x["timestamp"])[0:10] for x in group])),
             }
 
         values = [
@@ -111,22 +129,32 @@ class EkzFetcher:
         values = sorted(values, key=lambda x: x["timestamp"])
         _LOGGER.debug(f"[import_full_history_to_statistics] Total values after daily aggregation: {len(values)}")
 
-        # Find the last day that has 24 entries. Or 23 or 25, if it's daylight savings switchover...
-        max_date = None
-        for k, v in itertools.groupby(values, lambda v: v["date"]):
-            date = datetime.strptime(k, "%Y-%m-%d")
-            expected_hours_per_day = (
-                23
-                if is_dst_switchover_date(date, ZRH) and date.month < 6
-                else 25
-                if is_dst_switchover_date(date, ZRH)
-                else 24
-            )
-            if len(list(v)) == expected_hours_per_day:
-                if max_date is None or date > max_date:
-                    max_date = date
+        if is_day_level:
+            # For daily data each entry IS a full day — accept all days except today (may be partial)
+            today_str = datetime.now(tz=ZRH).strftime("%Y-%m-%d")
+            max_date = None
+            for value in values:
+                if value["date"] < today_str:
+                    d = datetime.strptime(value["date"], "%Y-%m-%d")
+                    if max_date is None or d > max_date:
+                        max_date = d
+        else:
+            # For 15-min data find the last day that has 24 entries (or 23/25 for DST switchover)
+            max_date = None
+            for k, v in itertools.groupby(values, lambda v: v["date"]):
+                date = datetime.strptime(k, "%Y-%m-%d")
+                expected_hours_per_day = (
+                    23
+                    if is_dst_switchover_date(date, ZRH) and date.month < 6
+                    else 25
+                    if is_dst_switchover_date(date, ZRH)
+                    else 24
+                )
+                if len(list(v)) == expected_hours_per_day:
+                    if max_date is None or date > max_date:
+                        max_date = date
 
-        running_sum = 0
+        running_sum = running_sum_offset
         last_full_day_sum = math.inf
         statistics = []
         last_import = None
@@ -134,7 +162,7 @@ class EkzFetcher:
             date_obj = datetime.strptime(value["date"], "%Y-%m-%d")
             if date_obj == max_date:
                 last_full_day_sum = min(running_sum, last_full_day_sum)
-            stat_dt = datetime.strptime(str(value["timestamp"]), "%Y%m%d%H%M%S").astimezone(tz=UTC)
+            stat_dt = datetime.strptime(value["timestamp"], "%Y%m%d%H%M%S").astimezone(tz=UTC)
             statistics.append(
                 {
                     "start": stat_dt,
