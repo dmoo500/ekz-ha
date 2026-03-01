@@ -50,12 +50,12 @@ class EkzEntity(CoordinatorEntity, SensorEntity):
         }
 
     @property
-    def icon(self) -> str:
-        """Icon to use in the frontend."""
-        return "mdi:lightning-bolt"
+    def native_value(self):
+        """Return the latest cumulative consumption sum."""
+        return self.coordinator.last_sums.get(self.installation_id)
 
-
-class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
+    @property
+    def icon(self) -> str:(CoordinatorEntity, SensorEntity):
 
     def __init__(
         self, coordinator: DataUpdateCoordinator[str], installationId: str
@@ -80,19 +80,25 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
         }
 
     @property
+    def native_value(self):
+        """Return the latest cumulative prediction sum."""
+        return self.coordinator.last_prediction_sums.get(self.installation_id)
+
+    @property
     def icon(self) -> str:
         """Icon to use in the frontend."""
         return "mdi:lightning-bolt"
 
 
 
-# Neue Meta-Entity für interne Statusdaten
-class EkzMetaEntity(CoordinatorEntity):
+# Meta-Entity: speichert Importstatus und zeigt letztes Importdatum als Zustand
+class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._attr_unique_id = f"ekz_electricity_consumption_{installationId}_meta"
-        self._attr_name = f"EKZ {installationId} Meta"
+        self._attr_name = f"EKZ {installationId} Letzter Import"
+        self._attr_device_class = SensorDeviceClass.TIMESTAMP
         self._last_running_sum = None
         self._last_full_day = None
         self._last_get_all = None
@@ -108,6 +114,22 @@ class EkzMetaEntity(CoordinatorEntity):
             "manufacturer": "EKZ",
             "model": "Stromzähler",
         }
+
+    @property
+    def native_value(self):
+        """Return the last successfully imported statistic timestamp."""
+        if self._last_import is None:
+            return None
+        if isinstance(self._last_import, datetime):
+            return self._last_import
+        # date → datetime midnight Zurich time
+        from datetime import timezone
+        return datetime(
+            self._last_import.year,
+            self._last_import.month,
+            self._last_import.day,
+            tzinfo=timezone.utc,
+        )
 
     @property
     def icon(self) -> str:

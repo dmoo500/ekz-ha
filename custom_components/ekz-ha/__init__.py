@@ -46,6 +46,8 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.config = config
         self.installations = []
         self.consumption_averages = {}
+        self.last_sums: dict[str, float] = {}
+        self.last_prediction_sums: dict[str, float] = {}
 
     async def _async_setup(self):
         """Set up the coordinator (nur Installationen laden)."""
@@ -158,9 +160,13 @@ class EkzCoordinator(DataUpdateCoordinator):
                     ),
                     [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
                 )
+                if predictions:
+                    self.last_prediction_sums[key] = predictions[-1]["sum"]
             if len(result["statistics"]) > 0:
                 _LOGGER.debug(f"Statistics for {key}: {result['statistics']}")
                 statistics = result["statistics"]
+                last_stat = statistics[-1]
+                self.last_sums[key] = last_stat["sum"]
                 async_import_statistics(
                     self.hass,
                     StatisticMetaData(
