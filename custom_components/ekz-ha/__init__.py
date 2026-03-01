@@ -19,6 +19,22 @@ ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 _LOGGER = logging.getLogger(__name__)
 
 
+def _make_stat_meta(statistic_id: str) -> StatisticMetaData:
+    """Build StatisticMetaData, adding unit_class='energy' when supported (HA 2024.3+)."""
+    kwargs = {
+        "has_sum": True,
+        "mean_type": StatisticMeanType.NONE,
+        "source": "recorder",
+        "statistic_id": statistic_id,
+        "name": None,
+        "unit_of_measurement": "kWh",
+    }
+    try:
+        return StatisticMetaData(**kwargs, unit_class="energy")
+    except TypeError:
+        return StatisticMetaData(**kwargs)
+
+
 class EkzCoordinator(DataUpdateCoordinator):
     """Coordinates data fetching from EKZ."""
 
@@ -87,7 +103,7 @@ class EkzCoordinator(DataUpdateCoordinator):
             last_import = meta_entity._last_import if meta_entity is not None else None
             if last_import is None:
                 # Query the statistics database to find the last imported data point AND last sum
-                statistic_id = f"sensor.ekz_electricity_consumption_{key}"
+                statistic_id = f"sensor.electricity_consumption_ekz_{key}"
                 try:
                     last_stats = await get_last_statistics(self.hass, 1, statistic_id, True, {"sum"})
                     if last_stats and statistic_id in last_stats:
@@ -125,15 +141,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 try:
                     async_import_statistics(
                         self.hass,
-                        StatisticMetaData(
-                            has_sum=True,
-                            mean_type=StatisticMeanType.NONE,
-                            source="recorder",
-                            statistic_id=f"sensor.ekz_electricity_consumption_{key}",
-                            name=None,
-                            unit_of_measurement="kWh",
-                            unit_class="energy",
-                        ),
+                        _make_stat_meta(f"sensor.electricity_consumption_ekz_{key}"),
                         [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in result["statistics"]],
                     )
                 except Exception as e:
@@ -208,15 +216,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 )
                 async_import_statistics(
                     self.hass,
-                    StatisticMetaData(
-                        has_sum=True,
-                        mean_type=StatisticMeanType.NONE,
-                        source="recorder",
-                        statistic_id=f"sensor.ekz_electricity_consumption_{key}_predictions",
-                        name=None,
-                        unit_of_measurement="kWh",
-                        unit_class="energy",
-                    ),
+                    _make_stat_meta(f"sensor.electricity_consumption_ekz_{key}_predictions"),
                     [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
                 )
                 if predictions:

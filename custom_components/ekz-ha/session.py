@@ -77,7 +77,7 @@ class Session:
 
                 soup = BeautifulSoup(html, "html.parser")
                 all_form_ids = [f.get("id", "<no-id>") for f in soup.select("form")]
-                _LOGGER.warning("[EKZ login] Step: after password. Forms on page: %s", all_form_ids)
+                _LOGGER.debug("[EKZ login] Step: after password. Forms on page: %s", all_form_ids)
 
                 otpform = soup.select("form[id=otp], form[id=kc-otp-login-form]")
                 smscode_form = soup.select("form[id=kc-sms-code-login-form]")
@@ -110,7 +110,7 @@ class Session:
                                 device_label = cred_id
                             candidates.append((cred_id, device_label))
 
-                        _LOGGER.warning(
+                        _LOGGER.info(
                             "[EKZ login] OTP form contains device selector. Available: %s",
                             [(label, cred_id) for cred_id, label in candidates],
                         )
@@ -134,12 +134,12 @@ class Session:
                         if chosen_id is None:
                             chosen_id, chosen_label = candidates[0]
 
-                        _LOGGER.warning(
+                        _LOGGER.info(
                             "[EKZ login] Selecting device '%s' (id=%s)", chosen_label, chosen_id
                         )
                         post_data["selectedCredentialId"] = chosen_id
 
-                    _LOGGER.warning("[EKZ login] Submitting OTP form with fields: %s", list(post_data.keys()))
+                    _LOGGER.debug("[EKZ login] Submitting OTP form with fields: %s", list(post_data.keys()))
                     async with self._session.post(
                         otp_action, data=post_data, allow_redirects=True
                     ) as r:
@@ -148,7 +148,7 @@ class Session:
                             raise ValueError("TOTP submission failed. Check your TOTP secret key.")
                         soup = BeautifulSoup(html, "html.parser")
                         all_form_ids = [f.get("id", "<no-id>") for f in soup.select("form")]
-                        _LOGGER.warning(
+                        _LOGGER.debug(
                             "[EKZ login] Step: after TOTP submit. Forms on page: %s", all_form_ids
                         )
                         if soup.select("form[id=otp], form[id=kc-otp-login-form]"):
@@ -165,7 +165,7 @@ class Session:
                 elif "Es tut uns leid" in html:
                     raise ValueError("myEKZ appears to be offline for maintenance")
                 else:
-                    _LOGGER.warning(
+                    _LOGGER.info(
                         "[EKZ login] No known form found after password submit. "
                         "Forms: %s — treating as logged in (may be redirect page).",
                         [f.get("id", "<no-id>") for f in soup.select("form")],
