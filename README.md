@@ -28,12 +28,14 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 
 **Setup steps:**
 1. Log in to [my.ekz.ch](https://my.ekz.ch) and open your account security settings.
-2. Add a new authenticator app (e.g. Google Authenticator, Aegis, Authy).
-3. When the QR code is shown, also reveal the **secret key** (usually labeled "Key", "Secret" or "Schlüssel anzeigen"). It looks like `JBSWY3DPEHPK3PXP`.
-4. Scan the QR code with your app as usual — the app will continue to work normally.
-5. Enter that same secret key into the **TOTP Secret** field when configuring this integration.
+2. Click "Add authenticator app" and choose a device name.
+3. When the QR code is shown, also reveal the **secret key** (usually labeled "Key", "Secret" or "Schlüssel anzeigen"). It looks like `JBSWY3DPEHPK3PXP`. Copy it.
+4. Scan the QR code with your authenticator app (e.g. Google Authenticator, Aegis, Authy) and confirm the registration with the generated code on the EKZ website.
+5. Enter the secret key from step 3 into the **TOTP Secret** field when configuring this integration.
 
-The integration uses this secret key to automatically generate the correct 6-digit code on every login — no manual interaction required.
+The integration uses the secret key to automatically generate the correct 6-digit code on every login — no manual interaction required.
+
+> **Tip:** If you no longer have the secret key from when you set up the authenticator app, remove the existing authenticator in your EKZ account security settings and re-add it, noting down the secret key this time.
 
 > **Note:** If your account currently uses SMS 2FA, you must **disable it first** and switch to an authenticator app. Go to your EKZ account security settings:
 > [login.ekz.ch → Account Security → Signing In](https://login.ekz.ch/auth/realms/myEKZ/account/?referrer=cos-myekz-webapp&referrer_uri=https://my.ekz.ch/nutzerdaten/#/account-security/signing-in)

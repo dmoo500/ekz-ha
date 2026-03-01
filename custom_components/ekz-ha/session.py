@@ -83,7 +83,7 @@ class Session:
                         )
                     otp_action = otpform[0]["action"]
                     totp_code = pyotp.TOTP(self._totp_secret).now()
-                    _LOGGER.debug("[EKZ] Submitting TOTP code for 2FA")
+                    _LOGGER.debug("[EKZ] Submitting TOTP code for login 2FA")
                     async with self._session.post(
                         otp_action, data={"otp": totp_code}
                     ) as r:
@@ -91,7 +91,6 @@ class Session:
                         if not r.ok:
                             raise ValueError("TOTP submission failed. Check your TOTP secret key.")
                         soup = BeautifulSoup(html, "html.parser")
-                        # If OTP form still present, the code was wrong
                         if soup.select("form[id=otp]"):
                             raise ValueError(
                                 "TOTP code was rejected by EKZ. Check that your TOTP secret key is correct and that the system clock is accurate."

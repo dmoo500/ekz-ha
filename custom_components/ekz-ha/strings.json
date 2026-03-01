@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EKZ – Login",
+        "description": "Enter your myEKZ credentials. EKZ requires two-factor authentication (2FA) via an authenticator app. You need to provide the **secret key** from your authenticator app setup — not the 6-digit code.\n\nIf you haven't set up an authenticator app yet, log in to [my.ekz.ch](https://my.ekz.ch) → Account Security → Signing In and add a new authenticator device. When the QR code is displayed, reveal the secret key (e.g. `JBSWY3DPEHPK3PXP`) and enter it below. SMS-based 2FA is **not** supported and must be replaced with an authenticator app.",
+        "data": {
+          "user": "Username (e-mail)",
+          "password": "Password",
+          "totp_secret": "TOTP Secret Key"
+        },
+        "data_description": {
+          "user": "Your myEKZ login e-mail address.",
+          "password": "Your myEKZ password.",
+          "totp_secret": "The secret key shown when you set up your authenticator app on my.ekz.ch. This is a letter/number string like `JBSWY3DPEHPK3PXP` — not the 6-digit code. The integration uses this to generate the login code automatically."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Login failed. Please check your username and password.",
+      "totp_required": "EKZ requires an authenticator app (TOTP) but no secret key was entered. Enter the TOTP secret key from your authenticator app setup.",
+      "invalid_totp": "The TOTP code was rejected by EKZ. Make sure the secret key is correct and that your system clock is accurate.",
+      "sms_2fa_not_supported": "SMS-based 2FA is not supported. Please switch to an authenticator app at my.ekz.ch → Account Security → Signing In.",
+      "no_contracts": "Login succeeded but no active contracts were found for this account.",
+      "ekz_maintenance": "The myEKZ portal is currently offline for maintenance. Please try again later.",
+      "cannot_connect": "Could not connect to myEKZ. Please check your network connection and try again."
+    },
+    "abort": {
+      "already_configured": "EKZ is already configured."
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EKZ – Anmeldung",
+        "description": "Gib deine myEKZ-Zugangsdaten ein. EKZ verlangt eine Zwei-Faktor-Authentifizierung (2FA) über eine Authentifikator-App. Du musst den **Geheimschlüssel** aus der App-Einrichtung angeben – nicht den 6-stelligen Code.\n\nFalls du noch keine Authentifikator-App eingerichtet hast, melde dich auf [my.ekz.ch](https://my.ekz.ch) an → Kontosicherheit → Anmeldung und füge ein neues Authentifikator-Gerät hinzu. Wenn der QR-Code angezeigt wird, zeige den Geheimschlüssel an (z. B. `JBSWY3DPEHPK3PXP`) und gib ihn unten ein. SMS-basierte 2FA wird **nicht** unterstützt und muss durch eine Authentifikator-App ersetzt werden.",
+        "data": {
+          "user": "Benutzername (E-Mail)",
+          "password": "Passwort",
+          "totp_secret": "TOTP-Geheimschlüssel"
+        },
+        "data_description": {
+          "user": "Die E-Mail-Adresse deines myEKZ-Kontos.",
+          "password": "Dein myEKZ-Passwort.",
+          "totp_secret": "Der Geheimschlüssel, der bei der Einrichtung der Authentifikator-App auf my.ekz.ch angezeigt wurde. Dies ist eine Buchstaben-/Zahlenfolge wie `JBSWY3DPEHPK3PXP` – nicht der 6-stellige Code. Die Integration verwendet diesen Schlüssel, um den Anmeldecode automatisch zu generieren."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Anmeldung fehlgeschlagen. Bitte überprüfe Benutzername und Passwort.",
+      "totp_required": "EKZ erfordert eine Authentifikator-App (TOTP), aber es wurde kein Geheimschlüssel eingegeben. Gib den TOTP-Geheimschlüssel aus der App-Einrichtung ein.",
+      "invalid_totp": "Der TOTP-Code wurde von EKZ abgelehnt. Stelle sicher, dass der Geheimschlüssel korrekt ist und die Systemzeit stimmt.",
+      "sms_2fa_not_supported": "SMS-basierte 2FA wird nicht unterstützt. Wechsle zu einer Authentifikator-App unter my.ekz.ch → Kontosicherheit → Anmeldung.",
+      "no_contracts": "Anmeldung erfolgreich, aber für dieses Konto wurden keine aktiven Verträge gefunden.",
+      "ekz_maintenance": "Das myEKZ-Portal ist derzeit wegen Wartungsarbeiten offline. Bitte versuche es später noch einmal.",
+      "cannot_connect": "Verbindung zu myEKZ fehlgeschlagen. Bitte überprüfe deine Netzwerkverbindung und versuche es erneut."
+    },
+    "abort": {
+      "already_configured": "EKZ ist bereits konfiguriert."
+    }
+  }
+}
