@@ -99,6 +99,22 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
                     _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
             
+            # One-time migration: check for old statistic_id and clear it
+            old_statistic_id = f"sensor.ekz_electricity_consumption_{key}"
+            try:
+                from homeassistant.components.recorder.statistics import async_clear_statistics
+                last_stats = await get_last_statistics(self.hass, 1, old_statistic_id, True, {"sum"})
+                if last_stats and old_statistic_id in last_stats:
+                    _LOGGER.info(f"Found old statistics under wrong ID {old_statistic_id}, clearing to restart import with correct ID")
+                    await async_clear_statistics(self.hass, [old_statistic_id])
+                    # Reset last_import so we restart from beginning
+                    if meta_entity is not None:
+                        meta_entity.set_last_import(None)
+                        meta_entity._last_import = None
+                    last_import = None
+            except Exception as e:
+                _LOGGER.debug(f"Migration check failed for {key}: {e}")
+            
             # Check if we have existing statistics to resume from
             last_import = meta_entity._last_import if meta_entity is not None else None
             if last_import is None:

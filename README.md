@@ -46,6 +46,32 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 - The corresponding entities (sensors, meta-entity) are assigned to the respective device.
 - The integration imports consumption data step by step and maintains metadata such as contract start and last import.
 
+### Historical data backfill & chunk imports
+
+On first setup (or after a re-installation), the integration needs to import all historical consumption data starting from your contract start date. Because the EKZ API returns data in limited windows, the integration fetches **one 30-day chunk per update cycle** and writes it directly into the Home Assistant statistics database.
+
+The import progress is tracked by the **meta entity** (`sensor.ekz_<installationId>_letzter_import`), which stores the date of the last successfully imported chunk. After a Home Assistant restart, the import automatically resumes from where it left off.
+
+#### Adaptive polling interval
+
+To speed up the backfill without overwhelming the EKZ API, the integration automatically adjusts the polling interval:
+
+| State | Polling interval |
+|---|---|
+| Backlog present (historical data not yet fully imported) | **5 minutes** |
+| Caught up (import is up to date) | **20 minutes** |
+
+Once all historical data is imported, the polling interval switches back to normal automatically. Both intervals can be changed in [`const.py`](custom_components/ekz-ha/const.py).
+
+#### Energy Dashboard
+
+After the first chunk is imported, you can add the sensor to the Energy Dashboard:
+1. Go to **Settings → Energy → Electricity grid → Add consumption sensor**
+2. Select `sensor.electricity_consumption_ekz_<installationId>`
+3. Historical data already imported will appear immediately; remaining chunks will appear as each update cycle completes.
+
+> **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
+
 ## History
 - Initially, an attempt was made to realize the import via the EKZ Energy Assistant. However, this required an additional add-on for login, which made setup more difficult.
 - Afterwards, the original ekz-ha GitHub repository was found and a fork was created to improve the integration and adapt it to personal requirements. This repository is the result of that work.
