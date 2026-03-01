@@ -51,6 +51,7 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required("user", default=(user_input or {}).get("user", "")): str,
                     vol.Required("password"): str,
                     vol.Required("totp_secret", default=(user_input or {}).get("totp_secret", "")): str,
+                    vol.Optional("device_name", default=(user_input or {}).get("device_name", "")): str,
                 }
             ),
             errors=errors,
@@ -65,10 +66,16 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._credentials["user"],
                 self._credentials["password"],
                 self._credentials["totp_secret"],
+                self._credentials.get("device_name") or None,
             )
             try:
                 data = await session.installation_selection_data()
                 contracts = data.get("contracts") if isinstance(data, dict) else None
+                _LOGGER.warning(
+                    "[config_flow] installation_selection_data response keys=%s contracts=%s",
+                    list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                    contracts,
+                )
                 if not contracts:
                     _LOGGER.warning(
                         "[config_flow] Login succeeded but no contracts found for user %s",

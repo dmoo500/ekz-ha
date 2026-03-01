@@ -7,12 +7,14 @@
         "data": {
           "user": "Username (e-mail)",
           "password": "Password",
-          "totp_secret": "TOTP Secret Key"
+          "totp_secret": "TOTP Secret Key",
+          "device_name": "Authenticator Device Name (optional)"
         },
         "data_description": {
           "user": "Your myEKZ login e-mail address.",
           "password": "Your myEKZ password.",
-          "totp_secret": "The secret key shown when adding an authenticator app on my.ekz.ch. This is a letter/number string like `JBSWY3DPEHPK3PXP` — not the 6-digit code."
+          "totp_secret": "The secret key shown when adding an authenticator app on my.ekz.ch. This is a letter/number string like `JBSWY3DPEHPK3PXP` — not the 6-digit code.",
+          "device_name": "The name you gave your authenticator device when registering it on my.ekz.ch. Leave blank to auto-select. Required if you have more than one authenticator registered."
         }
       },
       "confirm": {

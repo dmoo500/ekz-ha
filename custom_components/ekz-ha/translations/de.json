@@ -7,12 +7,14 @@
         "data": {
           "user": "Benutzername (E-Mail)",
           "password": "Passwort",
-          "totp_secret": "TOTP-Geheimschlüssel"
+          "totp_secret": "TOTP-Geheimschlüssel",
+          "device_name": "Gerätename des Authentifikators (optional)"
         },
         "data_description": {
           "user": "Die E-Mail-Adresse deines myEKZ-Kontos.",
           "password": "Dein myEKZ-Passwort.",
-          "totp_secret": "Der Geheimschlüssel, der beim Hinzufügen einer Authentifikator-App auf my.ekz.ch angezeigt wird. Dies ist eine Buchstaben-/Zahlenfolge wie `JBSWY3DPEHPK3PXP` – nicht der 6-stellige Code."
+          "totp_secret": "Der Geheimschlüssel, der beim Hinzufügen einer Authentifikator-App auf my.ekz.ch angezeigt wird. Dies ist eine Buchstaben-/Zahlenfolge wie `JBSWY3DPEHPK3PXP` – nicht der 6-stellige Code.",
+          "device_name": "Der Name, den du deinem Authentifikator-Gerät bei der Registrierung auf my.ekz.ch gegeben hast. Leer lassen für automatische Auswahl. Erforderlich, wenn mehr als ein Authentifikator registriert ist."
         }
       },
       "confirm": {

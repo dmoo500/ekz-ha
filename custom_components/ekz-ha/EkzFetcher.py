@@ -163,12 +163,13 @@ class EkzFetcher:
             "last_full_day_sum": last_full_day_sum,
         }
 
-    def __init__(self, user: str, password: str, totp_secret: str | None = None) -> None:
+    def __init__(self, user: str, password: str, totp_secret: str | None = None, device_name: str | None = None) -> None:
         """Construct an instance of EkzFetcher."""
         self.user = user
         self.password = password
         self.totp_secret = totp_secret
-        self.session = Session(self.user, self.password, self.totp_secret)
+        self.device_name = device_name
+        self.session = Session(self.user, self.password, self.totp_secret, self.device_name)
 
     async def getInstallations(self) -> dict:
         """Return a dict of installation IDs for current contracts (auszdat == None) with contract_start (einzdat)."""
