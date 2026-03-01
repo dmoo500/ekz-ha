@@ -115,16 +115,18 @@ class EkzFetcher:
         # Aggregate per day (for QUARTER_HOUR: sum multiple slots; for DAY: passthrough with 1 entry per day)
         def total(group):
             group = list(group)
+            first_item = group[0]
             return {
                 "value": sum([x["value"] for x in group]),
                 "date": min([x["date"] for x in group]),
                 "time": min([x.get("time", "00:00") for x in group]),
-                "timestamp": normalize_timestamp(min([str(x["timestamp"])[0:10] for x in group])),
+                # For DAY level data: use the date field + 00:00:00 instead of the original timestamp
+                "timestamp": normalize_timestamp(min([x["date"] for x in group]) + "000000") if is_day_level else normalize_timestamp(min([str(x["timestamp"])[0:10] for x in group])),
             }
 
         values = [
             total(g)
-            for _, g in itertools.groupby(values, lambda v: str(v["timestamp"])[0:10])
+            for _, g in itertools.groupby(values, lambda v: str(v["timestamp"])[0:10] if not is_day_level else v["date"])
         ]
         values = sorted(values, key=lambda x: x["timestamp"])
         _LOGGER.debug(f"[import_full_history_to_statistics] Total values after daily aggregation: {len(values)}")

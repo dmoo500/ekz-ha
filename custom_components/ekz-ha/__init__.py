@@ -186,18 +186,24 @@ class EkzCoordinator(DataUpdateCoordinator):
                 statistics = result["statistics"]
                 last_stat = statistics[-1]
                 self.last_sums[key] = last_stat["sum"]
-                async_import_statistics(
-                    self.hass,
-                    StatisticMetaData(
-                        has_sum=True,
-                        mean_type=StatisticMeanType.NONE,
-                        source="recorder",
-                        statistic_id=f"sensor.ekz_electricity_consumption_{key}",
-                        name=None,
-                        unit_of_measurement="kWh",
-                    ),
-                    [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in statistics],
-                )
+                _LOGGER.warning(f"About to import {len(statistics)} statistics for {key}, range {statistics[0]['start']} to {statistics[-1]['start']}")
+                try:
+                    async_import_statistics(
+                        self.hass,
+                        StatisticMetaData(
+                            has_sum=True,
+                            mean_type=StatisticMeanType.NONE,
+                            source="recorder",
+                            statistic_id=f"sensor.ekz_electricity_consumption_{key}",
+                            name=None,
+                            unit_of_measurement="kWh",
+                        ),
+                        [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in statistics],
+                    )
+                    _LOGGER.warning(f"Successfully imported {len(statistics)} statistics for {key}")
+                except Exception as e:
+                    _LOGGER.error(f"Failed to import statistics for {key}: {e}")
+                    raise
                 _LOGGER.debug(f"Meta entity: {meta_entity}")
                 if statistics is not None and len(statistics) > 0 and meta_entity is not None:
                     lastDate = statistics[len(statistics)-1]["start"]
