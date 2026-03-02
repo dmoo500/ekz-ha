@@ -108,11 +108,23 @@ class EkzCoordinator(DataUpdateCoordinator):
                 if last_stats and statistic_id in last_stats:
                     last_stat_data = last_stats[statistic_id]
                     if last_stat_data:
-                        last_import_dt = last_stat_data[0]["start"]
-                        _LOGGER.info(f"Resuming import for {key} from {last_import_dt} (restored from DB)")
-                        meta_entity.set_last_import(last_import_dt)
+                        raw_start = last_stat_data[0]["start"]
+                        # HA returns start as float (Unix timestamp) or datetime depending on version
+                        if isinstance(raw_start, (int, float)):
+                            import_dt = datetime.fromtimestamp(float(raw_start), tz=ZRH)
+                        elif hasattr(raw_start, "tzinfo") and raw_start.tzinfo is not None:
+                            import_dt = raw_start.astimezone(ZRH)
+                        else:
+                            import_dt = raw_start.replace(tzinfo=ZRH)
+                        import_date = import_dt.date()
+                        _LOGGER.info(f"Resuming import for {key} from {import_date} (restored from DB)")
+                        meta_entity.set_last_import(import_date)
                         if last_stat_data[0].get("sum") is not None:
                             self.last_sums[key] = last_stat_data[0]["sum"]
+                        # Pre-initialise catching_up so the sensor doesn't show unknown on restart
+                        today_date = datetime.now(tz=ZRH).date()
+                        if (today_date - import_date).days <= 1:
+                            self.catching_up[key] = False
             except Exception as e:
                 _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
 

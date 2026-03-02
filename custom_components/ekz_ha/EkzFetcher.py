@@ -33,7 +33,12 @@ class EkzFetcher:
         _LOGGER.debug(f"[import_full_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
         # Determine start date
         if meta_entity is not None and meta_entity._last_import:
-            from_date = meta_entity._last_import + timedelta(days=1)
+            li = meta_entity._last_import
+            # _last_import may be a date or datetime – always normalise to datetime
+            if isinstance(li, datetime):
+                from_date = li + timedelta(days=1)
+            else:
+                from_date = datetime.combine(li, datetime.min.time()) + timedelta(days=1)
             _LOGGER.debug(f"[import_full_history_to_statistics] Start import from last import: from_date={from_date}")
         else:
             if isinstance(contract_start, str):
