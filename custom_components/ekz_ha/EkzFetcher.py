@@ -53,8 +53,13 @@ class EkzFetcher:
             from_date.strftime("%Y-%m-%d"),
             to_date.strftime("%Y-%m-%d"),
         )
-        
-            
+
+        if data is None:
+            _LOGGER.info(f"[import_full_history_to_statistics] API returned None for installationId={installationId}, period {from_date} to {to_date} (PK_VERB_15MIN) — no data available")
+            if meta_entity is not None:
+                meta_entity.set_last_run_date(datetime.now())
+            return {"statistics": [], "last_import": None, "from_date": from_date.date(), "to_date": to_date.date(), "last_full_day": None, "last_full_day_sum": math.inf}
+
         _LOGGER.debug(f"[import_full_history_to_statistics] Consumption data loaded: {len(data.get('seriesNt', {}).get('values', [])) + len(data.get('seriesHt', {}).get('values', []))} values")
         # --- Tagesaggregation und Summenberechnung wie in fetchNewInstallationData ---
         def get_level(d):
@@ -105,6 +110,11 @@ class EkzFetcher:
                 from_date.strftime("%Y-%m-%d"),
                 to_date.strftime("%Y-%m-%d"),
             )
+            if data is None:
+                _LOGGER.info(f"[import_full_history_to_statistics] API returned None for installationId={installationId}, period {from_date} to {to_date} (PK_VERB_TAG_METER) — no data available")
+                if meta_entity is not None:
+                    meta_entity.set_last_run_date(datetime.now())
+                return {"statistics": [], "last_import": None, "from_date": from_date.date(), "to_date": to_date.date(), "last_full_day": None, "last_full_day_sum": math.inf}
             level = get_level(data)
             _LOGGER.info(f"[import_full_history_to_statistics] PK_VERB_TAG_METER response level={level}, keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
             values = sortAndFilter(data)
