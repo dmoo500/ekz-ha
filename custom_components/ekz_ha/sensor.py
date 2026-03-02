@@ -51,7 +51,9 @@ class EkzEntity(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        """Return the latest cumulative consumption sum."""
+        """Return the cumulative sum only when caught up; None during historical backfill."""
+        if self.coordinator.catching_up.get(self.installation_id, True):
+            return None
         return self.coordinator.last_sums.get(self.installation_id)
 
     @property
@@ -86,7 +88,9 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        """Return the latest cumulative prediction sum."""
+        """Return the cumulative prediction sum only when caught up; None during historical backfill."""
+        if self.coordinator.catching_up.get(self.installation_id, True):
+            return None
         return self.coordinator.last_prediction_sums.get(self.installation_id)
 
     @property

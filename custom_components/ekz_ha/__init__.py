@@ -64,6 +64,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.consumption_averages = {}
         self.last_sums: dict[str, float] = {}
         self.last_prediction_sums: dict[str, float] = {}
+        self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
 
     async def _async_setup(self):
@@ -154,7 +155,8 @@ class EkzCoordinator(DataUpdateCoordinator):
             # Automatically adjust polling interval based on catch-up status
             today = datetime.now(tz=ZRH).date()
             to_date = result.get("to_date")
-            still_catching_up = to_date is not None and to_date < today
+            still_catching_up = to_date is not None and (today - to_date).days > 1
+            self.catching_up[key] = still_catching_up
             if still_catching_up:
                 if self.update_interval != CATCHUP_SCAN_INTERVAL:
                     _LOGGER.info(f"Catch-up mode for {key}: imported up to {to_date}, switching poll interval to {CATCHUP_SCAN_INTERVAL}")
