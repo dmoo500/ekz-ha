@@ -129,10 +129,12 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         """Return the last successfully imported statistic timestamp."""
         if self._last_import is None:
             return None
-        if isinstance(self._last_import, datetime):
-            return self._last_import
-        # date → datetime midnight Zurich time
         from datetime import timezone
+        if isinstance(self._last_import, datetime):
+            if self._last_import.tzinfo is None:
+                return self._last_import.replace(tzinfo=timezone.utc)
+            return self._last_import
+        # date → datetime midnight UTC
         return datetime(
             self._last_import.year,
             self._last_import.month,
