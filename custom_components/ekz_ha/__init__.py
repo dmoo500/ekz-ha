@@ -5,6 +5,7 @@ import logging
 import zoneinfo
 
 from homeassistant import core
+from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType, StatisticMetaData
 from homeassistant.components.recorder.statistics import async_import_statistics, get_last_statistics
 from homeassistant.config_entries import ConfigEntry
@@ -106,7 +107,9 @@ class EkzCoordinator(DataUpdateCoordinator):
             statistic_id = f"sensor.electricity_consumption_ekz_{key}"
             if meta_entity._last_import is None:
                 try:
-                    last_stats = await get_last_statistics(self.hass, 1, statistic_id, True, {"sum"})
+                    last_stats = await get_recorder_instance(self.hass).async_add_executor_job(
+                        get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
+                    )
                     if last_stats and statistic_id in last_stats:
                         last_stat_data = last_stats[statistic_id]
                         if last_stat_data:
@@ -134,7 +137,9 @@ class EkzCoordinator(DataUpdateCoordinator):
             old_statistic_id = f"sensor.ekz_electricity_consumption_{key}"
             try:
                 from homeassistant.components.recorder.statistics import async_clear_statistics
-                old_stats = await get_last_statistics(self.hass, 1, old_statistic_id, True, {"sum"})
+                old_stats = await get_recorder_instance(self.hass).async_add_executor_job(
+                    get_last_statistics, self.hass, 1, old_statistic_id, True, {"sum"}
+                )
                 if old_stats and old_statistic_id in old_stats:
                     _LOGGER.info(f"Migrating: clearing old statistics under {old_statistic_id}")
                     await async_clear_statistics(self.hass, [old_statistic_id])
