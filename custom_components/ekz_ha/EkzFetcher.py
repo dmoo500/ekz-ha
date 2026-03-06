@@ -66,7 +66,7 @@ class EkzFetcher:
             return {"statistics": [], "last_import": None, "from_date": from_date.date(), "to_date": to_date.date(), "last_full_day": None, "last_full_day_sum": math.inf}
 
         _LOGGER.debug(f"[import_full_history_to_statistics] Consumption data loaded: {len((data.get('seriesNt') or {}).get('values', [])) + len((data.get('seriesHt') or {}).get('values', []))} values")
-        # --- Tagesaggregation und Summenberechnung wie in fetchNewInstallationData ---
+        # --- Daily aggregation and cumulative sum calculation ---
         def get_level(d):
             """Extract the response level (DAY or QUARTER_HOUR) from a consumption data response."""
             for series_key in ("seriesNt", "seriesHt"):

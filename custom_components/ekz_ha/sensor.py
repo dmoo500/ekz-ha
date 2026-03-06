@@ -18,12 +18,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
         [EkzEntity(coordinator, installationId) for installationId in coordinator.installations]
         + [EkzPredictionEntity(coordinator, installationId) for installationId in coordinator.installations]
     )
-    # Meta-Entities erzeugen und Mapping pflegen
+    # Create meta entities and contract-start entities per installation
     for installationId in coordinator.installations:
         meta = EkzMetaEntity(coordinator, installationId)
         meta_entities[installationId] = meta
         sensors.append(meta)
-    # Mapping im Coordinator speichern
+        sensors.append(EkzContractStartEntity(coordinator, installationId))
+    # Store mapping in coordinator so update loop can access entities by installation ID
     coordinator.meta_entities = meta_entities
     async_add_entities(sensors, True)
 
@@ -46,15 +47,13 @@ class EkzEntity(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
             "manufacturer": "EKZ",
-            "model": "Stromzähler",
+            "model": "Electricity Meter",
         }
 
     @property
     def native_value(self):
-        """Return the cumulative sum only when caught up; None during historical backfill."""
-        if self.coordinator.catching_up.get(self.installation_id, True):
-            return None
-        return self.coordinator.last_sums.get(self.installation_id)
+        """Statistics are imported directly; sensor state is intentionally always None."""
+        return None
 
     @property
     def icon(self) -> str:
@@ -83,15 +82,13 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
             "manufacturer": "EKZ",
-            "model": "Stromzähler",
+            "model": "Electricity Meter",
         }
 
     @property
     def native_value(self):
-        """Return the cumulative prediction sum only when caught up; None during historical backfill."""
-        if self.coordinator.catching_up.get(self.installation_id, True):
-            return None
-        return self.coordinator.last_prediction_sums.get(self.installation_id)
+        """Statistics are imported directly; sensor state is intentionally always None."""
+        return None
 
     @property
     def icon(self) -> str:
@@ -100,19 +97,19 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
 
 
 
-# Meta-Entity: speichert Importstatus und zeigt letztes Importdatum als Zustand
+# Tracks import progress and shows the last successfully imported timestamp as sensor state
 class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._attr_unique_id = f"ekz_electricity_consumption_{installationId}_meta"
-        self._attr_name = f"EKZ {installationId} Letzter Import"
+        self._attr_name = f"EKZ {installationId} Last Import"
         self._attr_device_class = SensorDeviceClass.TIMESTAMP
         self._last_running_sum = None
         self._last_full_day = None
         self._last_get_all = None
-        self._contract_start = None  # type: date | None
-        self._last_import = None    # type: date | None
+        self._contract_start: date | None = None
+        self._last_import: date | None = None
         self._last_run_date: datetime | None = None
 
     @property
@@ -121,7 +118,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
             "manufacturer": "EKZ",
-            "model": "Stromzähler",
+            "model": "Electricity Meter",
         }
 
     @property
@@ -134,7 +131,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             if self._last_import.tzinfo is None:
                 return self._last_import.replace(tzinfo=timezone.utc)
             return self._last_import
-        # date → datetime midnight UTC
+        # date → datetime at midnight UTC
         return datetime(
             self._last_import.year,
             self._last_import.month,
@@ -174,4 +171,33 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
 
     def set_last_import(self, value: date):
         self._last_import = value
+
+
+class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
+    """Shows the EKZ contract start date for an installation."""
+
+    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
+        super().__init__(coordinator)
+        self.installation_id = installationId
+        self._attr_unique_id = f"ekz_contract_start_{installationId}"
+        self._attr_name = f"EKZ {installationId} Contract Start"
+        self._attr_device_class = SensorDeviceClass.DATE
+        self._attr_icon = "mdi:calendar-start"
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
+            "name": f"EKZ {self.installation_id}",
+            "manufacturer": "EKZ",
+            "model": "Electricity Meter",
+        }
+
+    @property
+    def native_value(self):
+        """Return the contract start date."""
+        meta = getattr(self.coordinator, "meta_entities", {}).get(self.installation_id)
+        if meta is None:
+            return None
+        return meta._contract_start
     

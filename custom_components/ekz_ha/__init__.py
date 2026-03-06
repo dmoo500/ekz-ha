@@ -12,7 +12,7 @@ from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
 from .EkzFetcher import EkzFetcher
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
@@ -68,7 +68,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self._normal_interval = update_interval  # remember configured interval for later restore
 
     async def _async_setup(self):
-        """Set up the coordinator (nur Installationen laden)."""
+        """Load installations on first start."""
         self.installations = await self.ekz_fetcher.getInstallations()
 
     async def _async_update_data(self):
@@ -81,7 +81,7 @@ class EkzCoordinator(DataUpdateCoordinator):
             self.installations = await self.ekz_fetcher.getInstallations()
         meta_entities = getattr(self, "meta_entities", None)
         if not meta_entities:
-            _LOGGER.debug("meta_entities mapping not set or empty during update. Entities may not be initialized yet.")
+            _LOGGER.debug("meta_entities not yet available during update — entities not initialized yet.")
         for key in self.installations:
             meta_entity = meta_entities.get(key) if meta_entities else None
             if meta_entity is not None:
@@ -89,8 +89,8 @@ class EkzCoordinator(DataUpdateCoordinator):
             else:
                 _LOGGER.debug(f"Meta entity for {key}: None")
             if meta_entity is None:
-                continue # if no meta entity, skip it - need it to store last_import etc.
-            # Determine contract_start and last_import
+                continue  # meta entity required for tracking import state
+            # Determine contract_start
             contract_start = meta_entity._contract_start if meta_entity is not None else None
             if contract_start is None:
                 contract_start = self.installations[key]["contract_start"]
@@ -99,36 +99,38 @@ class EkzCoordinator(DataUpdateCoordinator):
                         datetime.strptime(contract_start, "%Y-%m-%d").date()
                     )
                     _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
-            
-            # Always query the statistics DB to get the true last import date and sum.
-            # This is reboot-safe: in-memory state is irrelevant, DB is the source of truth.
-            statistic_id = f"sensor.electricity_consumption_ekz_{key}"
-            try:
-                last_stats = await get_last_statistics(self.hass, 1, statistic_id, True, {"sum"})
-                if last_stats and statistic_id in last_stats:
-                    last_stat_data = last_stats[statistic_id]
-                    if last_stat_data:
-                        raw_start = last_stat_data[0]["start"]
-                        # HA returns start as float (Unix timestamp) or datetime depending on version
-                        if isinstance(raw_start, (int, float)):
-                            import_dt = datetime.fromtimestamp(float(raw_start), tz=ZRH)
-                        elif hasattr(raw_start, "tzinfo") and raw_start.tzinfo is not None:
-                            import_dt = raw_start.astimezone(ZRH)
-                        else:
-                            import_dt = raw_start.replace(tzinfo=ZRH)
-                        import_date = import_dt.date()
-                        _LOGGER.info(f"Resuming import for {key} from {import_date} (restored from DB)")
-                        meta_entity.set_last_import(import_date)
-                        if last_stat_data[0].get("sum") is not None:
-                            self.last_sums[key] = last_stat_data[0]["sum"]
-                        # Pre-initialise catching_up so the sensor doesn't show unknown on restart
-                        today_date = datetime.now(tz=ZRH).date()
-                        if (today_date - import_date).days <= 1:
-                            self.catching_up[key] = False
-            except Exception as e:
-                _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
 
-            # One-time migration: clear data stored under the old wrong statistic_id
+            # Query DB only on first cycle after (re)start to restore last import date.
+            # In-memory state (set by EkzFetcher after each import) is trusted for all subsequent cycles.
+            # Querying every cycle risks overwriting with a stale DB result if the recorder is not yet ready.
+            statistic_id = f"sensor.electricity_consumption_ekz_{key}"
+            if meta_entity._last_import is None:
+                try:
+                    last_stats = await get_last_statistics(self.hass, 1, statistic_id, True, {"sum"})
+                    if last_stats and statistic_id in last_stats:
+                        last_stat_data = last_stats[statistic_id]
+                        if last_stat_data:
+                            raw_start = last_stat_data[0]["start"]
+                            # HA returns start as float (Unix timestamp) or datetime depending on version
+                            if isinstance(raw_start, (int, float)):
+                                import_dt = datetime.fromtimestamp(float(raw_start), tz=ZRH)
+                            elif hasattr(raw_start, "tzinfo") and raw_start.tzinfo is not None:
+                                import_dt = raw_start.astimezone(ZRH)
+                            else:
+                                import_dt = raw_start.replace(tzinfo=ZRH)
+                            import_date = import_dt.date()
+                            _LOGGER.info(f"Restored last import for {key} from DB: {import_date}")
+                            meta_entity.set_last_import(import_date)
+                            if last_stat_data[0].get("sum") is not None:
+                                self.last_sums[key] = last_stat_data[0]["sum"]
+                            # Pre-initialise catching_up flag so sensor shows correct value immediately
+                            today_date = datetime.now(tz=ZRH).date()
+                            if (today_date - import_date).days <= 1:
+                                self.catching_up[key] = False
+                except Exception as e:
+                    _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
+
+            # One-time migration: clear data stored under the old statistic_id from early integration versions
             old_statistic_id = f"sensor.ekz_electricity_consumption_{key}"
             try:
                 from homeassistant.components.recorder.statistics import async_clear_statistics
@@ -139,14 +141,14 @@ class EkzCoordinator(DataUpdateCoordinator):
             except Exception as e:
                 _LOGGER.debug(f"Migration check failed for {key}: {e}")
 
-            # Fall back to contract_start if no statistics exist yet (first-ever import)
+            # Fall back to contract_start when no statistics exist yet (first-ever import)
             if meta_entity._last_import is None and contract_start is not None:
                 start = contract_start if not isinstance(contract_start, str) else datetime.strptime(contract_start, "%Y-%m-%d")
                 meta_entity.set_last_import(start)
                 _LOGGER.info(f"No existing statistics for {key}, starting import from contract start {start}")
 
             # Import exactly one 30-day chunk per update cycle.
-            # The meta entity tracks last_import so the next cycle continues where we left off.
+            # EkzFetcher updates meta_entity._last_import after each import so the next cycle continues from there.
             result = await self.ekz_fetcher.import_full_history_to_statistics(
                 self.hass, key, contract_start, meta_entity,
                 running_sum_offset=self.last_sums.get(key, 0.0),
@@ -164,7 +166,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
                 except Exception as e:
                     _LOGGER.error(f"Failed to import statistics chunk for {key}: {e}")
-            # Automatically adjust polling interval based on catch-up status
+            # Adjust polling interval based on catch-up status
             today = datetime.now(tz=ZRH).date()
             to_date = result.get("to_date")
             still_catching_up = to_date is not None and (today - to_date).days > 1
@@ -174,11 +176,11 @@ class EkzCoordinator(DataUpdateCoordinator):
                     _LOGGER.info(f"Catch-up mode for {key}: imported up to {to_date}, switching poll interval to {CATCHUP_SCAN_INTERVAL}")
                     self.update_interval = CATCHUP_SCAN_INTERVAL
             else:
-                if self.update_interval != self._normal_interval:
-                    _LOGGER.info(f"Catch-up complete for {key}, restoring poll interval to {self._normal_interval}")
-                    self.update_interval = self._normal_interval
+                if self.update_interval != NORMAL_SCAN_INTERVAL:
+                    _LOGGER.info(f"Catch-up complete for {key}, switching to daily poll interval")
+                    self.update_interval = NORMAL_SCAN_INTERVAL
 
-            # save averages for later use
+            # Save consumption averages for prediction calculation
             averages = None
             if "averages" in result:
                 _LOGGER.debug(f"Averages for {key}: {result['averages']}")
@@ -191,8 +193,8 @@ class EkzCoordinator(DataUpdateCoordinator):
                     averages = self.consumption_averages[key]
 
             if averages is not None and len(result["statistics"]) > 0:
-                # For all times for which we have a value in result["statistics"], we now want to set the sum/state to 0 (overriding previous predictions).
-                # For all times from the highest timestamp to now, we try to find a prediction.
+                # Reset prediction statistics for all periods covered by real data,
+                # then extrapolate forward using historical averages.
                 predictions = [
                     {"start": x["start"], "sum": 0, "state": 0}
                     for x in result["statistics"]
