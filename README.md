@@ -2,9 +2,21 @@
 
 # EKZ Home Assistant Integration (HACS)
 
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![GitHub release](https://img.shields.io/github/v/release/dmoo500/ekz-ha)](https://github.com/dmoo500/ekz-ha/releases)
+[![License](https://img.shields.io/github/license/dmoo500/ekz-ha)](LICENSE)
+[![GitHub issues](https://img.shields.io/github/issues/dmoo500/ekz-ha)](https://github.com/dmoo500/ekz-ha/issues)
+[![GitHub stars](https://img.shields.io/github/stars/dmoo500/ekz-ha)](https://github.com/dmoo500/ekz-ha/stargazers)
+[![GitHub watchers](https://img.shields.io/github/watchers/dmoo500/ekz-ha)](https://github.com/dmoo500/ekz-ha/watchers)
+[![GitHub last commit](https://img.shields.io/github/last-commit/dmoo500/ekz-ha)](https://github.com/dmoo500/ekz-ha/commits)
+[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/dmoo500/ekz-ha)
+[![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+
 This integration allows you to import and analyze EKZ electricity meter data directly in Home Assistant. It is installable via [HACS](https://hacs.xyz/) and supports automatic assignment of devices and entities per installation ID.
 
 ## Installation via HACS
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=dmoo500&repository=ekz-ha&category=integration)
 
 1. Open HACS and select "Custom Repositories".
 2. Add this GitHub repository (`https://github.com/dmoo500/ekz-ha`) as a custom repository (type: Integration).
