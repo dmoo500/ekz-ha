@@ -24,7 +24,7 @@ setup(
         'rich',
         'platformdirs',
         'tzdata',
-        'homeassistant==2025.10.2',
+        'homeassistant==2026.1.0',
     ],
     extras_require={
         'influx': ['influxdb-client'],
