@@ -321,6 +321,39 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
     }
     await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+
+    async def handle_reset_statistics(call):
+        """Delete all EKZ statistics from the DB and reset in-memory state so a full re-import starts."""
+        try:
+            from homeassistant.components.recorder.statistics import async_clear_statistics
+        except ImportError:
+            _LOGGER.error("async_clear_statistics is not available in this HA version — cannot reset statistics")
+            return
+
+        statistic_ids = []
+        for key in coordinator.installations:
+            statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}")
+            statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}_predictions")
+        for key in coordinator.production_installations:
+            statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
+
+        _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
+        await async_clear_statistics(hass, statistic_ids)
+
+        # Reset in-memory tracking so the next poll starts from contract_start
+        coordinator.last_sums = {}
+        coordinator.last_production_sums = {}
+        coordinator.last_prediction_sums = {}
+        coordinator.catching_up = {}
+        for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
+            meta.set_last_import(None)
+        for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
+            meta.set_last_import(None)
+
+        _LOGGER.info("EKZ statistics reset complete — re-import will start on next poll")
+        await coordinator.async_request_refresh()
+
+    hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)
     return True
 
 async def async_unload_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
@@ -328,4 +361,5 @@ async def async_unload_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bo
     unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unload_ok:
         hass.data.pop(DOMAIN, None)
+        hass.services.async_remove(DOMAIN, "reset_statistics")
     return unload_ok
