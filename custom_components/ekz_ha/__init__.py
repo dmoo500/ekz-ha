@@ -136,13 +136,19 @@ class EkzCoordinator(DataUpdateCoordinator):
             # One-time migration: clear data stored under the old statistic_id from early integration versions
             old_statistic_id = f"sensor.ekz_electricity_consumption_{key}"
             try:
-                from homeassistant.components.recorder.statistics import async_clear_statistics
                 old_stats = await get_recorder_instance(self.hass).async_add_executor_job(
                     get_last_statistics, self.hass, 1, old_statistic_id, True, {"sum"}
                 )
                 if old_stats and old_statistic_id in old_stats:
                     _LOGGER.info(f"Migrating: clearing old statistics under {old_statistic_id}")
-                    await async_clear_statistics(self.hass, [old_statistic_id])
+                    try:
+                        from homeassistant.components.recorder.statistics import async_clear_statistics
+                        await async_clear_statistics(self.hass, [old_statistic_id])
+                    except ImportError:
+                        _LOGGER.info(
+                            f"async_clear_statistics not available in this HA version — "
+                            f"old statistics under {old_statistic_id} will remain but won't affect functionality"
+                        )
             except Exception as e:
                 _LOGGER.debug(f"Migration check failed for {key}: {e}")
 

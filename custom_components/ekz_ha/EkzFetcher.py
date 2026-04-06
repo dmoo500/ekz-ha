@@ -69,7 +69,7 @@ class EkzFetcher:
         # --- Daily aggregation and cumulative sum calculation ---
         def get_level(d):
             """Extract the response level (DAY or QUARTER_HOUR) from a consumption data response."""
-            for series_key in ("seriesNt", "seriesHt"):
+            for series_key in ("seriesNt", "seriesHt", "series"):
                 s = d.get(series_key)
                 if s and isinstance(s, dict) and "level" in s:
                     return s["level"]
@@ -81,22 +81,27 @@ class EkzFetcher:
             return s[:14].ljust(14, "0")
 
         def sortAndFilter(d):
-            all_fetched_data = [[]]
+            collected = []
             if "seriesNt" in d and d["seriesNt"] is not None:
-                all_fetched_data.append(
+                collected += [
                     dict(x, tariff="NT")
-                    for x in d["seriesNt"]["values"]
+                    for x in d["seriesNt"].get("values", [])
                     if x["status"] != "NOT_AVAILABLE" and x["status"] != "MISSING"
-                )
+                ]
             if "seriesHt" in d and d["seriesHt"] is not None:
-                all_fetched_data.append(
+                collected += [
                     dict(x, tariff="HT")
-                    for x in d["seriesHt"]["values"]
+                    for x in d["seriesHt"].get("values", [])
                     if x["status"] != "NOT_AVAILABLE" and x["status"] != "MISSING"
-                )
-            values = sorted(
-                itertools.chain(*all_fetched_data), key=lambda x: x["timestamp"]
-            )
+                ]
+            # Single-tariff customers may have data only in 'series' (no HT/NT split)
+            if not collected and "series" in d and d["series"] is not None:
+                collected += [
+                    dict(x, tariff="TOTAL")
+                    for x in d["series"].get("values", [])
+                    if x["status"] != "NOT_AVAILABLE" and x["status"] != "MISSING"
+                ]
+            values = sorted(collected, key=lambda x: x["timestamp"])
             values = [
                 list(g)[0] for _, g in itertools.groupby(values, lambda v: v["timestamp"])
             ]  # deduplicate
@@ -209,6 +214,11 @@ class EkzFetcher:
         if meta_entity is not None:
             if last_import is not None:
                 meta_entity.set_last_import(last_import)
+            elif to_date.date() < datetime.now(tz=ZRH).date():
+                # Data was fetched but no importable values found for this past period.
+                # Advance last_import to to_date to prevent an infinite retry loop.
+                _LOGGER.info(f"[import_full_history_to_statistics] No importable data for {from_date.date()} to {to_date.date()} — advancing last_import to {to_date.date()} to avoid retry loop")
+                meta_entity.set_last_import(to_date.date())
             meta_entity.set_last_run_date(datetime.now())
         _LOGGER.debug(f"[import_full_history_to_statistics] Import finished: {len(statistics)} statistics entries, last_import={last_import}, last_full_day={last_full_day}")
         # Return the data for further processing
