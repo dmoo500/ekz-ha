@@ -186,16 +186,14 @@ class EkzFetcher:
             date_obj = datetime.strptime(value["date"], "%Y-%m-%d")
             if date_obj == max_date:
                 last_full_day_sum = min(running_sum, last_full_day_sum)
-            # Fix timezone handling: EKZ timestamps are in Zurich time, need proper conversion to UTC
+            # EKZ API timestamps are in UTC — treat them directly as UTC
             normalized_ts = value["timestamp"]
             if i < 3:
                 _LOGGER.debug(f"[import_full_history_to_statistics] Normalized timestamp {i}: {normalized_ts}")
-            # Parse as naive datetime, then set Zurich timezone, then convert to UTC
             stat_dt_naive = datetime.strptime(normalized_ts, "%Y%m%d%H%M%S")
-            stat_dt_zurich = stat_dt_naive.replace(tzinfo=ZRH)
-            stat_dt = stat_dt_zurich.astimezone(UTC)
+            stat_dt = stat_dt_naive.replace(tzinfo=UTC)
             if i < 3:
-                _LOGGER.debug(f"[import_full_history_to_statistics] Converted datetime {i}: naive={stat_dt_naive}, zurich={stat_dt_zurich}, utc={stat_dt}")
+                _LOGGER.debug(f"[import_full_history_to_statistics] Converted datetime {i}: naive={stat_dt_naive}, utc={stat_dt}")
             statistics.append(
                 {
                     "start": stat_dt,
@@ -213,7 +211,7 @@ class EkzFetcher:
         # Set last_import and last_run_date in meta_entity if provided
         if meta_entity is not None:
             if last_import is not None:
-                meta_entity.set_last_import(last_import)
+                meta_entity.set_last_import(last_import.astimezone(ZRH).date())
             elif to_date.date() < datetime.now(tz=ZRH).date():
                 # Data was fetched but no importable values found for this past period.
                 # Advance last_import to to_date to prevent an infinite retry loop.
@@ -359,9 +357,10 @@ class EkzFetcher:
         last_import = None
         for value in values:
             # API returns positive values for energy fed into the grid (WIRK_NEG_15MIN)
+            # EKZ API timestamps are in UTC
             production_kwh = value["value"]
             stat_dt_naive = datetime.strptime(value["timestamp"], "%Y%m%d%H%M%S")
-            stat_dt = stat_dt_naive.replace(tzinfo=ZRH).astimezone(UTC)
+            stat_dt = stat_dt_naive.replace(tzinfo=UTC)
             statistics.append({
                 "start": stat_dt,
                 "sum": (running_sum := running_sum + production_kwh),
