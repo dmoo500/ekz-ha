@@ -259,3 +259,120 @@ class EkzFetcher:
                 }
         _LOGGER.debug("[getInstallations] Found installations: %s", list(result.keys()))
         return result
+
+    async def getProductionInstallations(self) -> dict:
+        """Return a dict of production installation IDs (solar/feed-in) with contract_start."""
+        _LOGGER = logging.getLogger(__name__)
+        data = await self.session.production_installation_selection_data()
+        contracts = data.get("contracts") if isinstance(data, dict) else None
+        if not contracts:
+            _LOGGER.debug("[getProductionInstallations] No production installations found.")
+            return {}
+        result = {}
+        for c in contracts:
+            if c.get("auszdat") is None:
+                result[c["anlage"]] = {
+                    "contract_start": c.get("einzdat")
+                }
+        _LOGGER.debug("[getProductionInstallations] Found production installations: %s", list(result.keys()))
+        return result
+
+    async def import_production_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0):
+        """Import solar feed-in (production) data. Values from WIRK_NEG_15MIN are negated (positive = kWh exported)."""
+        _LOGGER = logging.getLogger(__name__)
+        _LOGGER.debug(f"[import_production_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
+        if meta_entity is not None and meta_entity._last_import:
+            li = meta_entity._last_import
+            if isinstance(li, datetime):
+                from_date = li + timedelta(days=1)
+            else:
+                from_date = datetime.combine(li, datetime.min.time()) + timedelta(days=1)
+        else:
+            if isinstance(contract_start, str):
+                from_date = datetime.strptime(contract_start, "%Y-%m-%d")
+            else:
+                from_date = datetime.combine(contract_start, datetime.min.time())
+            if meta_entity is not None and meta_entity._contract_start is None:
+                meta_entity.set_contract_start(from_date.date())
+        to_date = from_date + timedelta(days=30)
+        _LOGGER.debug(f"[import_production_history_to_statistics] Fetching production data: installationId={installationId}, period {from_date} to {to_date}")
+        data = await self.session.get_consumption_data(
+            installationId,
+            "WIRK_NEG_15MIN",
+            from_date.strftime("%Y-%m-%d"),
+            to_date.strftime("%Y-%m-%d"),
+        )
+        if data is None or data == {}:
+            _LOGGER.info(f"[import_production_history_to_statistics] No data for {installationId}, period {from_date} to {to_date}")
+            if meta_entity is not None:
+                if to_date.date() < datetime.now(tz=ZRH).date():
+                    meta_entity.set_last_import(to_date.date())
+                meta_entity.set_last_run_date(datetime.now())
+            return {"statistics": [], "last_import": None, "from_date": from_date.date(), "to_date": to_date.date()}
+
+        def normalize_timestamp(ts):
+            s = str(ts).replace("-", "").replace("T", "").replace(":", "").replace(" ", "")
+            return s[:14].ljust(14, "0")
+
+        def get_values(d):
+            collected = []
+            for key in ("seriesNt", "seriesHt", "series"):
+                s = d.get(key)
+                if s and isinstance(s, dict):
+                    collected += [
+                        dict(x, tariff=key)
+                        for x in s.get("values", [])
+                        if x.get("status") not in ("NOT_AVAILABLE", "MISSING")
+                    ]
+                    if collected:
+                        break  # prefer NT/HT if available, else fall back to series
+            values = sorted(collected, key=lambda x: x["timestamp"])
+            values = [list(g)[0] for _, g in itertools.groupby(values, lambda v: v["timestamp"])]
+            return sorted(values, key=lambda x: x["timestamp"])
+
+        values = get_values(data)
+        _LOGGER.debug(f"[import_production_history_to_statistics] Values after filter: {len(values)}")
+
+        def total(group):
+            group = list(group)
+            return {
+                "value": sum(x["value"] for x in group),
+                "date": min(x["date"] for x in group),
+                "timestamp": normalize_timestamp(min(str(x["timestamp"])[:10] for x in group)),
+            }
+
+        values = [
+            total(g)
+            for _, g in itertools.groupby(values, lambda v: str(v["timestamp"])[:10])
+        ]
+        values = sorted(values, key=lambda x: x["timestamp"])
+
+        running_sum = running_sum_offset
+        statistics = []
+        last_import = None
+        for value in values:
+            # Negate: API reports negative consumption (feed-in); we store as positive production
+            production_kwh = -value["value"]
+            stat_dt_naive = datetime.strptime(value["timestamp"], "%Y%m%d%H%M%S")
+            stat_dt = stat_dt_naive.replace(tzinfo=ZRH).astimezone(UTC)
+            statistics.append({
+                "start": stat_dt,
+                "sum": (running_sum := running_sum + production_kwh),
+                "state": production_kwh,
+            })
+            if last_import is None or stat_dt > last_import:
+                last_import = stat_dt
+
+        _LOGGER.debug(f"[import_production_history_to_statistics] {len(statistics)} statistics entries prepared")
+        if meta_entity is not None:
+            if last_import is not None:
+                meta_entity.set_last_import(last_import)
+            elif to_date.date() < datetime.now(tz=ZRH).date():
+                meta_entity.set_last_import(to_date.date())
+            meta_entity.set_last_run_date(datetime.now())
+        return {
+            "statistics": statistics,
+            "last_import": last_import.date() if last_import else None,
+            "from_date": from_date.date(),
+            "to_date": to_date.date(),
+        }

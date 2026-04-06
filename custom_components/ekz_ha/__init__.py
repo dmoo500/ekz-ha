@@ -62,8 +62,10 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.ekz_fetcher = ekz_fetcher
         self.config = config
         self.installations = []
+        self.production_installations = {}
         self.consumption_averages = {}
         self.last_sums: dict[str, float] = {}
+        self.last_production_sums: dict[str, float] = {}
         self.last_prediction_sums: dict[str, float] = {}
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
@@ -71,6 +73,8 @@ class EkzCoordinator(DataUpdateCoordinator):
     async def _async_setup(self):
         """Load installations on first start."""
         self.installations = await self.ekz_fetcher.getInstallations()
+        self.production_installations = await self.ekz_fetcher.getProductionInstallations()
+        _LOGGER.debug(f"Production installations found: {list(self.production_installations.keys())}")
 
     async def _async_update_data(self):
         """Fetch data from API endpoint.
@@ -80,6 +84,8 @@ class EkzCoordinator(DataUpdateCoordinator):
         """
         if self.installations is None or self.installations == []:
             self.installations = await self.ekz_fetcher.getInstallations()
+        if not self.production_installations:
+            self.production_installations = await self.ekz_fetcher.getProductionInstallations()
         meta_entities = getattr(self, "meta_entities", None)
         if not meta_entities:
             _LOGGER.debug("meta_entities not yet available during update — entities not initialized yet.")
@@ -253,7 +259,55 @@ class EkzCoordinator(DataUpdateCoordinator):
                 )
                 if predictions:
                     self.last_prediction_sums[key] = predictions[-1]["sum"]     
-                
+
+        # --- Production (solar feed-in) import loop ---
+        production_meta_entities = getattr(self, "production_meta_entities", {})
+        for key, info in self.production_installations.items():
+            prod_meta = production_meta_entities.get(key) if production_meta_entities else None
+            if prod_meta is None:
+                continue
+            contract_start = info.get("contract_start")
+            if prod_meta._contract_start is None and contract_start:
+                prod_meta.set_contract_start(datetime.strptime(contract_start, "%Y-%m-%d").date())
+            statistic_id = f"sensor.electricity_production_ekz_{key}"
+            if prod_meta._last_import is None:
+                try:
+                    last_stats = await get_recorder_instance(self.hass).async_add_executor_job(
+                        get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
+                    )
+                    if last_stats and statistic_id in last_stats:
+                        last_stat_data = last_stats[statistic_id]
+                        if last_stat_data:
+                            raw_start = last_stat_data[0]["start"]
+                            if isinstance(raw_start, (int, float)):
+                                import_dt = datetime.fromtimestamp(float(raw_start), tz=ZRH)
+                            elif hasattr(raw_start, "tzinfo") and raw_start.tzinfo is not None:
+                                import_dt = raw_start.astimezone(ZRH)
+                            else:
+                                import_dt = raw_start.replace(tzinfo=ZRH)
+                            prod_meta.set_last_import(import_dt.date())
+                            if last_stat_data[0].get("sum") is not None:
+                                self.last_production_sums[key] = last_stat_data[0]["sum"]
+                except Exception as e:
+                    _LOGGER.debug(f"Could not query existing production statistics for {key}: {e}")
+            if prod_meta._last_import is None and contract_start:
+                prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
+            result = await self.ekz_fetcher.import_production_history_to_statistics(
+                self.hass, key, contract_start, prod_meta,
+                running_sum_offset=self.last_production_sums.get(key, 0.0),
+            )
+            if result.get("statistics"):
+                self.last_production_sums[key] = result["statistics"][-1]["sum"]
+                _LOGGER.info(f"Importing {len(result['statistics'])} production statistics for {key}")
+                try:
+                    async_import_statistics(
+                        self.hass,
+                        _make_stat_meta(statistic_id),
+                        [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in result["statistics"]],
+                    )
+                except Exception as e:
+                    _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
+
 
 async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up integration entry."""
