@@ -1,5 +1,6 @@
 """Entrypoint."""
 
+import asyncio
 from datetime import datetime, timedelta
 import logging
 import zoneinfo
@@ -69,6 +70,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.last_prediction_sums: dict[str, float] = {}
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
+        self._reset_lock = asyncio.Lock()
 
     async def _async_setup(self):
         """Load installations on first start."""
@@ -77,6 +79,11 @@ class EkzCoordinator(DataUpdateCoordinator):
         _LOGGER.debug(f"Production installations found: {list(self.production_installations.keys())}")
 
     async def _async_update_data(self):
+        """Acquire reset lock then delegate to _do_update_data."""
+        async with self._reset_lock:
+            await self._do_update_data()
+
+    async def _do_update_data(self):
         """Fetch data from API endpoint.
 
         This is the place to pre-process the data to lookup tables
@@ -360,20 +367,25 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
 
         _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
-        if not await _clear_statistics(statistic_ids):
-            _LOGGER.error("Cannot clear statistics: no compatible API found in this HA version")
-            return
 
-        # Reset in-memory tracking so the next poll starts from contract_start
-        coordinator.last_sums = {}
-        coordinator.last_production_sums = {}
-        coordinator.last_prediction_sums = {}
-        coordinator.catching_up = {}
-        for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
-            meta.set_last_import(None)
-        for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
-            meta.set_last_import(None)
+        # Hold the reset lock so any in-progress _async_update_data finishes first,
+        # and new updates are blocked until the state is fully cleared.
+        async with coordinator._reset_lock:
+            if not await _clear_statistics(statistic_ids):
+                _LOGGER.error("Cannot clear statistics: no compatible API found in this HA version")
+                return
 
+            # Reset in-memory tracking so the next poll starts from contract_start
+            coordinator.last_sums = {}
+            coordinator.last_production_sums = {}
+            coordinator.last_prediction_sums = {}
+            coordinator.catching_up = {}
+            for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
+                meta.set_last_import(None)
+            for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
+                meta.set_last_import(None)
+
+        # Lock released — now it's safe to schedule the re-import
         _LOGGER.info("EKZ statistics reset complete — re-import will start on next poll")
         await coordinator.async_request_refresh()
 
