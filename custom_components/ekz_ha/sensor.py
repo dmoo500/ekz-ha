@@ -31,7 +31,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     production_meta_entities = {}
     for installationId in getattr(coordinator, "production_installations", {}):
         sensors.append(EkzProductionEntity(coordinator, installationId))
-        prod_meta = EkzMetaEntity(coordinator, installationId)
+        prod_meta = EkzMetaEntity(coordinator, installationId, model="Solar Meter")
         production_meta_entities[installationId] = prod_meta
         sensors.append(prod_meta)
     coordinator.production_meta_entities = production_meta_entities
@@ -109,9 +109,10 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
 
 # Tracks import progress and shows the last successfully imported timestamp as sensor state
 class EkzMetaEntity(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
+    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str, model: str = "Electricity Meter") -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
+        self._model = model
         self._attr_unique_id = f"ekz_electricity_consumption_{installationId}_meta"
         self._attr_name = f"EKZ {installationId} Last Import"
         self._attr_device_class = SensorDeviceClass.TIMESTAMP
@@ -229,8 +230,8 @@ class EkzProductionEntity(CoordinatorEntity, SensorEntity):
     @property
     def device_info(self):
         return {
-            "identifiers": {(DOMAIN, f"ekz_production_{self.installation_id}")},
-            "name": f"EKZ Production {self.installation_id}",
+            "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
+            "name": f"EKZ {self.installation_id}",
             "manufacturer": "EKZ",
             "model": "Solar Meter",
         }

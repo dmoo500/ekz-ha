@@ -351,8 +351,8 @@ class EkzFetcher:
         statistics = []
         last_import = None
         for value in values:
-            # Negate: API reports negative consumption (feed-in); we store as positive production
-            production_kwh = -value["value"]
+            # API returns positive values for energy fed into the grid (WIRK_NEG_15MIN)
+            production_kwh = value["value"]
             stat_dt_naive = datetime.strptime(value["timestamp"], "%Y%m%d%H%M%S")
             stat_dt = stat_dt_naive.replace(tzinfo=ZRH).astimezone(UTC)
             statistics.append({
