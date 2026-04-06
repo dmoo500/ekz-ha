@@ -316,7 +316,7 @@ class EkzFetcher:
 
         def get_values(d):
             collected = []
-            for key in ("seriesNt", "seriesHt", "series"):
+            for key in ("seriesNt", "seriesHt"):
                 s = d.get(key)
                 if s and isinstance(s, dict):
                     collected += [
@@ -324,8 +324,15 @@ class EkzFetcher:
                         for x in s.get("values", [])
                         if x.get("status") not in ("NOT_AVAILABLE", "MISSING")
                     ]
-                    if collected:
-                        break  # prefer NT/HT if available, else fall back to series
+            # Fallback to 'series' if neither HT nor NT has data
+            if not collected:
+                s = d.get("series")
+                if s and isinstance(s, dict):
+                    collected += [
+                        dict(x, tariff="series")
+                        for x in s.get("values", [])
+                        if x.get("status") not in ("NOT_AVAILABLE", "MISSING")
+                    ]
             values = sorted(collected, key=lambda x: x["timestamp"])
             values = [list(g)[0] for _, g in itertools.groupby(values, lambda v: v["timestamp"])]
             return sorted(values, key=lambda x: x["timestamp"])
@@ -366,7 +373,7 @@ class EkzFetcher:
         _LOGGER.debug(f"[import_production_history_to_statistics] {len(statistics)} statistics entries prepared")
         if meta_entity is not None:
             if last_import is not None:
-                meta_entity.set_last_import(last_import)
+                meta_entity.set_last_import(last_import.astimezone(ZRH).date())
             elif to_date.date() < datetime.now(tz=ZRH).date():
                 meta_entity.set_last_import(to_date.date())
             meta_entity.set_last_run_date(datetime.now())
