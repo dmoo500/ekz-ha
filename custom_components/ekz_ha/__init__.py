@@ -324,11 +324,33 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
 
     async def handle_reset_statistics(call):
         """Delete all EKZ statistics from the DB and reset in-memory state so a full re-import starts."""
-        try:
-            from homeassistant.components.recorder.statistics import async_clear_statistics
-        except ImportError:
-            _LOGGER.error("async_clear_statistics is not available in this HA version — cannot reset statistics")
-            return
+        import inspect
+
+        async def _clear_statistics(statistic_ids: list[str]) -> bool:
+            """Try to clear statistics, handling different HA versions robustly."""
+            # Approach 1: module-level function (most HA versions)
+            try:
+                from homeassistant.components.recorder.statistics import async_clear_statistics
+                result = async_clear_statistics(hass, statistic_ids)
+                if inspect.isawaitable(result):
+                    await result
+                return True
+            except (ImportError, Exception) as err:
+                _LOGGER.debug("Module-level async_clear_statistics failed: %s", err)
+
+            # Approach 2: method on recorder instance (some HA versions)
+            try:
+                recorder = get_recorder_instance(hass)
+                clear_fn = getattr(recorder, "async_clear_statistics", None)
+                if clear_fn is not None:
+                    result = clear_fn(statistic_ids)
+                    if inspect.isawaitable(result):
+                        await result
+                    return True
+            except Exception as err:
+                _LOGGER.debug("Recorder instance async_clear_statistics failed: %s", err)
+
+            return False
 
         statistic_ids = []
         for key in coordinator.installations:
@@ -338,7 +360,9 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
 
         _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
-        await async_clear_statistics(hass, statistic_ids)
+        if not await _clear_statistics(statistic_ids):
+            _LOGGER.error("Cannot clear statistics: no compatible API found in this HA version")
+            return
 
         # Reset in-memory tracking so the next poll starts from contract_start
         coordinator.last_sums = {}
