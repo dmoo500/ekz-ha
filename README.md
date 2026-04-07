@@ -86,6 +86,38 @@ After the first chunk is imported, you can add the sensor to the Energy Dashboar
 
 > **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
 
+## Solar production data
+
+If you have one or more EKZ solar installations (feed-in / Einspeisung), the integration automatically detects them and imports your production history into Home Assistant long-term statistics.
+
+Production data appears in the Energy Dashboard alongside your consumption data:
+1. Go to **Settings → Energy → Solar panels → Add solar production**
+2. Select `sensor.electricity_production_ekz_<installationId>`
+
+Production entities are grouped under the same device as the corresponding consumption installation.
+
+> **Note:** As with consumption, the initial import works through your full history in 30-day chunks. Navigate back in the Energy Dashboard to verify historical production data.
+
+---
+
+## Resetting statistics (`ekz_ha.reset_statistics`)
+
+If your statistics are incorrect (e.g. after a timezone fix or a reinstall), you can trigger a full re-import using the built-in reset service.
+
+### What it does
+1. Deletes all EKZ statistics from the Home Assistant database (consumption, predictions, production)
+2. Resets the in-memory import state
+3. Immediately starts a fresh re-import from your contract start date
+
+### How to use
+1. Go to **Developer Tools → Actions**
+2. Search for `ekz_ha.reset_statistics`
+3. Select your entry (if you have multiple EKZ config entries) and press **Perform action**
+
+> **Warning:** This permanently deletes all previously imported EKZ statistics. The re-import will start automatically but takes multiple poll cycles to complete (depending on how much history needs to be re-fetched).
+
+---
+
 ## History
 - Initially, an attempt was made to realize the import via the EKZ Energy Assistant. However, this required an additional add-on for login, which made setup more difficult.
 - Afterwards, the original ekz-ha GitHub repository was found and a fork was created to improve the integration and adapt it to personal requirements. This repository is the result of that work.
