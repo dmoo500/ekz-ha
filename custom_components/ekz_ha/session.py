@@ -207,6 +207,28 @@ class Session:
                     return data
         return InstallationSelectionData()
 
+    async def production_installation_selection_data(self) -> InstallationSelectionData:
+        """Fetch installations with solar/production variant."""
+        await self._ensure_logged_in()
+        async with self._session.get(
+            "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-selection-data"
+            "?installationVariant=PRODUCTION",
+            headers=JSON_HEADERS,
+        ) as r:
+            if not r.ok:
+                _LOGGER.debug(
+                    "[production_installation_selection_data] Request failed (status %s) — no production installations",
+                    r.status,
+                )
+                return InstallationSelectionData()
+            data = await r.json()
+            _LOGGER.debug(
+                "[production_installation_selection_data] keys=%s, contracts=%s",
+                list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                data.get("contracts") if isinstance(data, dict) else data,
+            )
+            return data if isinstance(data, dict) else InstallationSelectionData()
+
     async def get_installation_data(self, installation_id: str) -> InstallationData:
         """Fetch the metadata for an installation."""
         await self._ensure_logged_in()

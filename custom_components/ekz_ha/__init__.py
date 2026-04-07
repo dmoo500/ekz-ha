@@ -1,5 +1,6 @@
 """Entrypoint."""
 
+import asyncio
 from datetime import datetime, timedelta
 import logging
 import zoneinfo
@@ -62,17 +63,27 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.ekz_fetcher = ekz_fetcher
         self.config = config
         self.installations = []
+        self.production_installations = {}
         self.consumption_averages = {}
         self.last_sums: dict[str, float] = {}
+        self.last_production_sums: dict[str, float] = {}
         self.last_prediction_sums: dict[str, float] = {}
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
+        self._reset_lock = asyncio.Lock()
 
     async def _async_setup(self):
         """Load installations on first start."""
         self.installations = await self.ekz_fetcher.getInstallations()
+        self.production_installations = await self.ekz_fetcher.getProductionInstallations()
+        _LOGGER.debug(f"Production installations found: {list(self.production_installations.keys())}")
 
     async def _async_update_data(self):
+        """Acquire reset lock then delegate to _do_update_data."""
+        async with self._reset_lock:
+            await self._do_update_data()
+
+    async def _do_update_data(self):
         """Fetch data from API endpoint.
 
         This is the place to pre-process the data to lookup tables
@@ -80,6 +91,8 @@ class EkzCoordinator(DataUpdateCoordinator):
         """
         if self.installations is None or self.installations == []:
             self.installations = await self.ekz_fetcher.getInstallations()
+        if not self.production_installations:
+            self.production_installations = await self.ekz_fetcher.getProductionInstallations()
         meta_entities = getattr(self, "meta_entities", None)
         if not meta_entities:
             _LOGGER.debug("meta_entities not yet available during update — entities not initialized yet.")
@@ -253,7 +266,55 @@ class EkzCoordinator(DataUpdateCoordinator):
                 )
                 if predictions:
                     self.last_prediction_sums[key] = predictions[-1]["sum"]     
-                
+
+        # --- Production (solar feed-in) import loop ---
+        production_meta_entities = getattr(self, "production_meta_entities", {})
+        for key, info in self.production_installations.items():
+            prod_meta = production_meta_entities.get(key) if production_meta_entities else None
+            if prod_meta is None:
+                continue
+            contract_start = info.get("contract_start")
+            if prod_meta._contract_start is None and contract_start:
+                prod_meta.set_contract_start(datetime.strptime(contract_start, "%Y-%m-%d").date())
+            statistic_id = f"sensor.electricity_production_ekz_{key}"
+            if prod_meta._last_import is None:
+                try:
+                    last_stats = await get_recorder_instance(self.hass).async_add_executor_job(
+                        get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
+                    )
+                    if last_stats and statistic_id in last_stats:
+                        last_stat_data = last_stats[statistic_id]
+                        if last_stat_data:
+                            raw_start = last_stat_data[0]["start"]
+                            if isinstance(raw_start, (int, float)):
+                                import_dt = datetime.fromtimestamp(float(raw_start), tz=ZRH)
+                            elif hasattr(raw_start, "tzinfo") and raw_start.tzinfo is not None:
+                                import_dt = raw_start.astimezone(ZRH)
+                            else:
+                                import_dt = raw_start.replace(tzinfo=ZRH)
+                            prod_meta.set_last_import(import_dt.date())
+                            if last_stat_data[0].get("sum") is not None:
+                                self.last_production_sums[key] = last_stat_data[0]["sum"]
+                except Exception as e:
+                    _LOGGER.debug(f"Could not query existing production statistics for {key}: {e}")
+            if prod_meta._last_import is None and contract_start:
+                prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
+            result = await self.ekz_fetcher.import_production_history_to_statistics(
+                self.hass, key, contract_start, prod_meta,
+                running_sum_offset=self.last_production_sums.get(key, 0.0),
+            )
+            if result.get("statistics"):
+                self.last_production_sums[key] = result["statistics"][-1]["sum"]
+                _LOGGER.info(f"Importing {len(result['statistics'])} production statistics for {key}")
+                try:
+                    async_import_statistics(
+                        self.hass,
+                        _make_stat_meta(statistic_id),
+                        [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in result["statistics"]],
+                    )
+                except Exception as e:
+                    _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
+
 
 async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up integration entry."""
@@ -267,6 +328,68 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
     }
     await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+
+    async def handle_reset_statistics(call):
+        """Delete all EKZ statistics from the DB and reset in-memory state so a full re-import starts."""
+        import inspect
+
+        async def _clear_statistics(statistic_ids: list[str]) -> bool:
+            """Try to clear statistics, handling different HA versions robustly."""
+            # Approach 1: module-level function (most HA versions)
+            try:
+                from homeassistant.components.recorder.statistics import async_clear_statistics
+                result = async_clear_statistics(hass, statistic_ids)
+                if inspect.isawaitable(result):
+                    await result
+                return True
+            except (ImportError, Exception) as err:
+                _LOGGER.debug("Module-level async_clear_statistics failed: %s", err)
+
+            # Approach 2: method on recorder instance (some HA versions)
+            try:
+                recorder = get_recorder_instance(hass)
+                clear_fn = getattr(recorder, "async_clear_statistics", None)
+                if clear_fn is not None:
+                    result = clear_fn(statistic_ids)
+                    if inspect.isawaitable(result):
+                        await result
+                    return True
+            except Exception as err:
+                _LOGGER.debug("Recorder instance async_clear_statistics failed: %s", err)
+
+            return False
+
+        statistic_ids = []
+        for key in coordinator.installations:
+            statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}")
+            statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}_predictions")
+        for key in coordinator.production_installations:
+            statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
+
+        _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
+
+        # Hold the reset lock so any in-progress _async_update_data finishes first,
+        # and new updates are blocked until the state is fully cleared.
+        async with coordinator._reset_lock:
+            if not await _clear_statistics(statistic_ids):
+                _LOGGER.error("Cannot clear statistics: no compatible API found in this HA version")
+                return
+
+            # Reset in-memory tracking so the next poll starts from contract_start
+            coordinator.last_sums = {}
+            coordinator.last_production_sums = {}
+            coordinator.last_prediction_sums = {}
+            coordinator.catching_up = {}
+            for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
+                meta.set_last_import(None)
+            for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
+                meta.set_last_import(None)
+
+        # Lock released — now it's safe to schedule the re-import
+        _LOGGER.info("EKZ statistics reset complete — re-import will start on next poll")
+        await coordinator.async_request_refresh()
+
+    hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)
     return True
 
 async def async_unload_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
@@ -274,4 +397,5 @@ async def async_unload_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bo
     unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unload_ok:
         hass.data.pop(DOMAIN, None)
+        hass.services.async_remove(DOMAIN, "reset_statistics")
     return unload_ok

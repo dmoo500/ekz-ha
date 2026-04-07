@@ -1,0 +1,7 @@
+reset_statistics:
+  name: Reset statistics
+  description: >
+    Deletes all EKZ statistics from the Home Assistant database and resets
+    the import state so a full re-import starts from the contract start date
+    on the next poll. Use this after a timezone fix or other data correction.
+  fields: {}
