@@ -80,8 +80,9 @@ Once all historical data is imported, the polling interval switches back to norm
 
 After the first chunk is imported, you can add the sensor to the Energy Dashboard:
 1. Go to **Settings → Energy → Electricity grid → Add consumption sensor**
-2. Select `sensor.electricity_consumption_ekz_<installationId>`
-3. Historical data already imported will appear immediately; remaining chunks will appear as each update cycle completes.
+2. Select `sensor.electricity_consumption_ekz_<installationId>` for "Energy imported from grid"
+3. (Optional) Select `sensor.electricity_production_ekz_<installationId>` for "Energy exported to grid"
+4. Historical data already imported will appear immediately; remaining chunks will appear as each update cycle completes.
 
 > **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
 
