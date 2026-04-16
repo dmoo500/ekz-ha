@@ -208,15 +208,17 @@ class EkzFetcher:
         _LOGGER.debug(f"[import_full_history_to_statistics] Total statistics entries prepared: {len(statistics)}")
         last_full_day = max_date
 
-        # Set last_import and last_run_date in meta_entity if provided
+        # Set last_import and last_run_date in meta_entity if provided.
+        # Use max_date (last complete day) instead of the latest timestamp to avoid
+        # skipping partial-day data for today on the next import cycle.
         if meta_entity is not None:
-            if last_import is not None:
-                meta_entity.set_last_import(last_import.astimezone(ZRH).date())
-            elif to_date.date() < datetime.now(tz=ZRH).date():
-                # Data was fetched but no importable values found for this past period.
-                # Advance last_import to to_date to prevent an infinite retry loop.
+            if max_date is not None:
+                meta_entity.set_last_import(max_date.date())
+            elif not statistics and to_date.date() < datetime.now(tz=ZRH).date():
+                # No data at all for a past period — advance to prevent an infinite retry loop.
                 _LOGGER.info(f"[import_full_history_to_statistics] No importable data for {from_date.date()} to {to_date.date()} — advancing last_import to {to_date.date()} to avoid retry loop")
                 meta_entity.set_last_import(to_date.date())
+            # If statistics exist but max_date is None (only partial/today data), do not advance last_import.
             meta_entity.set_last_run_date(datetime.now())
         _LOGGER.debug(f"[import_full_history_to_statistics] Import finished: {len(statistics)} statistics entries, last_import={last_import}, last_full_day={last_full_day}")
         # Return the data for further processing
