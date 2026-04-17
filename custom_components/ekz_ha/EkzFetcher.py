@@ -146,7 +146,7 @@ class EkzFetcher:
 
         values = [
             total(g)
-            for _, g in itertools.groupby(values, lambda v: str(v["timestamp"])[0:10] if not is_day_level else v["date"])
+            for _, g in itertools.groupby(values, lambda v: v["date"] if not is_day_level else v["date"])
         ]
         values = sorted(values, key=lambda x: x["timestamp"])
         _LOGGER.debug(f"[import_full_history_to_statistics] Total values after daily aggregation: {len(values)}")
