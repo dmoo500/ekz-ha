@@ -172,10 +172,22 @@ class EkzCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(f"No existing statistics for {key}, starting import from contract start {start}")
 
             # Import exactly one 30-day chunk per update cycle.
+            # If pending days were detected in the previous cycle, re-fetch from that earlier date
+            # (with the stored sum offset) so EKZ can fill in previously incomplete days.
+            pending_from = getattr(meta_entity, "_pending_from", None)
+            if pending_from is not None:
+                running_sum = getattr(meta_entity, "_pending_sum_offset", 0.0) or 0.0
+                _LOGGER.info(
+                    f"[{key}] Pending day lookback: re-fetching from {pending_from} "
+                    f"with sum offset {running_sum:.3f}"
+                )
+            else:
+                running_sum = self.last_sums.get(key, 0.0)
             # EkzFetcher updates meta_entity._last_import after each import so the next cycle continues from there.
             result = await self.ekz_fetcher.import_full_history_to_statistics(
                 self.hass, key, contract_start, meta_entity,
-                running_sum_offset=self.last_sums.get(key, 0.0),
+                running_sum_offset=running_sum,
+                force_from_date=pending_from,
             )
             _LOGGER.debug(f"Chunk result for {key}: from={result.get('from_date')} to={result.get('to_date')}, entries={len(result.get('statistics', []))}")
             if result.get("statistics"):

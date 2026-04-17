@@ -122,6 +122,8 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._contract_start: date | None = None
         self._last_import: date | None = None
         self._last_run_date: datetime | None = None
+        self._pending_from: date | None = None
+        self._pending_sum_offset: float = 0.0
 
     @property
     def device_info(self):
@@ -163,6 +165,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "contract_start": self._contract_start.isoformat() if self._contract_start else None,
             "last_import_date": self._last_import.isoformat() if self._last_import else None,
             "last_run_datetime": self._last_run_date.isoformat() if self._last_run_date else None,
+            "pending_from": self._pending_from.isoformat() if self._pending_from else None,
         }
 
     def set_last_run_date(self, value):
@@ -183,6 +186,9 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     def set_last_import(self, value: date):
         self._last_import = value
 
+    def set_pending(self, pending_from: "date | None", sum_offset: float = 0.0):
+        self._pending_from = pending_from
+        self._pending_sum_offset = sum_offset
 
 class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
     """Shows the EKZ contract start date for an installation."""
