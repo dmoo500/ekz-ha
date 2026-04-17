@@ -70,7 +70,7 @@ class EkzFetcher:
             return {"statistics": [], "last_import": None, "from_date": from_date.date(), "to_date": to_date.date(), "last_full_day": None, "last_full_day_sum": math.inf}
 
         _LOGGER.debug(f"[import_full_history_to_statistics] Consumption data loaded: {len((data.get('seriesNt') or {}).get('values', [])) + len((data.get('seriesHt') or {}).get('values', []))} values")
-        # --- Daily aggregation and cumulative sum calculation ---
+        # --- Value processing: merge NT+HT per slot, then build statistics ---
         def get_level(d):
             """Extract the response level (DAY or QUARTER_HOUR) from a consumption data response."""
             for series_key in ("seriesNt", "seriesHt", "series"):
@@ -106,11 +106,13 @@ class EkzFetcher:
                     if x["status"] != "NOT_AVAILABLE" and x["status"] != "MISSING"
                 ]
             values = sorted(collected, key=lambda x: x["timestamp"])
-            values = [
-                list(g)[0] for _, g in itertools.groupby(values, lambda v: v["timestamp"])
-            ]  # deduplicate
-            values = sorted(values, key=lambda x: x["timestamp"])
-            return values
+            # Sum NT + HT values for the same timestamp into a single slot entry.
+            # (The API returns separate entries per tariff with identical timestamps.)
+            merged = []
+            for _ts, g in itertools.groupby(values, lambda v: v["timestamp"]):
+                group = list(g)
+                merged.append({**group[0], "value": sum(x["value"] for x in group)})
+            return merged
 
         level = get_level(data)
         values = sortAndFilter(data)
@@ -136,7 +138,8 @@ class EkzFetcher:
         
         is_day_level = (level == "DAY")
 
-        # Count 15-min slots per date BEFORE aggregation — used for full-day detection and pending tracking.
+        # Count 15-min slots per date — used for full-day detection and pending day tracking.
+        # Must be counted before any aggregation, using the merged (NT+HT per slot) values.
         slot_counts: dict[str, int] = {}
         hourly_raw: dict[int, tuple[float, int]] = {}  # month*100+hour_utc -> (sum_kwh, count_slots)
         if not is_day_level:
@@ -150,27 +153,28 @@ class EkzFetcher:
                 hourly_raw[mh_key] = (s + v["value"], c + 1)
             _LOGGER.debug(f"[import_full_history_to_statistics] Slot counts (first 5): {dict(list(sorted(slot_counts.items()))[:5])}")
 
-        # Aggregate per day (for QUARTER_HOUR: sum multiple slots; for DAY: passthrough with 1 entry per day)
-        def total(group):
-            group = list(group)
-            first_item = group[0]
-            return {
-                "value": sum([x["value"] for x in group]),
-                "date": min([x["date"] for x in group]),
-                "time": min([x.get("time", "00:00") for x in group]),
-                # For DAY level data: use the date field + 00:00:00 instead of the original timestamp
-                "timestamp": normalize_timestamp(min([x["date"] for x in group]) + "000000") if is_day_level else normalize_timestamp(min([str(x["timestamp"])[0:10] for x in group])),
-            }
-
-        values = [
-            total(g)
-            for _, g in itertools.groupby(values, lambda v: v["date"] if not is_day_level else v["date"])
-        ]
-        values = sorted(values, key=lambda x: x["timestamp"])
-        _LOGGER.debug(f"[import_full_history_to_statistics] Total values after daily aggregation: {len(values)}")
+        if is_day_level:
+            # DAY-level data (PK_VERB_TAG_METER): aggregate NT+HT per calendar day.
+            # Use the date field as the statistic timestamp (set to midnight UTC).
+            def total_day(group):
+                group = list(group)
+                return {
+                    "value": sum(x["value"] for x in group),
+                    "date": min(x["date"] for x in group),
+                    "time": "00:00",
+                    "timestamp": normalize_timestamp(min(x["date"] for x in group) + "000000"),
+                }
+            values = [total_day(g) for _, g in itertools.groupby(values, lambda v: v["date"])]
+            values = sorted(values, key=lambda x: x["timestamp"])
+            _LOGGER.debug(f"[import_full_history_to_statistics] Total values after daily aggregation: {len(values)}")
+        else:
+            # QUARTER_HOUR data (PK_VERB_15MIN): keep each 15-min slot as an individual statistic entry.
+            # NT+HT are already summed per timestamp by sortAndFilter above.
+            values = [{**v, "timestamp": normalize_timestamp(v["timestamp"])} for v in values]
+            _LOGGER.debug(f"[import_full_history_to_statistics] Total QUARTER_HOUR slot values: {len(values)}")
 
         if is_day_level:
-            # For daily data each entry IS a full day — accept all days except today (may be partial)
+            # DAY-level: every entry is a complete day — accept all days except today (may be partial).
             today_str = datetime.now(tz=ZRH).strftime("%Y-%m-%d")
             max_date = None
             for value in values:
@@ -230,7 +234,7 @@ class EkzFetcher:
         _LOGGER.debug(f"[import_full_history_to_statistics] Total statistics entries prepared: {len(statistics)}")
         last_full_day = max_date
 
-        # --- Option B: detect first incomplete day for next-cycle lookback ---
+        # detect first incomplete day for next-cycle lookback ---
         # A pending day has some VALID slots but not a full complement — EKZ may deliver the rest later.
         # Only consider days within the last PENDING_MAX_AGE_DAYS days: EKZ back-fills at most ~14 days.
         # Older incomplete days (e.g. the very first partial day of a contract) are accepted as-is.
@@ -238,11 +242,14 @@ class EkzFetcher:
         pending_from = None
         pending_sum_offset = running_sum_offset
         if not is_day_level and slot_counts:
+            # Build per-date value sums (values is now per-slot, not per-day)
+            date_sums: dict[str, float] = {}
+            for v in values:
+                date_sums[v["date"]] = date_sums.get(v["date"], 0.0) + v["value"]
             today = datetime.now(tz=ZRH).date()
             today_str_cest = today.strftime("%Y-%m-%d")
             running_for_pending = running_sum_offset
-            for value in values:  # one entry per day, sorted by timestamp
-                date_str = value["date"]
+            for date_str in sorted(slot_counts.keys()):
                 if date_str >= today_str_cest:
                     break  # skip today and future
                 date = datetime.strptime(date_str, "%Y-%m-%d")
@@ -267,7 +274,7 @@ class EkzFetcher:
                             f"({count}/{expected_slots} slots) is {age_days}d old — accepting as permanent, skipping lookback"
                         )
                     break
-                running_for_pending += value["value"]
+                running_for_pending += date_sums.get(date_str, 0.0)
 
         # Set last_import and last_run_date in meta_entity if provided.
         # Use max_date (last complete day) instead of the latest timestamp to avoid
