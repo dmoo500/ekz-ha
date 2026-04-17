@@ -15,5 +15,5 @@
     "beautifulsoup4>=4.0.0",
     "pyotp>=2.9.0"
   ],
-  "version": "0.1.2b3"
+  "version": "0.1.2"
 }
