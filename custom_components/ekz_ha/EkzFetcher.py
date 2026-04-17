@@ -232,10 +232,14 @@ class EkzFetcher:
 
         # --- Option B: detect first incomplete day for next-cycle lookback ---
         # A pending day has some VALID slots but not a full complement — EKZ may deliver the rest later.
+        # Only consider days within the last PENDING_MAX_AGE_DAYS days: EKZ back-fills at most ~14 days.
+        # Older incomplete days (e.g. the very first partial day of a contract) are accepted as-is.
+        PENDING_MAX_AGE_DAYS = 14
         pending_from = None
         pending_sum_offset = running_sum_offset
         if not is_day_level and slot_counts:
-            today_str_cest = datetime.now(tz=ZRH).strftime("%Y-%m-%d")
+            today = datetime.now(tz=ZRH).date()
+            today_str_cest = today.strftime("%Y-%m-%d")
             running_for_pending = running_sum_offset
             for value in values:  # one entry per day, sorted by timestamp
                 date_str = value["date"]
@@ -249,12 +253,19 @@ class EkzFetcher:
                 )
                 count = slot_counts.get(date_str, 0)
                 if 0 < count < expected_slots:
-                    pending_from = date
-                    pending_sum_offset = running_for_pending
-                    _LOGGER.info(
-                        f"[import_full_history_to_statistics] Pending day: {date_str} "
-                        f"({count}/{expected_slots} slots) — will re-check next cycle"
-                    )
+                    age_days = (today - date.date()).days
+                    if age_days <= PENDING_MAX_AGE_DAYS:
+                        pending_from = date
+                        pending_sum_offset = running_for_pending
+                        _LOGGER.info(
+                            f"[import_full_history_to_statistics] Pending day: {date_str} "
+                            f"({count}/{expected_slots} slots, {age_days}d ago) — will re-check next cycle"
+                        )
+                    else:
+                        _LOGGER.debug(
+                            f"[import_full_history_to_statistics] Incomplete day {date_str} "
+                            f"({count}/{expected_slots} slots) is {age_days}d old — accepting as permanent, skipping lookback"
+                        )
                     break
                 running_for_pending += value["value"]
 
