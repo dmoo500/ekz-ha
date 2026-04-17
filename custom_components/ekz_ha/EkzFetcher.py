@@ -168,10 +168,23 @@ class EkzFetcher:
             values = sorted(values, key=lambda x: x["timestamp"])
             _LOGGER.debug(f"[import_full_history_to_statistics] Total values after daily aggregation: {len(values)}")
         else:
-            # QUARTER_HOUR data (PK_VERB_15MIN): keep each 15-min slot as an individual statistic entry.
-            # NT+HT are already summed per timestamp by sortAndFilter above.
-            values = [{**v, "timestamp": normalize_timestamp(v["timestamp"])} for v in values]
-            _LOGGER.debug(f"[import_full_history_to_statistics] Total QUARTER_HOUR slot values: {len(values)}")
+            # QUARTER_HOUR data (PK_VERB_15MIN): aggregate 4 x 15-min slots into hourly buckets.
+            # Home Assistant's statistics API only accepts timestamps at the top of the hour
+            # (minutes = 0, seconds = 0) — sub-hourly timestamps are rejected.
+            # Group by the UTC hour (first 10 chars of the 14-digit timestamp = YYYYMMDDHH) and sum.
+            def total_hour(group):
+                group = list(group)
+                hour_ts = normalize_timestamp(str(group[0]["timestamp"])[:10] + "0000")
+                return {
+                    **group[0],
+                    "value": sum(x["value"] for x in group),
+                    "timestamp": hour_ts,
+                }
+            values = [total_hour(g) for _, g in itertools.groupby(
+                sorted(values, key=lambda v: str(v["timestamp"])[:10]),
+                lambda v: str(v["timestamp"])[:10],
+            )]
+            _LOGGER.debug(f"[import_full_history_to_statistics] Total QUARTER_HOUR hourly-aggregated values: {len(values)}")
 
         if is_day_level:
             # DAY-level: every entry is a complete day — accept all days except today (may be partial).
