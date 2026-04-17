@@ -86,6 +86,24 @@ After the first chunk is imported, you can add the sensor to the Energy Dashboar
 
 > **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
 
+### Prediction sensor (gap filling)
+
+EKZ delivers consumption data with a delay of approximately 7–10 days. To fill this gap in the Energy Dashboard, the integration provides a **prediction sensor**:
+
+`sensor.electricity_consumption_ekz_<installationId>_prediction`
+
+**How it works:**
+- While importing historical data, the integration accumulates **hourly consumption averages** per UTC month+hour bucket from the raw 15-minute slots.
+- Once the historical import is complete (catch-up mode ends), each update cycle generates predicted hourly values from the last real data point up to the current time.
+- The predictions are written as HA statistics — the Energy Dashboard will show them as an estimate for the recent gap.
+
+**Adding the prediction sensor to the Energy Dashboard:**
+1. Go to **Settings → Energy → Electricity grid → Add consumption sensor**
+2. Select `sensor.electricity_consumption_ekz_<installationId>_prediction`
+3. The sensor will remain empty during catch-up and fill in automatically once up-to-date.
+
+> **Note:** Predictions are based on historical averages per hour and month. They become more accurate the more historical data has been imported. The predictions are automatically overwritten by real data as EKZ delivers it.
+
 ## Solar production data
 
 If you have one or more EKZ solar installations (feed-in / Einspeisung), the integration automatically detects them and imports your production history into Home Assistant long-term statistics.

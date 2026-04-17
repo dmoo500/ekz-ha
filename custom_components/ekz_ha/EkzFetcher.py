@@ -27,7 +27,7 @@ def is_dst_switchover_date(dt: datetime, timeZone: zoneinfo.ZoneInfo) -> bool:
 
 class EkzFetcher:
 
-    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0):
+    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0, force_from_date=None):
         """Import data and return as dict for further processing, do not write to statistics directly."""
         _LOGGER = logging.getLogger(__name__)
         _LOGGER.debug(f"[import_full_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
@@ -49,6 +49,10 @@ class EkzFetcher:
             # Set contract_start in meta_entity if not set
             if meta_entity is not None and meta_entity._contract_start is None:
                 meta_entity.set_contract_start(from_date.date())
+        # Allow caller to override from_date (e.g. for pending day lookback)
+        if force_from_date is not None:
+            from_date = datetime.combine(force_from_date, datetime.min.time()) if not isinstance(force_from_date, datetime) else force_from_date
+            _LOGGER.info(f"[import_full_history_to_statistics] Lookback for pending days: overriding from_date to {from_date}")
         # Import exactly one month from from_date
         to_date = from_date + timedelta(days=30)
         _LOGGER.debug(f"[import_full_history_to_statistics] Fetching consumption data: installationId={installationId}, period {from_date} to {to_date}")
@@ -132,6 +136,20 @@ class EkzFetcher:
         
         is_day_level = (level == "DAY")
 
+        # Count 15-min slots per date BEFORE aggregation — used for full-day detection and pending tracking.
+        slot_counts: dict[str, int] = {}
+        hourly_raw: dict[int, tuple[float, int]] = {}  # month*100+hour_utc -> (sum_kwh, count_slots)
+        if not is_day_level:
+            for v in values:
+                slot_counts[v["date"]] = slot_counts.get(v["date"], 0) + 1
+                ts = str(v["timestamp"])
+                hour_utc = int(ts[8:10]) if len(ts) >= 10 else 0
+                month = int(v["date"][5:7])
+                mh_key = month * 100 + hour_utc
+                s, c = hourly_raw.get(mh_key, (0.0, 0))
+                hourly_raw[mh_key] = (s + v["value"], c + 1)
+            _LOGGER.debug(f"[import_full_history_to_statistics] Slot counts (first 5): {dict(list(sorted(slot_counts.items()))[:5])}")
+
         # Aggregate per day (for QUARTER_HOUR: sum multiple slots; for DAY: passthrough with 1 entry per day)
         def total(group):
             group = list(group)
@@ -146,7 +164,7 @@ class EkzFetcher:
 
         values = [
             total(g)
-            for _, g in itertools.groupby(values, lambda v: str(v["timestamp"])[0:10] if not is_day_level else v["date"])
+            for _, g in itertools.groupby(values, lambda v: v["date"] if not is_day_level else v["date"])
         ]
         values = sorted(values, key=lambda x: x["timestamp"])
         _LOGGER.debug(f"[import_full_history_to_statistics] Total values after daily aggregation: {len(values)}")
@@ -161,18 +179,22 @@ class EkzFetcher:
                     if max_date is None or d > max_date:
                         max_date = d
         else:
-            # For 15-min data find the last day that has 24 entries (or 23/25 for DST switchover)
+            # For 15-min data: check slot_counts counted BEFORE aggregation.
+            # A full day has 96 slots (4 per hour × 24h), 92 for DST spring forward, 100 for DST fall back.
             max_date = None
-            for k, v in itertools.groupby(values, lambda v: v["date"]):
-                date = datetime.strptime(k, "%Y-%m-%d")
-                expected_hours_per_day = (
-                    23
+            today_str_cest = datetime.now(tz=ZRH).strftime("%Y-%m-%d")
+            for date_str, count in slot_counts.items():
+                if date_str >= today_str_cest:
+                    continue  # today may be partial
+                date = datetime.strptime(date_str, "%Y-%m-%d")
+                expected_slots = (
+                    92
                     if is_dst_switchover_date(date, ZRH) and date.month < 6
-                    else 25
+                    else 100
                     if is_dst_switchover_date(date, ZRH)
-                    else 24
+                    else 96
                 )
-                if len(list(v)) == expected_hours_per_day:
+                if count == expected_slots:
                     if max_date is None or date > max_date:
                         max_date = date
 
@@ -208,6 +230,34 @@ class EkzFetcher:
         _LOGGER.debug(f"[import_full_history_to_statistics] Total statistics entries prepared: {len(statistics)}")
         last_full_day = max_date
 
+        # --- Option B: detect first incomplete day for next-cycle lookback ---
+        # A pending day has some VALID slots but not a full complement — EKZ may deliver the rest later.
+        pending_from = None
+        pending_sum_offset = running_sum_offset
+        if not is_day_level and slot_counts:
+            today_str_cest = datetime.now(tz=ZRH).strftime("%Y-%m-%d")
+            running_for_pending = running_sum_offset
+            for value in values:  # one entry per day, sorted by timestamp
+                date_str = value["date"]
+                if date_str >= today_str_cest:
+                    break  # skip today and future
+                date = datetime.strptime(date_str, "%Y-%m-%d")
+                expected_slots = (
+                    92 if is_dst_switchover_date(date, ZRH) and date.month < 6
+                    else 100 if is_dst_switchover_date(date, ZRH)
+                    else 96
+                )
+                count = slot_counts.get(date_str, 0)
+                if 0 < count < expected_slots:
+                    pending_from = date
+                    pending_sum_offset = running_for_pending
+                    _LOGGER.info(
+                        f"[import_full_history_to_statistics] Pending day: {date_str} "
+                        f"({count}/{expected_slots} slots) — will re-check next cycle"
+                    )
+                    break
+                running_for_pending += value["value"]
+
         # Set last_import and last_run_date in meta_entity if provided.
         # Use max_date (last complete day) instead of the latest timestamp to avoid
         # skipping partial-day data for today on the next import cycle.
@@ -220,7 +270,12 @@ class EkzFetcher:
                 meta_entity.set_last_import(to_date.date())
             # If statistics exist but max_date is None (only partial/today data), do not advance last_import.
             meta_entity.set_last_run_date(datetime.now())
-        _LOGGER.debug(f"[import_full_history_to_statistics] Import finished: {len(statistics)} statistics entries, last_import={last_import}, last_full_day={last_full_day}")
+            if hasattr(meta_entity, "set_pending"):
+                meta_entity.set_pending(
+                    pending_from.date() if pending_from else None,
+                    pending_sum_offset,
+                )
+        _LOGGER.debug(f"[import_full_history_to_statistics] Import finished: {len(statistics)} statistics entries, last_import={last_import}, last_full_day={last_full_day}, pending_from={pending_from}")
         # Return the data for further processing
         return {
             "statistics": statistics,
@@ -229,6 +284,9 @@ class EkzFetcher:
             "to_date": to_date.date(),
             "last_full_day": last_full_day,
             "last_full_day_sum": last_full_day_sum,
+            "pending_from": pending_from.date() if pending_from else None,
+            "pending_sum_offset": pending_sum_offset,
+            "averages_raw": hourly_raw,
         }
 
     def __init__(self, user: str, password: str, totp_secret: str | None = None, device_name: str | None = None) -> None:
