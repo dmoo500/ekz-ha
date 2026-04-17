@@ -18,6 +18,7 @@ from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_
 from .EkzFetcher import EkzFetcher
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
+UTC = zoneinfo.ZoneInfo("UTC")
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -71,6 +72,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
         self._reset_lock = asyncio.Lock()
+        self.consumption_averages_raw: dict[str, dict] = {}  # accumulated slot sums for prediction
 
     async def _async_setup(self):
         """Load installations on first start."""
@@ -216,68 +218,63 @@ class EkzCoordinator(DataUpdateCoordinator):
                     _LOGGER.info(f"Catch-up complete for {key}, switching to daily poll interval")
                     self.update_interval = NORMAL_SCAN_INTERVAL
 
-            # Save consumption averages for prediction calculation
+            # Accumulate hourly averages across all imported chunks for prediction.
+            # averages_raw: {month*100+hour_utc: (sum_kwh, count_slots)} from EkzFetcher.
             averages = None
-            if "averages" in result:
-                _LOGGER.debug(f"Averages for {key}: {result['averages']}")
-                if self.consumption_averages is None:
-                    self.consumption_averages = {}
-                self.consumption_averages[key] = result["averages"]
-                averages = result["averages"]
-            elif self.consumption_averages is None:
-                if key in self.consumption_averages:
-                    averages = self.consumption_averages[key]
+            if result.get("averages_raw"):
+                raw = result["averages_raw"]
+                existing_raw = self.consumption_averages_raw.get(key, {})
+                for mh_key, (new_sum, new_count) in raw.items():
+                    ex_sum, ex_count = existing_raw.get(mh_key, (0.0, 0))
+                    existing_raw[mh_key] = (ex_sum + new_sum, ex_count + new_count)
+                self.consumption_averages_raw[key] = existing_raw
+                # 4 slots per hour → avg kWh/h = total_kwh / (count_slots / 4)
+                averages = {
+                    k: v[0] / (v[1] / 4)
+                    for k, v in existing_raw.items()
+                    if v[1] >= 4  # require at least 1 complete hour of data
+                }
+                self.consumption_averages[key] = averages
+                _LOGGER.debug(f"Updated hourly averages for {key}: {len(averages)} month-hour buckets")
+            elif key in self.consumption_averages:
+                averages = self.consumption_averages[key]
 
-            if averages is not None and len(result["statistics"]) > 0:
-                # Reset prediction statistics for all periods covered by real data,
+            # Only run predictions when fully caught up (gap fills the recent EKZ delay)
+            if averages and len(result["statistics"]) > 0 and not still_catching_up:
+                # Zero out predictions for all periods already covered by real data in this chunk,
                 # then extrapolate forward using historical averages.
                 predictions = [
                     {"start": x["start"], "sum": 0, "state": 0}
                     for x in result["statistics"]
                 ]
-                last_actual = result["statistics"][len(result["statistics"]) - 1]
-                # Copy
-                last_actual = {
-                    "start": last_actual["start"],
-                    "sum": last_actual["sum"],
-                    "state": last_actual["state"],
-                }
-                last_actual["start"] = last_actual["start"] + timedelta(hours=1)
-                running_total = 0
-                while last_actual["start"] < datetime.now().astimezone(tz=ZRH):
-                    mh_key = (
-                        last_actual["start"].month * 100 + last_actual["start"].hour
+                last_actual_start = result["statistics"][-1]["start"]
+                # Start predictions at the next full hour after the last real data entry
+                pred_start = last_actual_start + timedelta(hours=1)
+                running_total = 0.0
+                now_utc = datetime.now(tz=UTC)
+                while pred_start < now_utc:
+                    mh_key = pred_start.month * 100 + pred_start.hour
+                    hourly_kwh = averages.get(mh_key, 0.0)
+                    running_total += hourly_kwh
+                    predictions.append(
+                        {
+                            "start": pred_start,
+                            "sum": running_total,
+                            "state": hourly_kwh,
+                        }
                     )
-                    if mh_key in averages:
-                        running_total += averages[mh_key]
-                        predictions.append(
-                            {
-                                "start": last_actual["start"],
-                                "sum": running_total,
-                                "state": averages[mh_key],
-                            }
-                        )
-                    else:
-                        running_total += last_actual["state"]
-                        predictions.append(
-                            {
-                                "start": last_actual["start"],
-                                "sum": running_total,
-                                "state": last_actual["state"],
-                            }
-                        )
-                    last_actual["start"] = last_actual["start"] + timedelta(hours=1)
+                    pred_start = pred_start + timedelta(hours=1)
 
-                _LOGGER.debug(
-                    f"Predictions for {key} from {predictions[0]['start']} to {predictions[len(predictions)-1]['start']}: {predictions}"
-                )
-                async_import_statistics(
-                    self.hass,
-                    _make_stat_meta(f"sensor.electricity_consumption_ekz_{key}_predictions"),
-                    [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
-                )
-                if predictions:
-                    self.last_prediction_sums[key] = predictions[-1]["sum"]     
+                if len(predictions) > 1:
+                    _LOGGER.info(
+                        f"Predictions for {key}: {len(predictions)} entries, "
+                        f"gap coverage {result['statistics'][-1]['start'].date()} → {pred_start.date()}"
+                    )
+                    async_import_statistics(
+                        self.hass,
+                        _make_stat_meta(f"sensor.electricity_consumption_ekz_{key}_prediction"),
+                        [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
+                    )
 
         # --- Production (solar feed-in) import loop ---
         production_meta_entities = getattr(self, "production_meta_entities", {})

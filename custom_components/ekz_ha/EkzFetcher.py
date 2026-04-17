@@ -138,9 +138,16 @@ class EkzFetcher:
 
         # Count 15-min slots per date BEFORE aggregation — used for full-day detection and pending tracking.
         slot_counts: dict[str, int] = {}
+        hourly_raw: dict[int, tuple[float, int]] = {}  # month*100+hour_utc -> (sum_kwh, count_slots)
         if not is_day_level:
             for v in values:
                 slot_counts[v["date"]] = slot_counts.get(v["date"], 0) + 1
+                ts = str(v["timestamp"])
+                hour_utc = int(ts[8:10]) if len(ts) >= 10 else 0
+                month = int(v["date"][5:7])
+                mh_key = month * 100 + hour_utc
+                s, c = hourly_raw.get(mh_key, (0.0, 0))
+                hourly_raw[mh_key] = (s + v["value"], c + 1)
             _LOGGER.debug(f"[import_full_history_to_statistics] Slot counts (first 5): {dict(list(sorted(slot_counts.items()))[:5])}")
 
         # Aggregate per day (for QUARTER_HOUR: sum multiple slots; for DAY: passthrough with 1 entry per day)
@@ -279,6 +286,7 @@ class EkzFetcher:
             "last_full_day_sum": last_full_day_sum,
             "pending_from": pending_from.date() if pending_from else None,
             "pending_sum_offset": pending_sum_offset,
+            "averages_raw": hourly_raw,
         }
 
     def __init__(self, user: str, password: str, totp_secret: str | None = None, device_name: str | None = None) -> None:

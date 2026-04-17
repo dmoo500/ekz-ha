@@ -84,7 +84,7 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = (
             f"ekz_electricity_consumption_{installationId}_prediction"
         )
-        self._attr_name = f"Electricity consumption prediction EKZ {installationId}"
+        self._attr_name = f"Electricity consumption EKZ {installationId} prediction"
 
     @property
     def device_info(self):
