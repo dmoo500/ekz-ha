@@ -223,8 +223,21 @@ class EkzCoordinator(DataUpdateCoordinator):
             )
             _LOGGER.debug(f"Chunk result for {key}: from={result.get('from_date')} to={result.get('to_date')}, entries={len(result.get('statistics', []))}")
             if result.get("statistics"):
-                last_stat = result["statistics"][-1]
-                self.last_sums[key] = last_stat["sum"]
+                # Set last_sums to the sum at the END of the last COMPLETE day, not the
+                # last imported entry. When a chunk includes partial current-day data, the next
+                # cycle re-imports those same slots from the local-day boundary (midnight CEST =
+                # 22:00 UTC). Using the inflated end-of-chunk sum as offset would cause those
+                # slots to be double-counted → spike.
+                last_full_day = result.get("last_full_day")
+                if last_full_day is not None:
+                    # Find the UTC start of the next CEST day after the last complete day
+                    next_day_utc = datetime.combine(
+                        last_full_day.date() + timedelta(days=1), datetime.min.time()
+                    ).replace(tzinfo=ZRH).astimezone(UTC)
+                    complete_stats = [s for s in result["statistics"] if s["start"] < next_day_utc]
+                    self.last_sums[key] = complete_stats[-1]["sum"] if complete_stats else result["statistics"][-1]["sum"]
+                else:
+                    self.last_sums[key] = result["statistics"][-1]["sum"]
                 _LOGGER.info(f"Importing chunk of {len(result['statistics'])} statistics for {key}, range {result['statistics'][0]['start']} to {result['statistics'][-1]['start']}")
                 try:
                     async_import_statistics(
