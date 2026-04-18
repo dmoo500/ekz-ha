@@ -8,7 +8,7 @@ import zoneinfo
 from homeassistant import core
 from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType, StatisticMetaData
-from homeassistant.components.recorder.statistics import async_import_statistics, get_last_statistics
+from homeassistant.components.recorder.statistics import async_import_statistics, get_last_statistics, statistics_during_period
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
@@ -142,8 +142,31 @@ class EkzCoordinator(DataUpdateCoordinator):
                             import_date = import_dt.date() - timedelta(days=1)
                             _LOGGER.info(f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date} to re-check last day")
                             meta_entity.set_last_import(import_date)
-                            if last_stat_data[0].get("sum") is not None:
-                                self.last_sums[key] = last_stat_data[0]["sum"]
+                            # Find the cumulative sum at the START of the rewind date so the
+                            # re-imported chunk uses the correct running_sum_offset — using the
+                            # last DB sum would produce spikes because the offset would be too high.
+                            rewind_start_dt = datetime.combine(import_date, datetime.min.time()).replace(tzinfo=UTC)
+                            try:
+                                pre_rewind = await get_recorder_instance(self.hass).async_add_executor_job(
+                                    statistics_during_period,
+                                    self.hass,
+                                    rewind_start_dt - timedelta(hours=26),
+                                    rewind_start_dt,
+                                    {statistic_id},
+                                    "hour",
+                                    None,
+                                    {"sum"},
+                                )
+                                if pre_rewind and statistic_id in pre_rewind and pre_rewind[statistic_id]:
+                                    self.last_sums[key] = pre_rewind[statistic_id][-1]["sum"]
+                                    _LOGGER.info(f"Rewind sum offset for {key}: {self.last_sums[key]:.3f} kWh")
+                                else:
+                                    self.last_sums[key] = 0.0
+                                    _LOGGER.info(f"No pre-rewind stats found for {key}, starting from 0")
+                            except Exception as e_rewind:
+                                _LOGGER.debug(f"Could not query pre-rewind stats for {key}: {e_rewind}")
+                                if last_stat_data[0].get("sum") is not None:
+                                    self.last_sums[key] = last_stat_data[0]["sum"]
                             # Pre-initialise catching_up flag so sensor shows correct value immediately
                             today_date = datetime.now(tz=ZRH).date()
                             if (today_date - import_date).days <= 1:
