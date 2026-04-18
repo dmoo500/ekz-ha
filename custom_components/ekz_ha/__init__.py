@@ -145,7 +145,11 @@ class EkzCoordinator(DataUpdateCoordinator):
                             # Find the cumulative sum at the START of the rewind date so the
                             # re-imported chunk uses the correct running_sum_offset — using the
                             # last DB sum would produce spikes because the offset would be too high.
-                            rewind_start_dt = datetime.combine(import_date, datetime.min.time()).replace(tzinfo=UTC)
+                            # from_date will be (import_date + 1 day) at midnight CEST/CET.
+                            # EKZ timestamps for a CEST day start at 22:00 UTC the previous day,
+                            # so we must query up to that UTC boundary, not UTC midnight of import_date.
+                            from_date_local = datetime.combine(import_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=ZRH)
+                            rewind_start_dt = from_date_local.astimezone(UTC)
                             try:
                                 pre_rewind = await get_recorder_instance(self.hass).async_add_executor_job(
                                     statistics_during_period,
