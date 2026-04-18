@@ -136,8 +136,11 @@ class EkzCoordinator(DataUpdateCoordinator):
                                 import_dt = raw_start.astimezone(ZRH)
                             else:
                                 import_dt = raw_start.replace(tzinfo=ZRH)
-                            import_date = import_dt.date()
-                            _LOGGER.info(f"Restored last import for {key} from DB: {import_date}")
+                            # Go back 1 day from the last DB entry: the last imported day may have
+                            # been partial (EKZ has a ~2-day delay), so we always re-fetch it on
+                            # restart to pick up any slots that were added later by EKZ.
+                            import_date = import_dt.date() - timedelta(days=1)
+                            _LOGGER.info(f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date} to re-check last day")
                             meta_entity.set_last_import(import_date)
                             if last_stat_data[0].get("sum") is not None:
                                 self.last_sums[key] = last_stat_data[0]["sum"]
@@ -371,7 +374,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         statistic_ids = []
         for key in coordinator.installations:
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}")
-            statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}_predictions")
+            statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}_prediction")
         for key in coordinator.production_installations:
             statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
 

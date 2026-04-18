@@ -53,8 +53,10 @@ class EkzFetcher:
         if force_from_date is not None:
             from_date = datetime.combine(force_from_date, datetime.min.time()) if not isinstance(force_from_date, datetime) else force_from_date
             _LOGGER.info(f"[import_full_history_to_statistics] Lookback for pending days: overriding from_date to {from_date}")
-        # Import exactly one month from from_date
-        to_date = from_date + timedelta(days=30)
+        # Import up to 30 days from from_date, but never past tomorrow (local time) —
+        # the EKZ API only returns NOT_AVAILABLE for future dates, wasting a round-trip.
+        tomorrow_naive = datetime.combine(datetime.now(tz=ZRH).date() + timedelta(days=1), datetime.min.time())
+        to_date = min(from_date + timedelta(days=30), tomorrow_naive)
         _LOGGER.debug(f"[import_full_history_to_statistics] Fetching consumption data: installationId={installationId}, period {from_date} to {to_date}")
         data = await self.session.get_consumption_data(
             installationId,
@@ -383,7 +385,8 @@ class EkzFetcher:
                 from_date = datetime.combine(contract_start, datetime.min.time())
             if meta_entity is not None and meta_entity._contract_start is None:
                 meta_entity.set_contract_start(from_date.date())
-        to_date = from_date + timedelta(days=30)
+        tomorrow_naive = datetime.combine(datetime.now(tz=ZRH).date() + timedelta(days=1), datetime.min.time())
+        to_date = min(from_date + timedelta(days=30), tomorrow_naive)
         _LOGGER.debug(f"[import_production_history_to_statistics] Fetching production data: installationId={installationId}, period {from_date} to {to_date}")
         data = await self.session.get_consumption_data(
             installationId,
