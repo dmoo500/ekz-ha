@@ -141,14 +141,14 @@ class EkzCoordinator(DataUpdateCoordinator):
                             # restart to pick up any slots that were added later by EKZ.
                             import_date = import_dt.date() - timedelta(days=1)
                             _LOGGER.info(f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date} to re-check last day")
-                            meta_entity.set_last_import(import_date)
-                            # Find the cumulative sum at the START of the rewind date so the
-                            # re-imported chunk uses the correct running_sum_offset — using the
-                            # last DB sum would produce spikes because the offset would be too high.
-                            # from_date will be (import_date + 1 day) at midnight CEST/CET.
+                            # Set last_import one day BEFORE the rewind date so the fetcher
+                            # starts from import_date (last_import + 1 = import_date).
+                            meta_entity.set_last_import(import_date - timedelta(days=1))
+                            # Find the cumulative sum at the END of the day before the rewind date
+                            # (= just before the first EKZ slot of import_date in local time).
                             # EKZ timestamps for a CEST day start at 22:00 UTC the previous day,
-                            # so we must query up to that UTC boundary, not UTC midnight of import_date.
-                            from_date_local = datetime.combine(import_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=ZRH)
+                            # so midnight CEST of import_date = (import_date - 1) 22:00 UTC.
+                            from_date_local = datetime.combine(import_date, datetime.min.time()).replace(tzinfo=ZRH)
                             rewind_start_dt = from_date_local.astimezone(UTC)
                             try:
                                 pre_rewind = await get_recorder_instance(self.hass).async_add_executor_job(
