@@ -121,6 +121,16 @@ class EkzFetcher:
         
         _LOGGER.debug(f"[import_full_history_to_statistics] Total values after deduplication (level={level}): {len(values)}")
         if values is None or values == {} or len(values) == 0:
+            # Only fall back to DAY-level for older data (> 30 days ago).
+            # For recent periods the 15-min API should always have data; an empty response
+            # here means a session error — falling back to DAY-level would write a coarse
+            # daily entry that collides with (and corrupts) existing hourly statistics.
+            recent_threshold = datetime.now() - timedelta(days=30)
+            if from_date >= recent_threshold:
+                _LOGGER.info(f"[import_full_history_to_statistics] No 15-min data for recent period {from_date.date()} (likely session error) — skipping DAY-level fallback, will retry next cycle")
+                if meta_entity is not None:
+                    meta_entity.set_last_run_date(datetime.now())
+                return {"statistics": [], "last_import": None, "from_date": from_date.date(), "to_date": to_date.date(), "last_full_day": None, "last_full_day_sum": math.inf}
             _LOGGER.info(f"[import_full_history_to_statistics] No data returned from get_consumption_data for installationId={installationId}, period {from_date} to {to_date} by type PK_VERB_15MIN - try with PK_VERB_TAG_METER")
             data = await self.session.get_consumption_data(
                 installationId,

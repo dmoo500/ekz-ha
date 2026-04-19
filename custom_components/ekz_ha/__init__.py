@@ -73,6 +73,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self._normal_interval = update_interval  # remember configured interval for later restore
         self._reset_lock = asyncio.Lock()
         self.consumption_averages_raw: dict[str, dict] = {}  # accumulated slot sums for prediction
+        self.next_update_time: datetime | None = None
 
     async def _async_setup(self):
         """Load installations on first start."""
@@ -366,6 +367,9 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
                 except Exception as e:
                     _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
+
+        # Track when the next update is scheduled so the next-sync sensor can display it
+        self.next_update_time = datetime.now(tz=UTC) + self.update_interval
 
 
 async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:

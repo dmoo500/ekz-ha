@@ -24,6 +24,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         meta_entities[installationId] = meta
         sensors.append(meta)
         sensors.append(EkzContractStartEntity(coordinator, installationId))
+        sensors.append(EkzNextSyncEntity(coordinator, installationId))
     # Store mapping in coordinator so update loop can access entities by installation ID
     coordinator.meta_entities = meta_entities
 
@@ -250,4 +251,29 @@ class EkzProductionEntity(CoordinatorEntity, SensorEntity):
     @property
     def icon(self) -> str:
         return "mdi:solar-power"
-    
+
+
+class EkzNextSyncEntity(CoordinatorEntity, SensorEntity):
+    """Shows when the next data sync with EKZ is scheduled."""
+
+    def __init__(self, coordinator: DataUpdateCoordinator, installationId: str) -> None:
+        super().__init__(coordinator)
+        self.installation_id = installationId
+        self._attr_unique_id = f"ekz_next_sync_{installationId}"
+        self._attr_name = f"EKZ {installationId} Next Sync"
+        self._attr_device_class = SensorDeviceClass.TIMESTAMP
+        self._attr_icon = "mdi:clock-outline"
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
+            "name": f"EKZ {self.installation_id}",
+            "manufacturer": "EKZ",
+            "model": "Electricity Meter",
+        }
+
+    @property
+    def native_value(self):
+        """Return the next scheduled sync time."""
+        return getattr(self.coordinator, "next_update_time", None)
