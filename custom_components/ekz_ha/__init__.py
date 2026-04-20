@@ -145,34 +145,8 @@ class EkzCoordinator(DataUpdateCoordinator):
                             # Set last_import one day BEFORE the rewind date so the fetcher
                             # starts from import_date (last_import + 1 = import_date).
                             meta_entity.set_last_import(import_date - timedelta(days=1))
-                            # Find the cumulative sum at the END of the day before the rewind date
-                            # (= just before the first EKZ slot of import_date in local time).
-                            # EKZ timestamps for a CEST day start at 22:00 UTC the previous day,
-                            # so midnight CEST of import_date = (import_date - 1) 22:00 UTC.
-                            from_date_local = datetime.combine(import_date, datetime.min.time()).replace(tzinfo=ZRH)
-                            rewind_start_dt = from_date_local.astimezone(UTC)
-                            try:
-                                pre_rewind = await get_recorder_instance(self.hass).async_add_executor_job(
-                                    statistics_during_period,
-                                    self.hass,
-                                    rewind_start_dt - timedelta(hours=26),
-                                    rewind_start_dt,
-                                    {statistic_id},
-                                    "hour",
-                                    None,
-                                    {"sum"},
-                                )
-                                if pre_rewind and statistic_id in pre_rewind and pre_rewind[statistic_id]:
-                                    self.last_sums[key] = pre_rewind[statistic_id][-1]["sum"]
-                                    _LOGGER.info(f"Rewind sum offset for {key}: {self.last_sums[key]:.3f} kWh")
-                                else:
-                                    self.last_sums[key] = 0.0
-                                    _LOGGER.info(f"No pre-rewind stats found for {key}, starting from 0")
-                            except Exception as e_rewind:
-                                _LOGGER.debug(f"Could not query pre-rewind stats for {key}: {e_rewind}")
-                                if last_stat_data[0].get("sum") is not None:
-                                    self.last_sums[key] = last_stat_data[0]["sum"]
                             # Pre-initialise catching_up flag so sensor shows correct value immediately
+                            # (The running offset will be queried from DB just before the fetch below.)
                             today_date = datetime.now(tz=ZRH).date()
                             if (today_date - import_date).days <= 1:
                                 self.catching_up[key] = False
@@ -206,16 +180,45 @@ class EkzCoordinator(DataUpdateCoordinator):
 
             # Import exactly one 30-day chunk per update cycle.
             # If pending days were detected in the previous cycle, re-fetch from that earlier date
-            # (with the stored sum offset) so EKZ can fill in previously incomplete days.
+            # so EKZ can fill in previously incomplete days.
             pending_from = getattr(meta_entity, "_pending_from", None)
             if pending_from is not None:
-                running_sum = getattr(meta_entity, "_pending_sum_offset", 0.0) or 0.0
-                _LOGGER.info(
-                    f"[{key}] Pending day lookback: re-fetching from {pending_from} "
-                    f"with sum offset {running_sum:.3f}"
-                )
+                _LOGGER.info(f"[{key}] Pending day lookback: re-fetching from {pending_from}")
+
+            # Always query the DB for the correct running offset at the start of from_date.
+            # from_date = (last_import + 1 day) midnight CEST = last_import 22:00 UTC.
+            # Querying the DB here is the only reliable way to avoid double-counting when
+            # the same slots are re-imported across cycles (e.g. pending days or restarts).
+            _last_import_date = meta_entity._last_import
+            if _last_import_date is not None:
+                if isinstance(_last_import_date, datetime):
+                    _last_import_date = _last_import_date.date()
+                offset_boundary = datetime.combine(
+                    _last_import_date + timedelta(days=1), datetime.min.time()
+                ).replace(tzinfo=ZRH).astimezone(UTC)
+                try:
+                    pre_stats = await get_recorder_instance(self.hass).async_add_executor_job(
+                        statistics_during_period,
+                        self.hass,
+                        offset_boundary - timedelta(hours=26),
+                        offset_boundary,
+                        {statistic_id},
+                        "hour",
+                        None,
+                        {"sum"},
+                    )
+                    if pre_stats and statistic_id in pre_stats and pre_stats[statistic_id]:
+                        running_sum = pre_stats[statistic_id][-1]["sum"]
+                        _LOGGER.info(f"DB offset for {key}: {running_sum:.3f} kWh (boundary {offset_boundary})"
+                        )
+                    else:
+                        running_sum = 0.0
+                        _LOGGER.debug(f"No DB stats found before {offset_boundary} for {key}, using 0")
+                except Exception as e_offset:
+                    _LOGGER.debug(f"Could not query DB offset for {key}: {e_offset}")
+                    running_sum = self.last_sums.get(key, 0.0)
             else:
-                running_sum = self.last_sums.get(key, 0.0)
+                running_sum = 0.0
             # EkzFetcher updates meta_entity._last_import after each import so the next cycle continues from there.
             result = await self.ekz_fetcher.import_full_history_to_statistics(
                 self.hass, key, contract_start, meta_entity,
@@ -224,21 +227,19 @@ class EkzCoordinator(DataUpdateCoordinator):
             )
             _LOGGER.debug(f"Chunk result for {key}: from={result.get('from_date')} to={result.get('to_date')}, entries={len(result.get('statistics', []))}")
             if result.get("statistics"):
-                # Set last_sums to the sum at the END of the last COMPLETE day, not the
-                # last imported entry. When a chunk includes partial current-day data, the next
-                # cycle re-imports those same slots from the local-day boundary (midnight CEST =
-                # 22:00 UTC). Using the inflated end-of-chunk sum as offset would cause those
-                # slots to be double-counted → spike.
                 last_full_day = result.get("last_full_day")
                 if last_full_day is not None:
-                    # Find the UTC start of the next CEST day after the last complete day
+                    # Keep last_sums updated as fallback in case the DB query ever fails.
+                    # Only set it when we have a complete day so the value stays at the CEST
+                    # midnight boundary — partial-day imports are handled by the DB query above.
                     next_day_utc = datetime.combine(
                         last_full_day.date() + timedelta(days=1), datetime.min.time()
                     ).replace(tzinfo=ZRH).astimezone(UTC)
                     complete_stats = [s for s in result["statistics"] if s["start"] < next_day_utc]
                     self.last_sums[key] = complete_stats[-1]["sum"] if complete_stats else result["statistics"][-1]["sum"]
-                else:
-                    self.last_sums[key] = result["statistics"][-1]["sum"]
+                # Do NOT update last_sums for partial-only imports: the DB query already
+                # returns the correct boundary sum every cycle, so there is no need to persist
+                # an inflated end-of-chunk value that would cause double-counting on retry.
                 _LOGGER.info(f"Importing chunk of {len(result['statistics'])} statistics for {key}, range {result['statistics'][0]['start']} to {result['statistics'][-1]['start']}")
                 try:
                     async_import_statistics(
