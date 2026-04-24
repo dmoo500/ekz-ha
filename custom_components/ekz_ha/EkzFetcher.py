@@ -116,53 +116,8 @@ class EkzFetcher:
         return 96
 
 
-    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0, force_from_date=None):
-        """Import data and return as dict for further processing, do not write to statistics directly."""
-        _LOGGER = logging.getLogger(__name__)
-        _LOGGER.debug(f"[import_full_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
-        # Determine start date
-        if meta_entity is not None and meta_entity._last_import:
-            li = meta_entity._last_import
-            # _last_import may be a date or datetime – always normalise to datetime
-            if isinstance(li, datetime):
-                from_date = li + timedelta(days=1)
-            else:
-                from_date = datetime.combine(li, datetime.min.time()) + timedelta(days=1)
-            _LOGGER.debug(f"[import_full_history_to_statistics] Start import from last import: from_date={from_date}")
-        else:
-            if isinstance(contract_start, str):
-                from_date = datetime.strptime(contract_start, "%Y-%m-%d")
-            else:
-                from_date = datetime.combine(contract_start, datetime.min.time())
-            _LOGGER.debug(f"[import_full_history_to_statistics] Start import from contract start: from_date={from_date}")
-            # Set contract_start in meta_entity if not set
-            if meta_entity is not None and meta_entity._contract_start is None:
-                meta_entity.set_contract_start(from_date.date())
-        # Allow caller to override from_date (e.g. for pending day lookback)
-        if force_from_date is not None:
-            from_date = datetime.combine(force_from_date, datetime.min.time()) if not isinstance(force_from_date, datetime) else force_from_date
-            _LOGGER.info(f"[import_full_history_to_statistics] Lookback for pending days: overriding from_date to {from_date}")
-        # Import up to 30 days from from_date, but never past tomorrow (local time) —
-        # the EKZ API only returns NOT_AVAILABLE for future dates, wasting a round-trip.
-        tomorrow_naive = datetime.combine(datetime.now(tz=ZRH).date() + timedelta(days=1), datetime.min.time())
-        to_date = min(from_date + timedelta(days=30), tomorrow_naive)
-        _LOGGER.debug(f"[import_full_history_to_statistics] Fetching consumption data: installationId={installationId}, period {from_date} to {to_date}")
-        data = await self.session.get_consumption_data(
-            installationId,
-            "PK_VERB_15MIN",
-            from_date.strftime("%Y-%m-%d"),
-            to_date.strftime("%Y-%m-%d"),
-        )
 
-        if data is None:
-            _LOGGER.info(f"[import_full_history_to_statistics] API returned None for installationId={installationId}, period {from_date} to {to_date} (PK_VERB_15MIN) — no data available")
-            if meta_entity is not None:
-                meta_entity.set_last_run_date(datetime.now())
-            return {"statistics": [], "last_import": None, "from_date": from_date.date(), "to_date": to_date.date(), "last_full_day": None, "last_full_day_sum": math.inf}
-
-        _LOGGER.debug(f"[import_full_history_to_statistics] Consumption data loaded: {len((data.get('seriesNt') or {}).get('values', [])) + len((data.get('seriesHt') or {}).get('values', []))} values")
-        # --- Value processing: merge NT+HT per slot, then build statistics ---
-    def _get_slot_counts_and_raw_averages(self, values: list[dict]) -> tuple[dict[str, int], dict[int, tuple[float, int]]]:
+    def _get_slot_counts_and_raw_averages(self, values: List[Dict[str, Any]]) -> Tuple[Dict[str, int], Dict[int, Tuple[float, int]]]:
         """Count 15-min slots per date and calculate hourly raw sums/counts."""
         slot_counts: dict[str, int] = {}
         hourly_raw: dict[int, tuple[float, int]] = {}  # month*100+hour_utc -> (sum_kwh, count_slots)
