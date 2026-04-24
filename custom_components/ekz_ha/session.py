@@ -1,6 +1,7 @@
 """Interact with EKZ."""
 
 import logging
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -33,19 +34,19 @@ class Session:
         self._device_name = device_name.strip() if device_name else None
         self._logged_in = False
 
-    def _init_session(self):
+    def _init_session(self) -> None:
         if self._session is None:
             self._session = aiohttp.ClientSession()
             self._session.headers.add("User-Agent", "ekz-ha")
             self._logged_in = False
 
-    async def _reset_session(self):
+    async def _reset_session(self) -> None:
         if self._session is not None:
             await self._session.close()            
         self._session = None
         self._logged_in = False
 
-    async def _ensure_logged_in(self):
+    async def _ensure_logged_in(self) -> None:
         if self._logged_in:
             return
         self._init_session()

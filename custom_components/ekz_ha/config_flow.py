@@ -1,6 +1,7 @@
 """Config flow for EKZ integration."""
 
 import logging
+from typing import Any, Dict, Optional
 
 import pyotp
 import voluptuous as vol
@@ -19,10 +20,10 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
     MINOR_VERSION = 1
 
-    def __init__(self):
-        self._credentials = {}
+    def __init__(self) -> None:
+        self._credentials: Dict[str, Any] = {}
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(self, user_input: Optional[Dict[str, Any]] = None) -> Any:
         """Step 1: collect credentials and TOTP secret, then show generated OTP."""
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
@@ -57,7 +58,7 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_confirm(self, user_input=None):
+    async def async_step_confirm(self, user_input: Optional[Dict[str, Any]] = None) -> Any:
         """Step 2: show the current TOTP code for manual EKZ registration, then validate login."""
         errors = {}
 

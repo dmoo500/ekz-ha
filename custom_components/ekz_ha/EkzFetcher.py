@@ -1,10 +1,11 @@
 """Interaction with the EKZ API."""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import itertools
 import math
 import zoneinfo
 import logging
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .session import Session
 from .timeutil import format_api_date
@@ -38,12 +39,12 @@ class EkzFetcher:
                 return s["level"]
         return data.get("level", "QUARTER_HOUR")
 
-    def _normalize_timestamp(self, ts) -> str:
+    def _normalize_timestamp(self, ts: Any) -> str:
         """Convert any timestamp format to a 14-digit string YYYYMMDDHHMMSS."""
         s = str(ts).replace("-", "").replace("T", "").replace(":", "").replace(" ", "")
         return s[:14].ljust(14, "0")
 
-    def _sort_and_filter_values(self, data: dict) -> list[dict]:
+    def _sort_and_filter_values(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Merge NT+HT per slot, then sort and filter."""
         collected = []
         if "seriesNt" in data and data["seriesNt"] is not None:
@@ -75,7 +76,7 @@ class EkzFetcher:
             merged.append({**group[0], "value": sum(x["value"] for x in group)})
         return merged
 
-    def _determine_date_range(self, meta_entity, contract_start, force_from_date=None, force_to_date=None) -> tuple[datetime, datetime]:
+    def _determine_date_range(self, meta_entity: Any, contract_start: Union[str, date], force_from_date: Optional[Union[datetime, date]] = None, force_to_date: Optional[Union[datetime, date]] = None) -> Tuple[datetime, datetime]:
         """Determine from_date and to_date."""
         _LOGGER = logging.getLogger(__name__)
         # Determine start date
@@ -131,9 +132,9 @@ class EkzFetcher:
             hourly_raw[mh_key] = (s + v["value"], c + 1)
         return slot_counts, hourly_raw
 
-    def _aggregate_hourly(self, values: list[dict]) -> list[dict]:
+    def _aggregate_hourly(self, values: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Aggregate 15-min slots into hourly buckets."""
-        def total_hour(group):
+        def total_hour(group: Any) -> Dict[str, Any]:
             group = list(group)
             hour_ts = self._normalize_timestamp(str(group[0]["timestamp"])[:10] + "0000")
             return {
@@ -149,9 +150,9 @@ class EkzFetcher:
             )
         ]
 
-    def _aggregate_daily(self, values: list[dict]) -> list[dict]:
+    def _aggregate_daily(self, values: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Aggregate data per calendar day."""
-        def total_day(group):
+        def total_day(group: Any) -> Dict[str, Any]:
             group = list(group)
             return {
                 "value": sum(x["value"] for x in group),
@@ -162,7 +163,7 @@ class EkzFetcher:
         values = [total_day(g) for _, g in itertools.groupby(values, lambda v: v["date"])]
         return sorted(values, key=lambda x: x["timestamp"])
 
-    def _detect_pending_from(self, slot_counts: dict[str, int], values: list[dict], running_sum_offset: float, is_day_level: bool) -> tuple[datetime | None, float]:
+    def _detect_pending_from(self, slot_counts: Dict[str, int], values: List[Dict[str, Any]], running_sum_offset: float, is_day_level: bool) -> Tuple[Optional[datetime], float]:
         """Detect the first incomplete day for next-cycle lookback."""
         _LOGGER = logging.getLogger(__name__)
         PENDING_MAX_AGE_DAYS = 14
@@ -194,7 +195,7 @@ class EkzFetcher:
             running_for_pending += date_sums.get(date_str, 0.0)
         return None, running_sum_offset
 
-    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0, force_from_date=None, force_to_date=None):
+    async def import_full_history_to_statistics(self, hass: Any, installationId: str, contract_start: str, meta_entity: Any = None, running_sum_offset: float = 0.0, force_from_date: Optional[Union[datetime, date]] = None, force_to_date: Optional[Union[datetime, date]] = None) -> Dict[str, Any]:
         """Import data and return as dict for further processing."""
         _LOGGER = logging.getLogger(__name__)
         _LOGGER.debug(f"[import_full_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
@@ -311,7 +312,7 @@ class EkzFetcher:
         self.device_name = device_name
         self.session = Session(self.user, self.password, self.totp_secret, self.device_name)
 
-    async def getInstallations(self) -> dict:
+    async def getInstallations(self) -> Dict[str, Any]:
         """Return a dict of installation IDs for current contracts (auszdat == None) with contract_start (einzdat)."""
         _LOGGER = logging.getLogger(__name__)
         data = await self.session.installation_selection_data()
@@ -332,7 +333,7 @@ class EkzFetcher:
         _LOGGER.debug("[getInstallations] Found installations: %s", list(result.keys()))
         return result
 
-    async def getProductionInstallations(self) -> dict:
+    async def getProductionInstallations(self) -> Dict[str, Any]:
         """Return a dict of production installation IDs (solar/feed-in) with contract_start."""
         _LOGGER = logging.getLogger(__name__)
         data = await self.session.production_installation_selection_data()
@@ -349,7 +350,7 @@ class EkzFetcher:
         _LOGGER.debug("[getProductionInstallations] Found production installations: %s", list(result.keys()))
         return result
 
-    async def import_production_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0, force_from_date=None, force_to_date=None):
+    async def import_production_history_to_statistics(self, hass: Any, installationId: str, contract_start: str, meta_entity: Any = None, running_sum_offset: float = 0.0, force_from_date: Optional[Union[datetime, date]] = None, force_to_date: Optional[Union[datetime, date]] = None) -> Dict[str, Any]:
         """Import solar feed-in (production) data. Values from WIRK_NEG_15MIN are negated (positive = kWh exported)."""
         _LOGGER = logging.getLogger(__name__)
         _LOGGER.debug(f"[import_production_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
