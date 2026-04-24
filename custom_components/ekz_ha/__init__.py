@@ -1,7 +1,7 @@
 """Entrypoint."""
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import logging
 import zoneinfo
 
@@ -74,12 +74,95 @@ class EkzCoordinator(DataUpdateCoordinator):
         self._reset_lock = asyncio.Lock()
         self.consumption_averages_raw: dict[str, dict] = {}  # accumulated slot sums for prediction
         self.next_update_time: datetime | None = None
+        self.stretches: dict[str, list[dict]] = {}  # installation_id -> list of DataStretch
+        self.production_stretches: dict[str, list[dict]] = {}
 
     async def _async_setup(self):
         """Load installations on first start."""
         self.installations = await self.ekz_fetcher.getInstallations()
         self.production_installations = await self.ekz_fetcher.getProductionInstallations()
         _LOGGER.debug(f"Production installations found: {list(self.production_installations.keys())}")
+
+    def _get_next_fetch_range(self, stretches: list[dict], contract_start: date) -> tuple[date, date | None]:
+        """Determine the next date range to fetch (either a gap or from the end of everything)."""
+        if not stretches:
+            return contract_start, None
+            
+        # Check for gap between contract_start and first stretch
+        first_start = date.fromisoformat(stretches[0]["start"])
+        if first_start > contract_start:
+            return contract_start, first_start - timedelta(days=1)
+            
+        # Check for gaps between stretches
+        for i in range(len(stretches) - 1):
+            curr_end = date.fromisoformat(stretches[i]["end"])
+            next_start = date.fromisoformat(stretches[i+1]["start"])
+            if (next_start - curr_end).days > 1:
+                return curr_end + timedelta(days=1), next_start - timedelta(days=1)
+                
+        # No gaps, continue from the end of the last stretch
+        last_end = date.fromisoformat(stretches[-1]["end"])
+        return last_end + timedelta(days=1), None
+
+    def _update_stretches(self, stretches: list[dict], new_start: date, new_end: date, new_end_sum: float) -> list[dict]:
+        """Merge new data into stretches and return updated list."""
+        new_start_iso = new_start.isoformat()
+        new_end_iso = new_end.isoformat()
+        
+        new_stretch = {"start": new_start_iso, "end": new_end_iso, "end_sum": new_end_sum}
+        
+        all_candidate_stretches = stretches + [new_stretch]
+        # Sort by start time
+        all_candidate_stretches.sort(key=lambda x: x["start"])
+        
+        temp_stretches = []
+        if all_candidate_stretches:
+            curr = all_candidate_stretches[0]
+            for i in range(1, len(all_candidate_stretches)):
+                nxt = all_candidate_stretches[i]
+                curr_end_date = date.fromisoformat(curr["end"])
+                nxt_start_date = date.fromisoformat(nxt["start"])
+                
+                # If they are contiguous or overlap
+                if (nxt_start_date - curr_end_date).days <= 1:
+                    # Merge them
+                    curr["end"] = max(curr["end"], nxt["end"])
+                    curr["end_sum"] = nxt["end_sum"] # Assumes nxt is later
+                else:
+                    temp_stretches.append(curr)
+                    curr = nxt
+            temp_stretches.append(curr)
+            
+        return temp_stretches
+
+    async def _shift_statistics(self, statistic_id: str, from_dt: datetime, shift: float):
+        """Fetch statistics after from_dt and re-import them with shifted sums."""
+        _LOGGER.info(f"Shifting statistics for {statistic_id} from {from_dt} by {shift:.3f} kWh")
+        
+        # Get all stats from from_dt until now
+        recorder = get_recorder_instance(self.hass)
+        stats = await recorder.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            from_dt,
+            datetime.now(tz=UTC) + timedelta(days=1),
+            {statistic_id},
+            "hour",
+            None,
+            {"sum"},
+        )
+        
+        if statistic_id in stats:
+            data = []
+            for s in stats[statistic_id]:
+                data.append(StatisticData(
+                    start=s["start"],
+                    sum=s["sum"] + shift,
+                    state=s["state"]
+                ))
+            
+            if data:
+                async_import_statistics(self.hass, _make_stat_meta(statistic_id), data)
 
     async def _async_update_data(self):
         """Acquire reset lock then delegate to _do_update_data."""
@@ -219,28 +302,64 @@ class EkzCoordinator(DataUpdateCoordinator):
                     running_sum = self.last_sums.get(key, 0.0)
             else:
                 running_sum = 0.0
-            # EkzFetcher updates meta_entity._last_import after each import so the next cycle continues from there.
+
+            # --- New Stretch-based logic ---
+            stretches = meta_entity.get_stretches()
+            fetch_start, fetch_end = self._get_next_fetch_range(stretches, datetime.strptime(contract_start, "%Y-%m-%d").date())
+            
+            _LOGGER.info(f"[{key}] Next fetch range: {fetch_start} to {fetch_end or 'now'}")
+            
+            # Determine correct running_sum for fetch_start
+            if not stretches or fetch_start == datetime.strptime(contract_start, "%Y-%m-%d").date():
+                running_sum = 0.0
+            else:
+                # Find the stretch just before fetch_start
+                prev_stretch = None
+                for s in sorted(stretches, key=lambda x: x["end"]):
+                    if date.fromisoformat(s["end"]) < fetch_start:
+                        prev_stretch = s
+                    else:
+                        break
+                running_sum = prev_stretch["end_sum"] if prev_stretch else 0.0
+
             result = await self.ekz_fetcher.import_full_history_to_statistics(
                 self.hass, key, contract_start, meta_entity,
                 running_sum_offset=running_sum,
-                force_from_date=pending_from,
+                force_from_date=fetch_start,
+                force_to_date=fetch_end,
             )
+            
             _LOGGER.debug(f"Chunk result for {key}: from={result.get('from_date')} to={result.get('to_date')}, entries={len(result.get('statistics', []))}")
+            
             if result.get("statistics"):
-                last_full_day = result.get("last_full_day")
-                if last_full_day is not None:
-                    # Keep last_sums updated as fallback in case the DB query ever fails.
-                    # Only set it when we have a complete day so the value stays at the CEST
-                    # midnight boundary — partial-day imports are handled by the DB query above.
-                    next_day_utc = datetime.combine(
-                        last_full_day.date() + timedelta(days=1), datetime.min.time()
-                    ).replace(tzinfo=ZRH).astimezone(UTC)
-                    complete_stats = [s for s in result["statistics"] if s["start"] < next_day_utc]
-                    self.last_sums[key] = complete_stats[-1]["sum"] if complete_stats else result["statistics"][-1]["sum"]
-                # Do NOT update last_sums for partial-only imports: the DB query already
-                # returns the correct boundary sum every cycle, so there is no need to persist
-                # an inflated end-of-chunk value that would cause double-counting on retry.
-                _LOGGER.info(f"Importing chunk of {len(result['statistics'])} statistics for {key}, range {result['statistics'][0]['start']} to {result['statistics'][-1]['start']}")
+                # Check if we filled a gap
+                gap_filled = fetch_end is not None
+                added_consumption = sum(s["state"] for s in result["statistics"])
+                
+                # If we filled a gap, we must shift all statistics in all subsequent stretches
+                if gap_filled:
+                    _LOGGER.info(f"[{key}] Gap filled, shifting subsequent statistics by {added_consumption:.3f} kWh")
+                    # All stretches starting after this new one need to be shifted
+                    new_stretches = []
+                    new_end_date = result["to_date"]
+                    
+                    for s in stretches:
+                        if date.fromisoformat(s["start"]) > new_end_date:
+                            s["end_sum"] += added_consumption
+                            # Perform DB shift
+                            await self._shift_statistics(statistic_id, datetime.fromisoformat(s["start"]) if "T" in s["start"] else datetime.combine(date.fromisoformat(s["start"]), datetime.min.time()).replace(tzinfo=ZRH).astimezone(UTC), added_consumption)
+                        new_stretches.append(s)
+                    stretches = new_stretches
+
+                # Update stretches with the new data
+                new_start_date = result["from_date"]
+                new_end_date = result["to_date"]
+                new_end_sum = result["statistics"][-1]["sum"]
+                
+                stretches = self._update_stretches(stretches, new_start_date, new_end_date, new_end_sum)
+                meta_entity.set_stretches(stretches)
+
+                # Proceed with regular import
                 try:
                     async_import_statistics(
                         self.hass,
@@ -249,6 +368,11 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
                 except Exception as e:
                     _LOGGER.error(f"Failed to import statistics chunk for {key}: {e}")
+            
+            # Update last_import for compatibility (point to the end of the last stretch)
+            if stretches:
+                last_stretch_end = datetime.fromisoformat(stretches[-1]["end"]).astimezone(ZRH).date()
+                meta_entity.set_last_import(last_stretch_end)
             # Adjust polling interval based on catch-up status
             today = datetime.now(tz=ZRH).date()
             to_date = result.get("to_date")
@@ -347,18 +471,55 @@ class EkzCoordinator(DataUpdateCoordinator):
                             else:
                                 import_dt = raw_start.replace(tzinfo=ZRH)
                             prod_meta.set_last_import(import_dt.date())
-                            if last_stat_data[0].get("sum") is not None:
-                                self.last_production_sums[key] = last_stat_data[0]["sum"]
                 except Exception as e:
                     _LOGGER.debug(f"Could not query existing production statistics for {key}: {e}")
+            
             if prod_meta._last_import is None and contract_start:
                 prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
+
+            # --- Production Stretch Logic ---
+            p_stretches = prod_meta.get_stretches()
+            p_fetch_start, p_fetch_end = self._get_next_fetch_range(p_stretches, datetime.strptime(contract_start, "%Y-%m-%d").date())
+            
+            # Determine running sum offset for production
+            p_running_sum = 0.0
+            if p_stretches and p_fetch_start != datetime.strptime(contract_start, "%Y-%m-%d").date():
+                p_prev_stretch = None
+                for s in sorted(p_stretches, key=lambda x: x["end"]):
+                    if date.fromisoformat(s["end"]) < p_fetch_start:
+                        p_prev_stretch = s
+                    else:
+                        break
+                p_running_sum = p_prev_stretch["end_sum"] if p_prev_stretch else 0.0
+
             result = await self.ekz_fetcher.import_production_history_to_statistics(
                 self.hass, key, contract_start, prod_meta,
-                running_sum_offset=self.last_production_sums.get(key, 0.0),
+                running_sum_offset=p_running_sum,
+                force_from_date=p_fetch_start,
+                force_to_date=p_fetch_end,
             )
             if result.get("statistics"):
-                self.last_production_sums[key] = result["statistics"][-1]["sum"]
+                p_gap_filled = p_fetch_end is not None
+                p_added_consumption = sum(s["state"] for s in result["statistics"])
+                
+                if p_gap_filled:
+                    _LOGGER.info(f"[{key}] Production gap filled, shifting subsequent statistics by {p_added_consumption:.3f} kWh")
+                    p_new_stretches = []
+                    p_new_end_date = result["to_date"]
+                    for s in p_stretches:
+                        if date.fromisoformat(s["start"]) > p_new_end_date:
+                            s["end_sum"] += p_added_consumption
+                            await self._shift_statistics(statistic_id, datetime.fromisoformat(s["start"]) if "T" in s["start"] else datetime.combine(date.fromisoformat(s["start"]), datetime.min.time()).replace(tzinfo=ZRH).astimezone(UTC), p_added_consumption)
+                        p_new_stretches.append(s)
+                    p_stretches = p_new_stretches
+
+                p_new_start_date = result["from_date"]
+                p_new_end_date = result["to_date"]
+                p_new_end_sum = result["statistics"][-1]["sum"]
+                
+                p_stretches = self._update_stretches(p_stretches, p_new_start_date, p_new_end_date, p_new_end_sum)
+                prod_meta.set_stretches(p_stretches)
+
                 _LOGGER.info(f"Importing {len(result['statistics'])} production statistics for {key}")
                 try:
                     async_import_statistics(
@@ -368,6 +529,10 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
                 except Exception as e:
                     _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
+            
+            if p_stretches:
+                p_last_stretch_end = date.fromisoformat(p_stretches[-1]["end"])
+                prod_meta.set_last_import(p_last_stretch_end)
 
         # Track when the next update is scheduled so the next-sync sensor can display it
         self.next_update_time = datetime.now(tz=UTC) + self.update_interval

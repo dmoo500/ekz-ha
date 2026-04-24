@@ -5,6 +5,10 @@ from unittest.mock import MagicMock
 class MockHomeAssistant:
     pass
 
+class MockDataUpdateCoordinator:
+    def __init__(self, *args, **kwargs):
+        pass
+
 sys.modules["homeassistant"] = MagicMock()
 sys.modules["homeassistant.core"] = MagicMock()
 sys.modules["homeassistant.components"] = MagicMock()
@@ -14,7 +18,7 @@ sys.modules["homeassistant.components.recorder.statistics"] = MagicMock()
 sys.modules["homeassistant.config_entries"] = MagicMock()
 sys.modules["homeassistant.const"] = MagicMock()
 sys.modules["homeassistant.helpers"] = MagicMock()
-sys.modules["homeassistant.helpers.update_coordinator"] = MagicMock()
+sys.modules["homeassistant.helpers.update_coordinator"] = MagicMock(DataUpdateCoordinator=MockDataUpdateCoordinator)
 sys.modules["aiohttp"] = MagicMock()
 sys.modules["bs4"] = MagicMock()
 sys.modules["pyotp"] = MagicMock()
@@ -186,6 +190,60 @@ class TestEkzFetcher(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["statistics"]), 1)
         self.assertEqual(result["statistics"][0]["state"], 5.0)
         self.assertEqual(meta._last_import, date(2024, 3, 24))
+
+    def test_get_next_fetch_range(self):
+        from custom_components.ekz_ha.__init__ import EkzCoordinator
+        # Initialize coordinator with mocked dependencies
+        coordinator = EkzCoordinator(MagicMock(), MagicMock(), timedelta(days=1), {})
+        
+        contract_start = date(2024, 1, 1)
+        
+        # No stretches
+        start, end = coordinator._get_next_fetch_range([], contract_start)
+        self.assertEqual(start, contract_start)
+        self.assertIsNone(end)
+        
+        # One stretch, no gap at start
+        stretches = [{"start": "2024-01-01", "end": "2024-01-05", "end_sum": 10.0}]
+        start, end = coordinator._get_next_fetch_range(stretches, contract_start)
+        self.assertEqual(start, date(2024, 1, 6))
+        self.assertIsNone(end)
+        
+        # Gap at start
+        stretches = [{"start": "2024-01-10", "end": "2024-01-15", "end_sum": 10.0}]
+        start, end = coordinator._get_next_fetch_range(stretches, contract_start)
+        self.assertEqual(start, contract_start)
+        self.assertEqual(end, date(2024, 1, 9))
+        
+        # Gap between stretches
+        stretches = [
+            {"start": "2024-01-01", "end": "2024-01-05", "end_sum": 10.0},
+            {"start": "2024-01-10", "end": "2024-01-15", "end_sum": 20.0}
+        ]
+        start, end = coordinator._get_next_fetch_range(stretches, contract_start)
+        self.assertEqual(start, date(2024, 1, 6))
+        self.assertEqual(end, date(2024, 1, 9))
+
+    def test_update_stretches(self):
+        from custom_components.ekz_ha.__init__ import EkzCoordinator
+        coordinator = EkzCoordinator(MagicMock(), MagicMock(), timedelta(days=1), {})
+        
+        # New stretch separate from existing
+        stretches = [{"start": "2024-01-01", "end": "2024-01-05", "end_sum": 10.0}]
+        new_start = date(2024, 1, 10)
+        new_end = date(2024, 1, 15)
+        updated = coordinator._update_stretches(stretches, new_start, new_end, 20.0)
+        self.assertEqual(len(updated), 2)
+        self.assertEqual(updated[1]["start"], new_start.isoformat())
+        
+        # New stretch merging with preceding
+        new_start = date(2024, 1, 6)
+        new_end = date(2024, 1, 8)
+        updated = coordinator._update_stretches(stretches, new_start, new_end, 15.0)
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(updated[0]["start"], "2024-01-01")
+        self.assertEqual(updated[0]["end"], new_end.isoformat())
+        self.assertEqual(updated[0]["end_sum"], 15.0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._last_run_date: datetime | None = None
         self._pending_from: date | None = None
         self._pending_sum_offset: float = 0.0
+        self._stretches: list[dict] = []  # List of {"start": str, "end": str, "end_sum": float}
 
     @property
     def device_info(self):
@@ -167,6 +168,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "last_import_date": self._last_import.isoformat() if self._last_import else None,
             "last_run_datetime": self._last_run_date.isoformat() if self._last_run_date else None,
             "pending_from": self._pending_from.isoformat() if self._pending_from else None,
+            "stretches": self._stretches,
         }
 
     def set_last_run_date(self, value):
@@ -190,6 +192,12 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     def set_pending(self, pending_from: "date | None", sum_offset: float = 0.0):
         self._pending_from = pending_from
         self._pending_sum_offset = sum_offset
+
+    def set_stretches(self, stretches: list[dict]):
+        self._stretches = stretches
+
+    def get_stretches(self) -> list[dict]:
+        return self._stretches
 
 class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
     """Shows the EKZ contract start date for an installation."""

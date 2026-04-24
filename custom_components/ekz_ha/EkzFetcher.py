@@ -75,7 +75,7 @@ class EkzFetcher:
             merged.append({**group[0], "value": sum(x["value"] for x in group)})
         return merged
 
-    def _determine_date_range(self, meta_entity, contract_start, force_from_date=None) -> tuple[datetime, datetime]:
+    def _determine_date_range(self, meta_entity, contract_start, force_from_date=None, force_to_date=None) -> tuple[datetime, datetime]:
         """Determine from_date and to_date."""
         _LOGGER = logging.getLogger(__name__)
         # Determine start date
@@ -96,10 +96,17 @@ class EkzFetcher:
         # Allow caller to override from_date (e.g. for pending day lookback)
         if force_from_date is not None:
             from_date = datetime.combine(force_from_date, datetime.min.time()) if not isinstance(force_from_date, datetime) else force_from_date
-            _LOGGER.info(f"[EkzFetcher] Lookback for pending days: overriding from_date to {from_date}")
+            _LOGGER.info(f"[EkzFetcher] Lookback/Gap: overriding from_date to {from_date}")
 
         tomorrow_naive = datetime.combine(datetime.now(tz=ZRH).date() + timedelta(days=1), datetime.min.time())
         to_date = min(from_date + timedelta(days=30), tomorrow_naive)
+        
+        # Allow caller to override to_date (e.g. for gap filling)
+        if force_to_date is not None:
+            ftd = datetime.combine(force_to_date, datetime.min.time()) if not isinstance(force_to_date, datetime) else force_to_date
+            to_date = min(to_date, ftd)
+            _LOGGER.info(f"[EkzFetcher] Gap filling: overriding to_date to {to_date}")
+            
         return from_date, to_date
 
     def _get_expected_slots(self, date: datetime) -> int:
@@ -232,12 +239,12 @@ class EkzFetcher:
             running_for_pending += date_sums.get(date_str, 0.0)
         return None, running_sum_offset
 
-    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0, force_from_date=None):
+    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0, force_from_date=None, force_to_date=None):
         """Import data and return as dict for further processing."""
         _LOGGER = logging.getLogger(__name__)
         _LOGGER.debug(f"[import_full_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
         
-        from_date, to_date = self._determine_date_range(meta_entity, contract_start, force_from_date)
+        from_date, to_date = self._determine_date_range(meta_entity, contract_start, force_from_date, force_to_date)
         
         _LOGGER.debug(f"[import_full_history_to_statistics] Fetching consumption data period {from_date} to {to_date}")
         data = await self.session.get_consumption_data(
@@ -387,12 +394,12 @@ class EkzFetcher:
         _LOGGER.debug("[getProductionInstallations] Found production installations: %s", list(result.keys()))
         return result
 
-    async def import_production_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0):
+    async def import_production_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0, force_from_date=None, force_to_date=None):
         """Import solar feed-in (production) data. Values from WIRK_NEG_15MIN are negated (positive = kWh exported)."""
         _LOGGER = logging.getLogger(__name__)
         _LOGGER.debug(f"[import_production_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
         
-        from_date, to_date = self._determine_date_range(meta_entity, contract_start)
+        from_date, to_date = self._determine_date_range(meta_entity, contract_start, force_from_date, force_to_date)
         
         _LOGGER.debug(f"[import_production_history_to_statistics] Fetching production data period {from_date} to {to_date}")
         data = await self.session.get_consumption_data(
