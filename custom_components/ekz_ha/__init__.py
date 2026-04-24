@@ -305,12 +305,12 @@ class EkzCoordinator(DataUpdateCoordinator):
 
             # --- New Stretch-based logic ---
             stretches = meta_entity.get_stretches()
-            fetch_start, fetch_end = self._get_next_fetch_range(stretches, datetime.strptime(contract_start, "%Y-%m-%d").date())
+            fetch_start, fetch_end = self._get_next_fetch_range(stretches, contract_start)
             
             _LOGGER.info(f"[{key}] Next fetch range: {fetch_start} to {fetch_end or 'now'}")
             
             # Determine correct running_sum for fetch_start
-            if not stretches or fetch_start == datetime.strptime(contract_start, "%Y-%m-%d").date():
+            if not stretches or fetch_start == contract_start:
                 running_sum = 0.0
             else:
                 # Find the stretch just before fetch_start
@@ -479,11 +479,12 @@ class EkzCoordinator(DataUpdateCoordinator):
 
             # --- Production Stretch Logic ---
             p_stretches = prod_meta.get_stretches()
-            p_fetch_start, p_fetch_end = self._get_next_fetch_range(p_stretches, datetime.strptime(contract_start, "%Y-%m-%d").date())
+            p_contract_start = prod_meta._contract_start
+            p_fetch_start, p_fetch_end = self._get_next_fetch_range(p_stretches, p_contract_start)
             
             # Determine running sum offset for production
             p_running_sum = 0.0
-            if p_stretches and p_fetch_start != datetime.strptime(contract_start, "%Y-%m-%d").date():
+            if p_stretches and p_fetch_start != p_contract_start:
                 p_prev_stretch = None
                 for s in sorted(p_stretches, key=lambda x: x["end"]):
                     if date.fromisoformat(s["end"]) < p_fetch_start:
