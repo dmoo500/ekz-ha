@@ -1,34 +1,12 @@
-import sys
-from unittest.mock import MagicMock
-
-# Mock homeassistant before importing anything that might trigger its loading
-class MockHomeAssistant:
-    pass
-
-class MockDataUpdateCoordinator:
-    def __init__(self, *args, **kwargs):
-        pass
-
-sys.modules["homeassistant"] = MagicMock()
-sys.modules["homeassistant.core"] = MagicMock()
-sys.modules["homeassistant.components"] = MagicMock()
-sys.modules["homeassistant.components.recorder"] = MagicMock()
-sys.modules["homeassistant.components.recorder.models"] = MagicMock()
-sys.modules["homeassistant.components.recorder.statistics"] = MagicMock()
-sys.modules["homeassistant.config_entries"] = MagicMock()
-sys.modules["homeassistant.const"] = MagicMock()
-sys.modules["homeassistant.helpers"] = MagicMock()
-sys.modules["homeassistant.helpers.update_coordinator"] = MagicMock(DataUpdateCoordinator=MockDataUpdateCoordinator)
-sys.modules["aiohttp"] = MagicMock()
-sys.modules["bs4"] = MagicMock()
-sys.modules["pyotp"] = MagicMock()
-
+import tests.mock_ha
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 from datetime import datetime, timedelta, date
 import itertools
 import math
 import zoneinfo
+import sys
+
 from custom_components.ekz_ha.EkzFetcher import EkzFetcher, ZRH, UTC
 
 class MockMetaEntity:

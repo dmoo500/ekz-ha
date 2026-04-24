@@ -1,7 +1,6 @@
 """Interact with EKZ."""
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiohttp
 from bs4 import BeautifulSoup
