@@ -33,19 +33,22 @@ class Session:
         self._device_name = device_name.strip() if device_name else None
         self._logged_in = False
 
-    def _init_session(self):
+    def _init_session(self) -> None:
+        """Initialize the aiohttp session if it doesn't exist."""
         if self._session is None:
             self._session = aiohttp.ClientSession()
             self._session.headers.add("User-Agent", "ekz-ha")
             self._logged_in = False
 
-    async def _reset_session(self):
+    async def _reset_session(self) -> None:
+        """Close the session and reset the login state."""
         if self._session is not None:
             await self._session.close()            
         self._session = None
         self._logged_in = False
 
-    async def _ensure_logged_in(self):
+    async def _ensure_logged_in(self) -> None:
+        """Ensure the session is authenticated."""
         if self._logged_in:
             return
         self._init_session()

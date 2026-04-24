@@ -1,8 +1,17 @@
 """Entities for EKZ installations."""
 
 from datetime import date, datetime
+from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant import core
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.typing import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -10,7 +19,11 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 
-async def async_setup_entry(hass, entry, async_add_entities):
+async def async_setup_entry(
+    hass: core.HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up EKZ sensors from a config entry."""
     coordinator = hass.data[DOMAIN]["coordinator"]
     meta_entities = {}
@@ -53,7 +66,7 @@ class EkzEntity(CoordinatorEntity, SensorEntity):
         self._attr_name = f"Electricity consumption EKZ {installationId}"
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo:
         return {
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
@@ -62,7 +75,7 @@ class EkzEntity(CoordinatorEntity, SensorEntity):
         }
 
     @property
-    def native_value(self):
+    def native_value(self) -> None:
         """Statistics are imported directly; sensor state is intentionally always None."""
         return None
 
@@ -88,7 +101,7 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
         self._attr_name = f"Electricity consumption EKZ {installationId} prediction"
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo:
         return {
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
@@ -97,7 +110,7 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
         }
 
     @property
-    def native_value(self):
+    def native_value(self) -> None:
         """Statistics are imported directly; sensor state is intentionally always None."""
         return None
 
@@ -127,7 +140,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._pending_sum_offset: float = 0.0
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo:
         return {
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
@@ -136,7 +149,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         }
 
     @property
-    def native_value(self):
+    def native_value(self) -> datetime | None:
         """Return the last successfully imported statistic timestamp."""
         if self._last_import is None:
             return None
@@ -158,7 +171,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         return "mdi:information-outline"
 
     @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         return {
             "last_running_sum": self._last_running_sum,
             "last_full_day": self._last_full_day,
@@ -169,25 +182,25 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "pending_from": self._pending_from.isoformat() if self._pending_from else None,
         }
 
-    def set_last_run_date(self, value):
+    def set_last_run_date(self, value: datetime) -> None:
         self._last_run_date = value
 
-    def set_last_running_sum(self, value):
+    def set_last_running_sum(self, value: float) -> None:
         self._last_running_sum = value
 
-    def set_last_full_day(self, value):
+    def set_last_full_day(self, value: datetime) -> None:
         self._last_full_day = value
 
-    def set_last_get_all(self, value):
+    def set_last_get_all(self, value: datetime) -> None:
         self._last_get_all = value
 
-    def set_contract_start(self, value: date):
+    def set_contract_start(self, value: date) -> None:
         self._contract_start = value
 
-    def set_last_import(self, value: date):
+    def set_last_import(self, value: date) -> None:
         self._last_import = value
 
-    def set_pending(self, pending_from: "date | None", sum_offset: float = 0.0):
+    def set_pending(self, pending_from: date | None, sum_offset: float = 0.0) -> None:
         self._pending_from = pending_from
         self._pending_sum_offset = sum_offset
 
@@ -203,7 +216,7 @@ class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
         self._attr_icon = "mdi:calendar-start"
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo:
         return {
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
@@ -212,7 +225,7 @@ class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
         }
 
     @property
-    def native_value(self):
+    def native_value(self) -> date | None:
         """Return the contract start date."""
         meta = getattr(self.coordinator, "meta_entities", {}).get(self.installation_id)
         if meta is None:
@@ -235,7 +248,7 @@ class EkzProductionEntity(CoordinatorEntity, SensorEntity):
         self._attr_name = f"Electricity production EKZ {installationId}"
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo:
         return {
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
@@ -244,7 +257,7 @@ class EkzProductionEntity(CoordinatorEntity, SensorEntity):
         }
 
     @property
-    def native_value(self):
+    def native_value(self) -> None:
         """Statistics are imported directly; sensor state is intentionally always None."""
         return None
 
@@ -265,7 +278,7 @@ class EkzNextSyncEntity(CoordinatorEntity, SensorEntity):
         self._attr_icon = "mdi:clock-outline"
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo:
         return {
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
@@ -274,6 +287,6 @@ class EkzNextSyncEntity(CoordinatorEntity, SensorEntity):
         }
 
     @property
-    def native_value(self):
+    def native_value(self) -> datetime | None:
         """Return the next scheduled sync time."""
         return getattr(self.coordinator, "next_update_time", None)

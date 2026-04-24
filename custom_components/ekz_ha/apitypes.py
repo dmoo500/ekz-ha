@@ -1,6 +1,7 @@
 """Strong types for the EKZ API."""
 
-from typing import TypedDict
+from typing import Any, TypedDict
+from datetime import date, datetime
 
 
 class Address(TypedDict):
@@ -128,12 +129,34 @@ class Series(TypedDict):
     values: list[Value]
 
 
-class ConsumptionData(TypedDict):
+class ConsumptionData(TypedDict, total=False):
     """Return schema for /consumption-view/v1/consumption-data?installationId=..."""
 
     series: Series | None
     seriesHt: Series | None
     seriesNetz: Series | None
     seriesNetzHt: Series | None
-    seriesNetzHt: Series | None
     seriesNt: Series | None
+
+
+class HistoryImportResult(TypedDict):
+    """Result of import_full_history_to_statistics."""
+
+    statistics: list[dict[str, Any]]
+    last_import: date | None
+    from_date: date
+    to_date: date
+    last_full_day: datetime | None
+    last_full_day_sum: float
+    pending_from: date | None
+    pending_sum_offset: float
+    averages_raw: dict[int, tuple[float, int]]
+
+
+class ProductionImportResult(TypedDict):
+    """Result of import_production_history_to_statistics."""
+
+    statistics: list[dict[str, Any]]
+    last_import: date | None
+    from_date: date
+    to_date: date

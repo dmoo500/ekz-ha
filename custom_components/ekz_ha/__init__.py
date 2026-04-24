@@ -46,7 +46,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         hass: HomeAssistant,
         ekz_fetcher: EkzFetcher,
         update_interval: timedelta,
-        config,
+        config: ConfigEntry,
     ) -> None:
         """Initialize EKZ coordinator."""
         super().__init__(
@@ -75,18 +75,18 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.consumption_averages_raw: dict[str, dict] = {}  # accumulated slot sums for prediction
         self.next_update_time: datetime | None = None
 
-    async def _async_setup(self):
+    async def _async_setup(self) -> None:
         """Load installations on first start."""
         self.installations = await self.ekz_fetcher.getInstallations()
         self.production_installations = await self.ekz_fetcher.getProductionInstallations()
         _LOGGER.debug(f"Production installations found: {list(self.production_installations.keys())}")
 
-    async def _async_update_data(self):
+    async def _async_update_data(self) -> None:
         """Acquire reset lock then delegate to _do_update_data."""
         async with self._reset_lock:
             await self._do_update_data()
 
-    async def _do_update_data(self):
+    async def _do_update_data(self) -> None:
         """Fetch data from API endpoint.
 
         This is the place to pre-process the data to lookup tables
@@ -386,7 +386,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
     await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
 
-    async def handle_reset_statistics(call):
+    async def handle_reset_statistics(call: core.ServiceCall) -> None:
         """Delete all EKZ statistics from the DB and reset in-memory state so a full re-import starts."""
         import inspect
 

@@ -1,13 +1,15 @@
 """Interaction with the EKZ API."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import itertools
 import math
 import zoneinfo
 import logging
 
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict, Union
 from .session import Session
 from .timeutil import format_api_date
+from .apitypes import ConsumptionData, HistoryImportResult, ProductionImportResult
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
@@ -27,7 +29,15 @@ def is_dst_switchover_date(dt: datetime, timeZone: zoneinfo.ZoneInfo) -> bool:
 
 class EkzFetcher:
 
-    async def import_full_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0, force_from_date=None):
+    async def import_full_history_to_statistics(
+        self,
+        hass: Any,
+        installationId: str,
+        contract_start: str | date,
+        meta_entity: Any = None,
+        running_sum_offset: float = 0.0,
+        force_from_date: date | datetime | None = None,
+    ) -> HistoryImportResult:
         """Import data and return as dict for further processing, do not write to statistics directly."""
         _LOGGER = logging.getLogger(__name__)
         _LOGGER.debug(f"[import_full_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
@@ -73,7 +83,7 @@ class EkzFetcher:
 
         _LOGGER.debug(f"[import_full_history_to_statistics] Consumption data loaded: {len((data.get('seriesNt') or {}).get('values', [])) + len((data.get('seriesHt') or {}).get('values', []))} values")
         # --- Value processing: merge NT+HT per slot, then build statistics ---
-        def get_level(d):
+        def get_level(d: ConsumptionData) -> str:
             """Extract the response level (DAY or QUARTER_HOUR) from a consumption data response."""
             for series_key in ("seriesNt", "seriesHt", "series"):
                 s = d.get(series_key)
@@ -81,12 +91,12 @@ class EkzFetcher:
                     return s["level"]
             return d.get("level", "QUARTER_HOUR")
 
-        def normalize_timestamp(ts):
+        def normalize_timestamp(ts: str | int) -> str:
             """Convert any timestamp format to a 14-digit string YYYYMMDDHHMMSS."""
             s = str(ts).replace("-", "").replace("T", "").replace(":", "").replace(" ", "")
             return s[:14].ljust(14, "0")
 
-        def sortAndFilter(d):
+        def sortAndFilter(d: ConsumptionData) -> list[dict[str, Any]]:
             collected = []
             if "seriesNt" in d and d["seriesNt"] is not None:
                 collected += [
@@ -168,7 +178,7 @@ class EkzFetcher:
         if is_day_level:
             # DAY-level data (PK_VERB_TAG_METER): aggregate NT+HT per calendar day.
             # Use the date field as the statistic timestamp (set to midnight UTC).
-            def total_day(group):
+            def total_day(group: Any) -> dict[str, Any]:
                 group = list(group)
                 return {
                     "value": sum(x["value"] for x in group),
@@ -184,7 +194,7 @@ class EkzFetcher:
             # Home Assistant's statistics API only accepts timestamps at the top of the hour
             # (minutes = 0, seconds = 0) — sub-hourly timestamps are rejected.
             # Group by the UTC hour (first 10 chars of the 14-digit timestamp = YYYYMMDDHH) and sum.
-            def total_hour(group):
+            def total_hour(group: Any) -> dict[str, Any]:
                 group = list(group)
                 hour_ts = normalize_timestamp(str(group[0]["timestamp"])[:10] + "0000")
                 return {
@@ -340,7 +350,7 @@ class EkzFetcher:
         self.device_name = device_name
         self.session = Session(self.user, self.password, self.totp_secret, self.device_name)
 
-    async def getInstallations(self) -> dict:
+    async def getInstallations(self) -> dict[str, dict[str, str | None]]:
         """Return a dict of installation IDs for current contracts (auszdat == None) with contract_start (einzdat)."""
         _LOGGER = logging.getLogger(__name__)
         data = await self.session.installation_selection_data()
@@ -361,7 +371,7 @@ class EkzFetcher:
         _LOGGER.debug("[getInstallations] Found installations: %s", list(result.keys()))
         return result
 
-    async def getProductionInstallations(self) -> dict:
+    async def getProductionInstallations(self) -> dict[str, dict[str, str | None]]:
         """Return a dict of production installation IDs (solar/feed-in) with contract_start."""
         _LOGGER = logging.getLogger(__name__)
         data = await self.session.production_installation_selection_data()
@@ -378,7 +388,14 @@ class EkzFetcher:
         _LOGGER.debug("[getProductionInstallations] Found production installations: %s", list(result.keys()))
         return result
 
-    async def import_production_history_to_statistics(self, hass, installationId: str, contract_start: str, meta_entity=None, running_sum_offset: float = 0.0):
+    async def import_production_history_to_statistics(
+        self,
+        hass: Any,
+        installationId: str,
+        contract_start: str | date,
+        meta_entity: Any = None,
+        running_sum_offset: float = 0.0,
+    ) -> ProductionImportResult:
         """Import solar feed-in (production) data. Values from WIRK_NEG_15MIN are negated (positive = kWh exported)."""
         _LOGGER = logging.getLogger(__name__)
         _LOGGER.debug(f"[import_production_history_to_statistics] Start: installationId={installationId}, contract_start={contract_start}")
@@ -412,11 +429,12 @@ class EkzFetcher:
                 meta_entity.set_last_run_date(datetime.now())
             return {"statistics": [], "last_import": None, "from_date": from_date.date(), "to_date": to_date.date()}
 
-        def normalize_timestamp(ts):
+        def normalize_timestamp(ts: str | int) -> str:
             s = str(ts).replace("-", "").replace("T", "").replace(":", "").replace(" ", "")
+            # Pad to 14 chars for consistency
             return s[:14].ljust(14, "0")
 
-        def get_values(d):
+        def get_values(d: ConsumptionData) -> list[dict[str, Any]]:
             collected = []
             for key in ("seriesNt", "seriesHt"):
                 s = d.get(key)
@@ -442,7 +460,7 @@ class EkzFetcher:
         values = get_values(data)
         _LOGGER.debug(f"[import_production_history_to_statistics] Values after filter: {len(values)}")
 
-        def total(group):
+        def total(group: Any) -> dict[str, Any]:
             group = list(group)
             return {
                 "value": sum(x["value"] for x in group),
