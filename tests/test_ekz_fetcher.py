@@ -108,5 +108,57 @@ class TestEkzFetcher(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["statistics"][1]["state"], 2.0)
         self.assertEqual(result["statistics"][1]["sum"], 14.5) # 12.5 + 2.0
 
+    def test_normalize_timestamp(self):
+        self.assertEqual(self.fetcher._normalize_timestamp("2024-03-24T10:00:00"), "20240324100000")
+        self.assertEqual(self.fetcher._normalize_timestamp(2024032410), "20240324100000")
+
+    def test_get_level(self):
+        self.assertEqual(self.fetcher._get_level({"series": {"level": "DAY"}}), "DAY")
+        self.assertEqual(self.fetcher._get_level({"level": "QUARTER_HOUR"}), "QUARTER_HOUR")
+
+    def test_determine_date_range(self):
+        meta = MockMetaEntity(last_import=date(2024, 3, 24))
+        from_date, to_date = self.fetcher._determine_date_range(meta, "2024-01-01")
+        self.assertEqual(from_date.date(), date(2024, 3, 25))
+        
+        from_date, to_date = self.fetcher._determine_date_range(None, "2024-01-01")
+        self.assertEqual(from_date.date(), date(2024, 1, 1))
+
+    def test_merge_tariffs(self):
+        data = {
+            "seriesNt": {"values": [{"timestamp": "20240324100000", "value": 1.0, "status": "VALID", "date": "2024-03-24"}]},
+            "seriesHt": {"values": [{"timestamp": "20240324100000", "value": 2.0, "status": "VALID", "date": "2024-03-24"}]}
+        }
+        merged = self.fetcher._merge_tariffs(data)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["value"], 3.0)
+
+    def test_aggregate_data_hourly(self):
+        values = [
+            {"timestamp": "20240324100000", "value": 1.0, "date": "2024-03-24"},
+            {"timestamp": "20240324101500", "value": 1.5, "date": "2024-03-24"},
+        ]
+        aggregated = self.fetcher._aggregate_data(values, "QUARTER_HOUR")
+        self.assertEqual(len(aggregated), 1)
+        self.assertEqual(aggregated[0]["value"], 2.5)
+        self.assertEqual(aggregated[0]["timestamp"], "20240324100000")
+
+    def test_prepare_statistics(self):
+        values = [
+            {"timestamp": "20240324100000", "value": 1.0, "date": "2024-03-24"},
+            {"timestamp": "20240324110000", "value": 2.0, "date": "2024-03-24"},
+        ]
+        stats, last_full_day_sum, last_import_dt = self.fetcher._prepare_statistics(values, 10.0, datetime(2024, 3, 24))
+        self.assertEqual(len(stats), 2)
+        self.assertEqual(stats[0]["sum"], 11.0)
+        self.assertEqual(stats[1]["sum"], 13.0)
+        self.assertEqual(last_full_day_sum, 10.0)
+        # Actually last_full_day_sum is min(running_sum, last_full_day_sum) in the loop
+        # Loop 1: running_sum = 10.0, value = 1.0. date_obj == max_date? Yes. last_full_day_sum = min(inf, 10.0) = 10.0.
+        # stats.append(11.0).
+        # Loop 2: running_sum = 11.0, value = 2.0. date_obj == max_date? Yes. last_full_day_sum = min(10.0, 11.0) = 10.0.
+        # stats.append(13.0).
+        self.assertEqual(last_full_day_sum, 10.0)
+
 if __name__ == "__main__":
     unittest.main()
