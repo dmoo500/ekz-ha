@@ -138,6 +138,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._last_run_date: datetime | None = None
         self._pending_from: date | None = None
         self._pending_sum_offset: float = 0.0
+        self._received_ranges: list[dict[str, str]] = []
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -180,6 +181,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "last_import_date": self._last_import.isoformat() if self._last_import else None,
             "last_run_datetime": self._last_run_date.isoformat() if self._last_run_date else None,
             "pending_from": self._pending_from.isoformat() if self._pending_from else None,
+            "received_ranges": self._received_ranges,
         }
 
     def set_last_run_date(self, value: datetime) -> None:
@@ -203,6 +205,12 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     def set_pending(self, pending_from: date | None, sum_offset: float = 0.0) -> None:
         self._pending_from = pending_from
         self._pending_sum_offset = sum_offset
+
+    def add_received_range(self, start: str, end: str) -> None:
+        """Record a date range for which data was received."""
+        if not any(r["start"] == start and r["end"] == end for r in self._received_ranges):
+            self._received_ranges.append({"start": start, "end": end})
+            self._received_ranges.sort(key=lambda x: x["start"])
 
 class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
     """Shows the EKZ contract start date for an installation."""

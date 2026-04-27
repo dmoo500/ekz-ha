@@ -231,6 +231,14 @@ class EkzFetcher:
         level = self._get_level(data)
         values = self._merge_tariffs(data)
         
+        if values and meta_entity:
+            start_ts = str(values[0]["timestamp"])
+            end_ts = str(values[-1]["timestamp"])
+            # Convert YYYYMMDDHHMMSS to ISO format for better readability in HA
+            start_iso = f"{start_ts[:4]}-{start_ts[4:6]}-{start_ts[6:8]}T{start_ts[8:10]}:{start_ts[10:12]}:{start_ts[12:14]}"
+            end_iso = f"{end_ts[:4]}-{end_ts[4:6]}-{end_ts[6:8]}T{end_ts[8:10]}:{end_ts[10:12]}:{end_ts[12:14]}"
+            meta_entity.add_received_range(start_iso, end_iso)
+        
         if not values:
             recent_threshold = datetime.now() - timedelta(days=30)
             if from_date >= recent_threshold:
@@ -243,8 +251,15 @@ class EkzFetcher:
             if not data:
                 if meta_entity: meta_entity.set_last_run_date(datetime.now())
                 return {"statistics": [], "last_import": None, "from_date": from_date.date(), "to_date": to_date.date(), "last_full_day": None, "last_full_day_sum": math.inf, "pending_from": None, "pending_sum_offset": running_sum_offset, "averages_raw": {}}
+            
             level = self._get_level(data)
             values = self._merge_tariffs(data)
+            if values and meta_entity:
+                start_ts = str(values[0]["timestamp"])
+                end_ts = str(values[-1]["timestamp"])
+                start_iso = f"{start_ts[:4]}-{start_ts[4:6]}-{start_ts[6:8]}T{start_ts[8:10]}:{start_ts[10:12]}:{start_ts[12:14]}"
+                end_iso = f"{end_ts[:4]}-{end_ts[4:6]}-{end_ts[6:8]}T{end_ts[8:10]}:{end_ts[10:12]}:{end_ts[12:14]}"
+                meta_entity.add_received_range(start_iso, end_iso)
         
         is_day_level = (level == "DAY")
         slot_counts, hourly_raw = self._calculate_slot_counts(values) if not is_day_level else ({}, {})
@@ -366,6 +381,13 @@ class EkzFetcher:
 
         values = self._merge_tariffs(data)
         level = self._get_level(data)
+
+        if values and meta_entity:
+            start_ts = str(values[0]["timestamp"])
+            end_ts = str(values[-1]["timestamp"])
+            start_iso = f"{start_ts[:4]}-{start_ts[4:6]}-{start_ts[6:8]}T{start_ts[8:10]}:{start_ts[10:12]}:{start_ts[12:14]}"
+            end_iso = f"{end_ts[:4]}-{end_ts[4:6]}-{end_ts[6:8]}T{end_ts[8:10]}:{end_ts[10:12]}:{end_ts[12:14]}"
+            meta_entity.add_received_range(start_iso, end_iso)
         
         # Hourly aggregation for production
         processed_values = self._aggregate_data(values, level)
