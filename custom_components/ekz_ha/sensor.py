@@ -11,7 +11,6 @@ from homeassistant.components.sensor import (
 from homeassistant import core
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.typing import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -22,7 +21,7 @@ from .const import DOMAIN
 async def async_setup_entry(
     hass: core.HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: Any,
 ) -> None:
     """Set up EKZ sensors from a config entry."""
     coordinator = hass.data[DOMAIN]["coordinator"]
