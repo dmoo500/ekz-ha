@@ -15,6 +15,7 @@ class MockMetaEntity:
         self._last_run_date = None
         self._pending_from = None
         self._pending_sum_offset = None
+        self._received_ranges = []
 
     def set_last_import(self, val):
         self._last_import = val
@@ -28,6 +29,9 @@ class MockMetaEntity:
     def set_pending(self, date_val, offset):
         self._pending_from = date_val
         self._pending_sum_offset = offset
+
+    def add_received_range(self, start, end):
+        self._received_ranges.append({"start": start, "end": end})
 
 class TestEkzFetcher(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -79,6 +83,9 @@ class TestEkzFetcher(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["statistics"]), 24) # Aggregated to hourly
         self.assertEqual(result["last_full_day"].date(), date(2024, 3, 24))
         self.assertEqual(meta._last_import, date(2024, 3, 24))
+        self.assertEqual(len(meta._received_ranges), 1)
+        self.assertEqual(meta._received_ranges[0]["start"], "2024-03-24T00:00:00")
+        self.assertEqual(meta._received_ranges[0]["end"], "2024-03-24T23:45:00")
 
     async def test_import_production_history_to_statistics_success(self):
         # Mock production data with multiple values spanning two hours
@@ -107,6 +114,9 @@ class TestEkzFetcher(unittest.IsolatedAsyncioTestCase):
         # Second hour (11:00): 2.0
         self.assertEqual(result["statistics"][1]["state"], 2.0)
         self.assertEqual(result["statistics"][1]["sum"], 14.5) # 12.5 + 2.0
+        self.assertEqual(len(meta._received_ranges), 1)
+        self.assertEqual(meta._received_ranges[0]["start"], "2024-03-24T10:00:00")
+        self.assertEqual(meta._received_ranges[0]["end"], "2024-03-24T11:00:00")
 
     def test_normalize_timestamp(self):
         self.assertEqual(self.fetcher._normalize_timestamp("2024-03-24T10:00:00"), "20240324100000")
