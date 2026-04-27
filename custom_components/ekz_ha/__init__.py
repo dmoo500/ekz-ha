@@ -110,11 +110,11 @@ class EkzCoordinator(DataUpdateCoordinator):
             # Determine contract_start
             contract_start = meta_entity._contract_start if meta_entity is not None else None
             if contract_start is None:
-                contract_start = self.installations[key]["contract_start"]
-                if meta_entity is not None and meta_entity._contract_start is None:
-                    meta_entity.set_contract_start(
-                        datetime.strptime(contract_start, "%Y-%m-%d").date()
-                    )
+                contract_start_str = self.installations[key].get("contract_start")
+                if contract_start_str:
+                    contract_start = datetime.strptime(contract_start_str, "%Y-%m-%d").date()
+                if meta_entity is not None and contract_start is not None:
+                    meta_entity.set_contract_start(contract_start)
                     _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
 
             # Query DB only on first cycle after (re)start to restore last import date.
@@ -123,7 +123,8 @@ class EkzCoordinator(DataUpdateCoordinator):
             statistic_id = f"sensor.electricity_consumption_ekz_{key}"
             if meta_entity._last_import is None:
                 # Set last_import to contract_start - 1 day to force a full import on first run.
-                meta_entity.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d").date() - timedelta(days=1))
+                if contract_start:
+                    meta_entity.set_last_import(contract_start - timedelta(days=1))
                 _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
                 # try:
                 #     last_stats = await get_recorder_instance(self.hass).async_add_executor_job(
@@ -177,9 +178,8 @@ class EkzCoordinator(DataUpdateCoordinator):
 
             # Fall back to contract_start when no statistics exist yet (first-ever import)
             if meta_entity._last_import is None and contract_start is not None:
-                start = contract_start if not isinstance(contract_start, str) else datetime.strptime(contract_start, "%Y-%m-%d")
-                meta_entity.set_last_import(start)
-                _LOGGER.info(f"No existing statistics for {key}, starting import from contract start {start}")
+                meta_entity.set_last_import(contract_start)
+                _LOGGER.info(f"No existing statistics for {key}, starting import from contract start {contract_start}")
 
             # Import exactly one 30-day chunk per update cycle.
             # If pending days were detected in the previous cycle, re-fetch from that earlier date
@@ -330,9 +330,12 @@ class EkzCoordinator(DataUpdateCoordinator):
             prod_meta = production_meta_entities.get(key) if production_meta_entities else None
             if prod_meta is None:
                 continue
-            contract_start = info.get("contract_start")
-            if prod_meta._contract_start is None and contract_start:
-                prod_meta.set_contract_start(datetime.strptime(contract_start, "%Y-%m-%d").date())
+            contract_start = prod_meta._contract_start
+            if contract_start is None:
+                contract_start_str = info.get("contract_start")
+                if contract_start_str:
+                    contract_start = datetime.strptime(contract_start_str, "%Y-%m-%d").date()
+                    prod_meta.set_contract_start(contract_start)
             statistic_id = f"sensor.electricity_production_ekz_{key}"
             if prod_meta._last_import is None:
                 try:
@@ -355,7 +358,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 except Exception as e:
                     _LOGGER.debug(f"Could not query existing production statistics for {key}: {e}")
             if prod_meta._last_import is None and contract_start:
-                prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
+                prod_meta.set_last_import(contract_start)
             result = await self.ekz_fetcher.import_production_history_to_statistics(
                 self.hass, key, contract_start, prod_meta,
                 running_sum_offset=self.last_production_sums.get(key, 0.0),
