@@ -372,22 +372,8 @@ class EkzCoordinator(DataUpdateCoordinator):
         # Track when the next update is scheduled so the next-sync sensor can display it
         self.next_update_time = datetime.now(tz=UTC) + self.update_interval
 
-
-async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up integration entry."""
-    scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-    ekz_fetcher = EkzFetcher(entry.data["user"], entry.data["password"], entry.data.get("totp_secret"), entry.data.get("device_name"))
-    coordinator = EkzCoordinator(hass, ekz_fetcher, scan_interval, entry)
-
-    hass.data[DOMAIN] = {
-        "conf": entry,
-        "coordinator": coordinator,
-    }
-    await coordinator.async_config_entry_first_refresh()
-    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
-
-    async def handle_reset_statistics(call: core.ServiceCall) -> None:
-        """Delete all EKZ statistics from the DB and reset in-memory state so a full re-import starts."""
+    async def async_reset_statistics(self) -> None:
+        """Delete all EKZ statistics for this coordinator from the DB and reset in-memory state."""
         import inspect
 
         async def _clear_statistics(statistic_ids: list[str]) -> bool:
@@ -395,7 +381,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             # Approach 1: module-level function (most HA versions)
             try:
                 from homeassistant.components.recorder.statistics import async_clear_statistics
-                result = async_clear_statistics(hass, statistic_ids)
+                result = async_clear_statistics(self.hass, statistic_ids)
                 if inspect.isawaitable(result):
                     await result
                 return True
@@ -404,7 +390,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
 
             # Approach 2: method on recorder instance (some HA versions)
             try:
-                recorder = get_recorder_instance(hass)
+                recorder = get_recorder_instance(self.hass)
                 clear_fn = getattr(recorder, "async_clear_statistics", None)
                 if clear_fn is not None:
                     result = clear_fn(statistic_ids)
@@ -417,42 +403,87 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             return False
 
         statistic_ids = []
-        for key in coordinator.installations:
+        for key in self.installations:
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}")
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}_prediction")
-        for key in coordinator.production_installations:
+        for key in self.production_installations:
             statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
 
         _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
 
         # Hold the reset lock so any in-progress _async_update_data finishes first,
         # and new updates are blocked until the state is fully cleared.
-        async with coordinator._reset_lock:
+        async with self._reset_lock:
             if not await _clear_statistics(statistic_ids):
                 _LOGGER.error("Cannot clear statistics: no compatible API found in this HA version")
                 return
 
             # Reset in-memory tracking so the next poll starts from contract_start
-            coordinator.last_sums = {}
-            coordinator.last_production_sums = {}
-            coordinator.last_prediction_sums = {}
-            coordinator.catching_up = {}
-            for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
+            self.last_sums = {}
+            self.last_production_sums = {}
+            self.last_prediction_sums = {}
+            self.catching_up = {}
+            for meta in (getattr(self, "meta_entities", None) or {}).values():
                 meta.set_last_import(None)
-            for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
+            for meta in (getattr(self, "production_meta_entities", None) or {}).values():
                 meta.set_last_import(None)
 
         # Lock released — now it's safe to schedule the re-import
         _LOGGER.info("EKZ statistics reset complete — re-import will start on next poll")
-        await coordinator.async_request_refresh()
+        await self.async_request_refresh()
 
-    hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)
+
+async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up integration entry."""
+    scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    ekz_fetcher = EkzFetcher(
+        entry.data["user"],
+        entry.data["password"],
+        entry.data.get("totp_secret"),
+        entry.data.get("device_name"),
+    )
+
+    # Use shared lock from hass.data if available, otherwise create it.
+    # This ensures that even across entry reloads, the lock remains effective
+    # for coordinating with the global reset service.
+    hass.data.setdefault(DOMAIN, {})
+    if "reset_lock" not in hass.data[DOMAIN]:
+        hass.data[DOMAIN]["reset_lock"] = asyncio.Lock()
+
+    coordinator = EkzCoordinator(hass, ekz_fetcher, scan_interval, entry)
+    # Override instance lock with shared lock
+    coordinator._reset_lock = hass.data[DOMAIN]["reset_lock"]
+
+    hass.data[DOMAIN].setdefault("coordinators", {})
+    hass.data[DOMAIN]["coordinators"][entry.entry_id] = coordinator
+
+    await coordinator.async_config_entry_first_refresh()
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+
+    async def handle_reset_statistics(call: core.ServiceCall) -> None:
+        """Delete all EKZ statistics for ALL coordinators and reset in-memory state."""
+        _LOGGER.info("Global EKZ statistics reset triggered")
+        # We use the shared lock to ensure no coordinator is updating while we reset
+        async with hass.data[DOMAIN]["reset_lock"]:
+            for coord in hass.data[DOMAIN]["coordinators"].values():
+                await coord.async_reset_statistics()
+
+    if not hass.services.has_service(DOMAIN, "reset_statistics"):
+        hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)
+
     return True
+
 
 async def async_unload_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unload_ok:
-        hass.data.pop(DOMAIN, None)
-        hass.services.async_remove(DOMAIN, "reset_statistics")
+        if DOMAIN in hass.data and "coordinators" in hass.data[DOMAIN]:
+            hass.data[DOMAIN]["coordinators"].pop(entry.entry_id, None)
+
+        # Only clean up global resources if this was the last entry
+        if DOMAIN in hass.data and not hass.data[DOMAIN].get("coordinators"):
+            hass.data.pop(DOMAIN, None)
+            if hass.services.has_service(DOMAIN, "reset_statistics"):
+                hass.services.async_remove(DOMAIN, "reset_statistics")
     return unload_ok
