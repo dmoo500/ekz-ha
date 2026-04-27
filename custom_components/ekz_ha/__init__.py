@@ -71,11 +71,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.last_prediction_sums: dict[str, float] = {}
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
-        if "reset_lock" in hass.data[DOMAIN]:
-            self._reset_lock = hass.data[DOMAIN]["reset_lock"]
-        else:
-            self._reset_lock = asyncio.Lock()
-            hass.data[DOMAIN]["reset_lock"] = self._reset_lock
+        self._reset_lock = hass.data[DOMAIN]["reset_lock"]
         self.consumption_averages_raw: dict[str, dict] = {}  # accumulated slot sums for prediction
         self.next_update_time: datetime | None = None
 
@@ -467,10 +463,8 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
     async def handle_reset_statistics(call: core.ServiceCall) -> None:
         """Delete all EKZ statistics for ALL coordinators and reset in-memory state."""
         _LOGGER.info("Global EKZ statistics reset triggered")
-        # We use the shared lock to ensure no coordinator is updating while we reset
-        async with hass.data[DOMAIN]["reset_lock"]:
-            for coord in hass.data[DOMAIN]["coordinators"].values():
-                await coord.async_reset_statistics()
+        for coord in hass.data[DOMAIN]["coordinators"].values():
+            await coord.async_reset_statistics()
 
     if not hass.services.has_service(DOMAIN, "reset_statistics"):
         hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)
