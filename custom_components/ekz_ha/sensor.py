@@ -24,7 +24,7 @@ async def async_setup_entry(
     async_add_entities: Any,
 ) -> None:
     """Set up EKZ sensors from a config entry."""
-    coordinator = hass.data[DOMAIN]["coordinator"]
+    coordinator = hass.data[DOMAIN]["coordinators"][entry.entry_id]
     meta_entities = {}
     sensors = (
         [EkzEntity(coordinator, installationId) for installationId in coordinator.installations]
