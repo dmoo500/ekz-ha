@@ -177,7 +177,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "last_full_day": self._last_full_day,
             "last_get_all": self._last_get_all,
             "contract_start": self._contract_start.isoformat() if self._contract_start else None,
-            "last_import_date": self._last_import.isoformat() if self._last_import else None,
+            "last_import": self._last_import.isoformat() if self._last_import else None,
             "last_run_datetime": self._last_run_date.isoformat() if self._last_run_date else None,
             "pending_from": self._pending_from.isoformat() if self._pending_from else None,
             "received_ranges": self._received_ranges,

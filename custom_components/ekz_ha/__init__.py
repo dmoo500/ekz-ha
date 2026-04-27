@@ -189,12 +189,12 @@ class EkzCoordinator(DataUpdateCoordinator):
             # from_date = (last_import + 1 day) midnight CEST = last_import 22:00 UTC.
             # Querying the DB here is the only reliable way to avoid double-counting when
             # the same slots are re-imported across cycles (e.g. pending days or restarts).
-            _last_import_date = meta_entity._last_import
-            if _last_import_date is not None:
-                if isinstance(_last_import_date, datetime):
-                    _last_import_date = _last_import_date.date()
+            _last_import = meta_entity._last_import
+            if _last_import is not None:
+                if isinstance(_last_import, datetime):
+                    _last_import = _last_import.date()
                 offset_boundary = datetime.combine(
-                    _last_import_date + timedelta(days=1), datetime.min.time()
+                    _last_import + timedelta(days=1), datetime.min.time()
                 ).replace(tzinfo=ZRH).astimezone(UTC)
                 try:
                     pre_stats = await get_recorder_instance(self.hass).async_add_executor_job(
