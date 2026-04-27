@@ -122,36 +122,39 @@ class EkzCoordinator(DataUpdateCoordinator):
             # Querying every cycle risks overwriting with a stale DB result if the recorder is not yet ready.
             statistic_id = f"sensor.electricity_consumption_ekz_{key}"
             if meta_entity._last_import is None:
-                try:
-                    last_stats = await get_recorder_instance(self.hass).async_add_executor_job(
-                        get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
-                    )
-                    if last_stats and statistic_id in last_stats:
-                        last_stat_data = last_stats[statistic_id]
-                        if last_stat_data:
-                            raw_start = last_stat_data[0]["start"]
-                            # HA returns start as float (Unix timestamp) or datetime depending on version
-                            if isinstance(raw_start, (int, float)):
-                                import_dt = datetime.fromtimestamp(float(raw_start), tz=ZRH)
-                            elif hasattr(raw_start, "tzinfo") and raw_start.tzinfo is not None:
-                                import_dt = raw_start.astimezone(ZRH)
-                            else:
-                                import_dt = raw_start.replace(tzinfo=ZRH)
-                            # Go back 1 day from the last DB entry: the last imported day may have
-                            # been partial (EKZ has a ~2-day delay), so we always re-fetch it on
-                            # restart to pick up any slots that were added later by EKZ.
-                            import_date = import_dt.date() - timedelta(days=1)
-                            _LOGGER.info(f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date} to re-check last day")
-                            # Set last_import one day BEFORE the rewind date so the fetcher
-                            # starts from import_date (last_import + 1 = import_date).
-                            meta_entity.set_last_import(import_date - timedelta(days=1))
-                            # Pre-initialise catching_up flag so sensor shows correct value immediately
-                            # (The running offset will be queried from DB just before the fetch below.)
-                            today_date = datetime.now(tz=ZRH).date()
-                            if (today_date - import_date).days <= 1:
-                                self.catching_up[key] = False
-                except Exception as e:
-                    _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
+                # Set last_import to contract_start - 1 day to force a full import on first run.
+                meta_entity.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d").date() - timedelta(days=1))
+                _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
+                # try:
+                #     last_stats = await get_recorder_instance(self.hass).async_add_executor_job(
+                #         get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
+                #     )
+                #     if last_stats and statistic_id in last_stats:
+                #         last_stat_data = last_stats[statistic_id]
+                #         if last_stat_data:
+                #             raw_start = last_stat_data[0]["start"]
+                #             # HA returns start as float (Unix timestamp) or datetime depending on version
+                #             if isinstance(raw_start, (int, float)):
+                #                 import_dt = datetime.fromtimestamp(float(raw_start), tz=ZRH)
+                #             elif hasattr(raw_start, "tzinfo") and raw_start.tzinfo is not None:
+                #                 import_dt = raw_start.astimezone(ZRH)
+                #             else:
+                #                 import_dt = raw_start.replace(tzinfo=ZRH)
+                #             # Go back 1 day from the last DB entry: the last imported day may have
+                #             # been partial (EKZ has a ~2-day delay), so we always re-fetch it on
+                #             # restart to pick up any slots that were added later by EKZ.
+                #             import_date = import_dt.date() - timedelta(days=1)
+                #             _LOGGER.info(f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date} to re-check last day")
+                #             # Set last_import one day BEFORE the rewind date so the fetcher
+                #             # starts from import_date (last_import + 1 = import_date).
+                #             meta_entity.set_last_import(import_date - timedelta(days=1))
+                #             # Pre-initialise catching_up flag so sensor shows correct value immediately
+                #             # (The running offset will be queried from DB just before the fetch below.)
+                #             today_date = datetime.now(tz=ZRH).date()
+                #             if (today_date - import_date).days <= 1:
+                #                 self.catching_up[key] = False
+                # except Exception as e:
+                #     _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
 
             # One-time migration: clear data stored under the old statistic_id from early integration versions
             old_statistic_id = f"sensor.ekz_electricity_consumption_{key}"
