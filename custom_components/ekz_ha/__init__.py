@@ -71,7 +71,11 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.last_prediction_sums: dict[str, float] = {}
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
-        self._reset_lock = asyncio.Lock()
+        if "reset_lock" in hass.data[DOMAIN]:
+            self._reset_lock = hass.data[DOMAIN]["reset_lock"]
+        else:
+            self._reset_lock = asyncio.Lock()
+            hass.data[DOMAIN]["reset_lock"] = self._reset_lock
         self.consumption_averages_raw: dict[str, dict] = {}  # accumulated slot sums for prediction
         self.next_update_time: datetime | None = None
 
