@@ -477,7 +477,8 @@ class EkzFetcher:
         if meta_entity is not None:
             if last_import is not None:
                 meta_entity.set_last_import(last_import.astimezone(ZRH).date())
-            elif to_date.date() < datetime.now(tz=ZRH).date():
+            elif not statistics and to_date.date() < datetime.now(tz=ZRH).date():
+                _LOGGER.info(f"[import_production_history_to_statistics] No importable data for {from_date.date()} to {to_date.date()} — advancing last_import to {to_date.date()} to avoid retry loop")
                 meta_entity.set_last_import(to_date.date())
             meta_entity.set_last_run_date(datetime.now())
         return {

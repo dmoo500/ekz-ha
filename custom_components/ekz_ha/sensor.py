@@ -114,8 +114,11 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self.installation_id = installationId
         self._model = model
-        self._attr_unique_id = f"ekz_electricity_consumption_{installationId}_meta"
-        self._attr_name = f"EKZ {installationId} Last Import"
+        is_production = model == "Solar Meter"
+        entity_type = "production" if is_production else "consumption"
+        label = "Production" if is_production else "Consumption"
+        self._attr_unique_id = f"ekz_electricity_{entity_type}_{installationId}_meta"
+        self._attr_name = f"EKZ {installationId} Last Import {label}"
         self._attr_device_class = SensorDeviceClass.TIMESTAMP
         self._last_running_sum = None
         self._last_full_day = None
@@ -132,7 +135,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
             "manufacturer": "EKZ",
-            "model": "Electricity Meter",
+            "model": self._model,
         }
 
     @property
