@@ -346,7 +346,9 @@ class EkzCoordinator(DataUpdateCoordinator):
                                 import_dt = raw_start.astimezone(ZRH)
                             else:
                                 import_dt = raw_start.replace(tzinfo=ZRH)
-                            prod_meta.set_last_import(import_dt.date())
+                            import_date = import_dt.date() - timedelta(days=1)
+                            _LOGGER.info(f"Restored last import for production {key} from DB: {import_dt.date()} → rewinding to {import_date} to re-check last day")
+                            prod_meta.set_last_import(import_date - timedelta(days=1))
                             if last_stat_data[0].get("sum") is not None:
                                 self.last_production_sums[key] = last_stat_data[0]["sum"]
                 except Exception as e:
