@@ -45,6 +45,44 @@ class Session:
         self._session = None
         self._logged_in = False
 
+    async def _fetch_with_retry(self, url: str, operation_name: str, empty_value, extra_context: str = ""):
+        """Fetch data with automatic retry on failure."""
+        async with self._session.get(url, headers=JSON_HEADERS) as r:
+            if not r.ok:
+                _LOGGER.warning(
+                    "Refreshing session as fetching %s failed (status %s%s) - retrying once",
+                    operation_name,
+                    r.status,
+                    extra_context,
+                )
+                await self._reset_session()
+                await self._ensure_logged_in()
+                async with self._session.get(url, headers=JSON_HEADERS) as retry_r:
+                    if not retry_r.ok:
+                        _LOGGER.error(
+                            "Retry failed: fetching %s failed (status %s%s)",
+                            operation_name,
+                            retry_r.status,
+                            extra_context,
+                        )
+                        return empty_value
+                    data = await retry_r.json()
+                    if data == []:
+                        _LOGGER.warning(
+                            "Refreshing session as fetching %s returned empty results",
+                            operation_name,
+                        )
+                        await self._reset_session()
+                    return data
+            data = await r.json()
+            if data == []:
+                _LOGGER.warning(
+                    "Refreshing session as fetching %s returned empty results",
+                    operation_name,
+                )
+                await self._reset_session()
+            return data
+
     async def _ensure_logged_in(self):
         if self._logged_in:
             return
@@ -177,34 +215,32 @@ class Session:
         """Fetch the available installations."""
         await self._ensure_logged_in()
         for variant in ["?installationVariant=CONSUMPTION", ""]:
-            async with self._session.get(
+            url = (
                 "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-selection-data"
-                + variant,
-                headers=JSON_HEADERS,
-            ) as r:
-                if not r.ok:
-                    _LOGGER.warning(
-                        "Refreshing session as fetching InstallationSelectionData failed (status %s)",
-                        r.status,
-                    )
-                    await self._reset_session()
-                    return InstallationSelectionData()
-                data = await r.json()
-                _LOGGER.debug(
-                    "[installation_selection_data] variant=%s, keys=%s, contracts=%s",
-                    variant or "(none)",
-                    list(data.keys()) if isinstance(data, dict) else type(data).__name__,
-                    data.get("contracts") if isinstance(data, dict) else data,
+                + variant
+            )
+            data = await self._fetch_with_retry(
+                url,
+                "InstallationSelectionData",
+                None,
+                f", variant={variant or '(none)'}",
+            )
+            if data is None:
+                continue
+            _LOGGER.debug(
+                "[installation_selection_data] variant=%s, keys=%s, contracts=%s",
+                variant or "(none)",
+                list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                data.get("contracts") if isinstance(data, dict) else data,
+            )
+            if isinstance(data, dict) and data.get("contracts"):
+                return data
+            if variant == "":
+                _LOGGER.warning(
+                    "[installation_selection_data] No contracts found in either API variant. "
+                    "Full response: %s", data
                 )
-                if isinstance(data, dict) and data.get("contracts"):
-                    return data
-                if variant == "":
-                    # Both attempts returned no contracts — return whatever we have
-                    _LOGGER.warning(
-                        "[installation_selection_data] No contracts found in either API variant. "
-                        "Full response: %s", data
-                    )
-                    return data
+                return data
         return InstallationSelectionData()
 
     async def production_installation_selection_data(self) -> InstallationSelectionData:
@@ -232,45 +268,27 @@ class Session:
     async def get_installation_data(self, installation_id: str) -> InstallationData:
         """Fetch the metadata for an installation."""
         await self._ensure_logged_in()
-        async with self._session.get(
+        url = (
             "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-data"
-            "?installationId=" + installation_id,
-            headers=JSON_HEADERS,
-        ) as r:
-            if not r.ok:
-                # We may have timed out. Mark as not logged in and return an empty object.
-                _LOGGER.warning(
-                    "Refreshing session as fetching InstallationData failed"
-                )
-                await self._reset_session()
-                return InstallationData()
-            data = await r.json()
-            if data == []:
-                _LOGGER.warning(
-                    "Refreshing session as fetching InstallationData returned empty results"
-                )
-                await self._reset_session()
-            return data
+            "?installationId=" + installation_id
+        )
+        return await self._fetch_with_retry(
+            url,
+            "InstallationData",
+            InstallationData(),
+        )
 
     async def get_consumption_data(
         self, installation_id: str, data_type: str, date_from: str, date_to: str
     ) -> ConsumptionData:
         """Fetch the consumption date at the given intallation in the date range provided."""
         await self._ensure_logged_in()
-        async with self._session.get(
+        url = (
             f"https://my.ekz.ch/api/portal-services/consumption-view/v1/consumption-data"
-            f"?installationId={installation_id}&from={date_from}&to={date_to}&type={data_type}",
-            headers=JSON_HEADERS,
-        ) as r:
-            if not r.ok:
-                # We may have timed out. Mark as not logged in and return an empty object.
-                _LOGGER.warning("Refreshing session as fetching ConsumptionData failed")
-                await self._reset_session()
-                return ConsumptionData()
-            data = await r.json()
-            if data == []:
-                _LOGGER.warning(
-                    "Refreshing session as fetching ConsumptionData returned empty results"
-                )
-                await self._reset_session()
-            return data
+            f"?installationId={installation_id}&from={date_from}&to={date_to}&type={data_type}"
+        )
+        return await self._fetch_with_retry(
+            url,
+            "ConsumptionData",
+            ConsumptionData(),
+        )
