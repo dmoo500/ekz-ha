@@ -16,13 +16,13 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Label based on files
         uses: actions/labeler@v5
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           configuration-path: .github/labeler.yml
-          
+
       - name: Label based on PR content
         uses: actions/github-script@v7
         with:
@@ -31,7 +31,7 @@ jobs:
             const body = pr.body || '';
             const title = pr.title || '';
             const labels = [];
-            
+
             // Auto-detect type from PR template checkboxes
             if (body.includes('[x] 🐛 Bugfix')) labels.push('bug', 'fix');
             if (body.includes('[x] ✨ New feature')) labels.push('enhancement', 'feature');
@@ -40,24 +40,24 @@ jobs:
             if (body.includes('[x] 🧹 Refactoring')) labels.push('refactor');
             if (body.includes('[x] ⚡ Performance')) labels.push('performance');
             if (body.includes('[x] ✅ Tests')) labels.push('tests');
-            
+
             // Auto-detect from title
             if (title.toLowerCase().includes('[bug]')) labels.push('bug');
             if (title.toLowerCase().includes('[feature]')) labels.push('enhancement');
             if (title.toLowerCase().includes('breaking')) labels.push('breaking-change');
-            
+
             // Add size label based on changes
             const changedFiles = pr.changed_files;
             const additions = pr.additions;
             const deletions = pr.deletions;
             const totalChanges = additions + deletions;
-            
+
             if (totalChanges < 10) labels.push('size/XS');
             else if (totalChanges < 50) labels.push('size/S');
             else if (totalChanges < 200) labels.push('size/M');
             else if (totalChanges < 500) labels.push('size/L');
             else labels.push('size/XL');
-            
+
             // Apply labels
             if (labels.length > 0) {
               await github.rest.issues.addLabels({
@@ -83,21 +83,21 @@ jobs:
             const title = issue.title || '';
             const body = issue.body || '';
             const labels = [];
-            
+
             // Auto-detect from title
             if (title.toLowerCase().includes('[bug]')) labels.push('bug');
             if (title.toLowerCase().includes('[feature]')) labels.push('enhancement');
             if (title.toLowerCase().includes('production')) labels.push('production');
             if (title.toLowerCase().includes('consumption')) labels.push('consumption');
             if (title.toLowerCase().includes('statistics')) labels.push('statistics');
-            
+
             // Auto-detect priority
             if (title.toLowerCase().includes('critical') || body.toLowerCase().includes('critical')) {
               labels.push('priority: critical');
             } else if (title.toLowerCase().includes('urgent')) {
               labels.push('priority: high');
             }
-            
+
             // Apply labels
             if (labels.length > 0) {
               await github.rest.issues.addLabels({

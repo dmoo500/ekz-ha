@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thank you for reporting a bug! Please fill out the following fields as detailed as possible.
-        
+
   - type: textarea
     id: description
     attributes:
@@ -16,7 +16,7 @@ body:
       placeholder: What happened?
     validations:
       required: true
-      
+
   - type: textarea
     id: steps
     attributes:
@@ -29,7 +29,7 @@ body:
         4. See error
     validations:
       required: true
-      
+
   - type: textarea
     id: expected
     attributes:
@@ -38,7 +38,7 @@ body:
       placeholder: Describe what you expected
     validations:
       required: true
-      
+
   - type: textarea
     id: logs
     attributes:
@@ -47,7 +47,7 @@ body:
       placeholder: |
         Paste Home Assistant logs here
       render: shell
-      
+
   - type: input
     id: version
     attributes:
@@ -56,7 +56,7 @@ body:
       placeholder: e.g. 0.2.0-alpha.1
     validations:
       required: true
-      
+
   - type: input
     id: ha_version
     attributes:
@@ -65,7 +65,7 @@ body:
       placeholder: e.g. 2024.8.0
     validations:
       required: true
-      
+
   - type: textarea
     id: additional
     attributes:

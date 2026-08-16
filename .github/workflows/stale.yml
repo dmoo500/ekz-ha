@@ -16,12 +16,12 @@ jobs:
       - uses: actions/stale@v9
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          
+
           # Issues
           stale-issue-message: |
             This issue has been marked as inactive because there has been no activity for 60 days.
             It will be automatically closed in 7 days if no further activity occurs.
-            
+
             If you believe this issue is still relevant, please comment here to keep it open.
           close-issue-message: |
             This issue has been automatically closed due to inactivity.
@@ -30,12 +30,12 @@ jobs:
           days-before-issue-close: 7
           stale-issue-label: stale
           exempt-issue-labels: 'pinned,security,bug,critical,priority: critical,priority: high'
-          
+
           # Pull Requests
           stale-pr-message: |
             This pull request has been marked as inactive because there has been no activity for 30 days.
             It will be automatically closed in 7 days if no further activity occurs.
-            
+
             Please update the PR if it is still relevant.
           close-pr-message: |
             This pull request has been automatically closed due to inactivity.
