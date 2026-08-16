@@ -1,38 +1,82 @@
 # Contributing to EKZ Home Assistant Integration
 
-Danke für dein Interesse an diesem Projekt! Diese Guidelines helfen dir beim Beitragen.
+Thank you for your interest in this project! These guidelines will help you contribute.
 
-## 🏗️ Architektur
+## 🏗️ Architecture
 
-Siehe [ARCHITECTURE.md](custom_components/ekz_ha/ARCHITECTURE.md) für Details zur Code-Struktur.
+See [ARCHITECTURE.md](custom_components/ekz_ha/ARCHITECTURE.md) for details about the code structure.
 
 ## 🔧 Development Setup
 
 ```bash
-# Clone Repository
+# Clone repository
 git clone https://github.com/dmoo500/ekz-ha.git
 cd ekz-ha
 
-# Virtual Environment erstellen
+# Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate  # Linux/Mac
-# oder: .venv\Scripts\activate  # Windows
+# or: .venv\Scripts\activate  # Windows
 
-# Dependencies installieren
+# Install dependencies
 pip install -e ".[dev]"
+
+# Install pre-commit hooks
+pip install pre-commit
+pre-commit install
+```
+
+## 🪝 Pre-commit Hooks
+
+This project uses pre-commit hooks to ensure code quality. The hooks run automatically on `git commit`:
+
+- **ruff** - Fast Python linter and formatter
+- **mypy** - Static type checking
+- **pytest** - Run tests before push
+- **JSON/TOML validation** - Validate configuration files
+- **Security checks** - Detect private keys, merge conflicts
+- **File formatting** - Fix trailing whitespace, end-of-file
+
+### Manual Hook Execution
+
+```bash
+# Run all hooks on all files
+pre-commit run --all-files
+
+# Run specific hook
+pre-commit run ruff-check --all-files
+pre-commit run mypy --all-files
+
+# Run hooks before push
+pre-commit run --hook-stage pre-push --all-files
+```
+
+### Skipping Hooks
+
+Only skip hooks when absolutely necessary:
+
+```bash
+# Skip all hooks (not recommended)
+git commit --no-verify -m "message"
+
+# Skip specific hook
+SKIP=mypy git commit -m "message"
 ```
 
 ## 🧪 Tests
 
 ```bash
-# Alle Tests ausführen
+# Run all tests
 pytest
 
-# Mit Coverage
+# With coverage
 pytest --cov=custom_components.ekz_ha --cov-report=html
 
-# Spezifischen Test ausführen
+# Run specific test
 pytest tests/api/test_models.py::TestApiValue::test_from_dict_standard_format
+
+# Run integration tests
+pytest tests/integration/ -v
 ```
 
 ## 📝 Code Quality
@@ -40,7 +84,7 @@ pytest tests/api/test_models.py::TestApiValue::test_from_dict_standard_format
 ### Linting & Formatting
 
 ```bash
-# Code formatieren
+# Format code
 ruff format custom_components/ tests/
 
 # Linting
@@ -49,29 +93,30 @@ ruff check custom_components/ tests/
 # Auto-fix
 ruff check --fix custom_components/ tests/
 
-# Type Checking
+# Type checking
 mypy custom_components/ekz_ha/
 ```
 
 ### Pre-Commit Checklist
 
-Vor jedem Commit:
+Before each commit (automated via pre-commit hooks):
 
-- [ ] Tests laufen durch: `pytest`
-- [ ] Linting ist clean: `ruff check custom_components/ tests/`
-- [ ] Code ist formatiert: `ruff format custom_components/ tests/`
-- [ ] Keine neuen Fehler in Home Assistant Logs
+- [ ] Tests pass: `pytest`
+- [ ] Linting is clean: `ruff check custom_components/ tests/`
+- [ ] Code is formatted: `ruff format custom_components/ tests/`
+- [ ] Type checking passes: `mypy custom_components/ekz_ha/`
+- [ ] No new errors in Home Assistant logs
 
 ## 🌿 Branching Strategy
 
-### Branch Namen
+### Branch Names
 
-- `feat/beschreibung` - Neue Features
-- `fix/issue-nummer-beschreibung` - Bugfixes
-- `refactor/beschreibung` - Code-Refactoring
-- `docs/beschreibung` - Dokumentation
+- `feat/description` - New features
+- `fix/issue-number-description` - Bug fixes
+- `refactor/description` - Code refactoring
+- `docs/description` - Documentation
 
-### Beispiele
+### Examples
 
 ```bash
 git checkout -b feat/solar-forecast
@@ -81,41 +126,41 @@ git checkout -b refactor/clean-architecture
 
 ## 📤 Pull Requests
 
-### PR Erstellen
+### Creating a PR
 
-1. **Branch von `main` erstellen**
+1. **Create branch from `main`**
    ```bash
    git checkout main
    git pull origin main
-   git checkout -b feat/mein-feature
+   git checkout -b feat/my-feature
    ```
 
-2. **Änderungen committen**
+2. **Commit changes**
    ```bash
-   # Einzelne Dateien hinzufügen (NICHT git add -A)
+   # Add individual files (NOT git add -A)
    git add custom_components/ekz_ha/api/client.py
    git add tests/api/test_client.py
    git commit -m "feat: Add retry logic to API client"
    ```
 
-3. **Push und PR erstellen**
+3. **Push and create PR**
    ```bash
-   git push -u origin feat/mein-feature
+   git push -u origin feat/my-feature
    ```
 
 ### Commit Messages
 
-Format: `<type>: <beschreibung>`
+Format: `<type>: <description>`
 
 **Types:**
-- `feat:` - Neues Feature
-- `fix:` - Bugfix
-- `refactor:` - Code-Refactoring
-- `docs:` - Dokumentation
+- `feat:` - New feature
+- `fix:` - Bug fix
+- `refactor:` - Code refactoring
+- `docs:` - Documentation
 - `test:` - Tests
-- `chore:` - Build, Dependencies, etc.
+- `chore:` - Build, dependencies, etc.
 
-**Beispiele:**
+**Examples:**
 ```
 feat: Add solar production forecasting
 fix: Resolve session timeout during automatic sync
@@ -127,150 +172,216 @@ chore: Update dependencies to latest versions
 
 ### PR Template
 
-Das PR Template wird automatisch geladen. Fülle alle Abschnitte aus:
+The PR template loads automatically. Fill out all sections:
 
-- Beschreibung der Änderungen
-- Art der Änderung (Feature, Bugfix, etc.)
-- Bezogene Issues (z.B. "Fixes #18")
-- Test-Status
-- Checkliste
+- Description of changes
+- Type of change (feature, bugfix, etc.)
+- Related issues (e.g., "Fixes #18")
+- Test status
+- Checklist
 
 ## 🏷️ Versioning & Releases
 
 ### Version Format
 
-**WICHTIG:** Wir verwenden **KEIN** "v" Präfix vor Versionsnummern!
+**IMPORTANT:** We use **NO** "v" prefix before version numbers!
 
-✅ **Richtig:**
+✅ **Correct:**
 ```bash
 git tag 0.2.0-alpha.1
 git tag 0.2.0
 git tag 1.0.0
 ```
 
-❌ **Falsch:**
+❌ **Wrong:**
 ```bash
-git tag v0.2.0-alpha.1  # NICHT VERWENDEN
-git tag v0.2.0          # NICHT VERWENDEN
+git tag v0.2.0-alpha.1  # DO NOT USE
+git tag v0.2.0          # DO NOT USE
 ```
 
 ### Semantic Versioning
 
 Format: `MAJOR.MINOR.PATCH[-PRERELEASE]`
 
-- **MAJOR** - Breaking Changes
-- **MINOR** - Neue Features (backwards compatible)
-- **PATCH** - Bugfixes
+- **MAJOR** - Breaking changes
+- **MINOR** - New features (backwards compatible)
+- **PATCH** - Bug fixes
 - **PRERELEASE** - alpha, beta, rc
 
-**Beispiele:**
-- `0.1.12` - Patch Release
-- `0.2.0` - Minor Release mit neuen Features
-- `0.2.0-alpha.1` - Alpha Pre-Release
-- `0.2.0-beta.1` - Beta Pre-Release
-- `1.0.0` - Major Release
+**Examples:**
+- `0.1.12` - Patch release
+- `0.2.0` - Minor release with new features
+- `0.2.0-alpha.1` - Alpha pre-release
+- `0.2.0-beta.1` - Beta pre-release
+- `1.0.0` - Major release
 
-### Release Erstellen
+### Creating a Release
 
 ```bash
-# 1. Version in manifest.json aktualisieren
-# 2. Committen
+# 1. Update version in manifest.json
+# 2. Commit
 git add custom_components/ekz_ha/manifest.json
 git commit -m "chore: Bump version to 0.2.0"
 
-# 3. Tag erstellen (OHNE "v"!)
+# 3. Create tag (WITHOUT "v"!)
 git tag 0.2.0
 
-# 4. Push mit Tags
+# 4. Push with tags
 git push origin main
 git push origin 0.2.0
 ```
 
-Der GitHub Workflow erstellt automatisch ein Release mit Changelog.
+The GitHub workflow automatically creates a release with changelog.
 
 ## 🐛 Bug Reports
 
-Verwende das [Bug Report Template](.github/ISSUE_TEMPLATE/bug_report.yml).
+Use the [Bug Report Template](.github/ISSUE_TEMPLATE/bug_report.yml).
 
-Wichtige Informationen:
-- EKZ Integration Version
-- Home Assistant Version
-- Logs aus Home Assistant
-- Schritte zur Reproduktion
+Important information:
+- EKZ Integration version
+- Home Assistant version
+- Logs from Home Assistant
+- Steps to reproduce
 
-## ✨ Feature Requests
+## 💡 Feature Requests
 
-Verwende das [Feature Request Template](.github/ISSUE_TEMPLATE/feature_request.yml).
+Use the [Feature Request Template](.github/ISSUE_TEMPLATE/feature_request.yml).
 
-Beschreibe:
-- Problem / Motivation
-- Vorgeschlagene Lösung
-- Alternative Ansätze
+Describe:
+- Use case / problem
+- Proposed solution
+- Alternative approaches
 
-## 📚 Dokumentation
-
-- Code-Kommentare auf Deutsch oder Englisch
-- Docstrings im Google Style Format
-- README und ARCHITECTURE aktuell halten
-
-## 🤝 Code Review
-
-### Was wir prüfen
-
-- Code-Qualität und Lesbarkeit
-- Test-Abdeckung
-- Performance-Implikationen
-- Breaking Changes dokumentiert
-- Dokumentation aktualisiert
-
-### Feedback-Prozess
-
-- Reviews konstruktiv und freundlich
-- Fragen sind willkommen
-- Bei Unsicherheit nachfragen
-
-## 📜 Lizenz
-
-Durch Beiträge stimmst du zu, dass deine Änderungen unter der MIT Lizenz veröffentlicht werden.
-
-## 💬 Kommunikation
-
-- **Issues:** GitHub Issues für Bugs und Feature Requests
-- **Diskussionen:** GitHub Discussions für Fragen
-- **Pull Requests:** Code Reviews und technische Diskussionen
-
-## 🎯 Best Practices
-
-### Git
-
-```bash
-# Einzelne Files hinzufügen (präzise)
-git add custom_components/ekz_ha/api/client.py
-git add tests/api/test_client.py
-
-# NICHT verwenden
-git add -A        # Zu unspezifisch
-git add .         # Zu unspezifisch
-```
+## 📚 Code Style
 
 ### Python
 
-- Type Hints verwenden
-- Docstrings für alle Public Functions/Classes
-- Fehlerbehandlung mit spezifischen Exceptions
-- Logging statt `print()`
-- Konstanten in `const.py`
+- Follow PEP 8
+- Use type hints (Python 3.12+ syntax: `str | None`)
+- Use dataclasses for data structures
+- Prefer `async`/`await` over callbacks
+- Maximum line length: 100 characters
 
-### Tests
+### Imports
 
-- Ein Test pro Verhalten
-- Aussagekräftige Test-Namen
-- Arrange-Act-Assert Pattern
-- Fixtures für gemeinsame Test-Daten
-- Mocking für externe Dependencies
+```python
+# Standard library
+import logging
+from datetime import datetime, timedelta
 
-## ❓ Fragen?
+# Third-party
+from homeassistant.core import HomeAssistant
 
-Bei Fragen öffne ein Issue oder eine Discussion auf GitHub.
+# Local
+from .api.client import EkzApiClient
+from .const import DOMAIN
+```
 
-Vielen Dank für deinen Beitrag! 🎉
+### Docstrings
+
+```python
+def calculate_average(values: list[float]) -> float:
+    """Calculate the arithmetic mean of a list of values.
+
+    Args:
+        values: List of numeric values
+
+    Returns:
+        The arithmetic mean
+
+    Raises:
+        ValueError: If the list is empty
+    """
+    if not values:
+        raise ValueError("Cannot calculate average of empty list")
+    return sum(values) / len(values)
+```
+
+## 🧪 Testing Guidelines
+
+### Test Structure
+
+```python
+"""Tests for data aggregation."""
+
+import pytest
+from custom_components.ekz_ha.data import DataAggregator
+
+
+class TestDataAggregator:
+    """Test DataAggregator class."""
+
+    @pytest.fixture
+    def aggregator(self):
+        """Create aggregator instance."""
+        return DataAggregator()
+
+    def test_merge_tariffs(self, aggregator):
+        """Test merging HT and NT tariffs."""
+        # Arrange
+        values = [...]
+
+        # Act
+        result = aggregator.merge_tariffs(values)
+
+        # Assert
+        assert len(result) == 2
+        assert result[0].value == 3.0
+```
+
+### Test Coverage
+
+- Aim for >80% code coverage
+- Write unit tests for all business logic
+- Add integration tests for end-to-end workflows
+- Test edge cases and error conditions
+
+## 🔍 Debugging
+
+### Enable Debug Logging
+
+Add to `configuration.yaml`:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.ekz_ha: debug
+```
+
+### VSCode Debug Configuration
+
+`.vscode/launch.json`:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}
+```
+
+## 📖 Documentation
+
+- Update README.md for user-facing changes
+- Update ARCHITECTURE.md for structural changes
+- Add docstrings to all public APIs
+- Include code examples in docstrings
+
+## ❓ Questions?
+
+- Open a [Discussion](https://github.com/dmoo500/ekz-ha/discussions)
+- Check existing [Issues](https://github.com/dmoo500/ekz-ha/issues)
+- Review [Architecture Documentation](custom_components/ekz_ha/ARCHITECTURE.md)
+
+---
+
+Thank you for contributing! 🎉

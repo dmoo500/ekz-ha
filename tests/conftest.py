@@ -1,6 +1,5 @@
 """Common test fixtures for EKZ integration tests."""
 
-
 import pytest
 
 from custom_components.ekz_ha.api.models import ApiValue

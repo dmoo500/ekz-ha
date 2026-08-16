@@ -1,0 +1,149 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  - repo: local
+    hooks:
+      # Ruff - Fast Python linter
+      - id: ruff-check
+        name: 🐶 Ruff Linter
+        language: system
+        types: [python]
+        entry: ruff check --fix
+        require_serial: true
+        stages: [pre-commit, pre-push, manual]
+
+      - id: ruff-format
+        name: 🐶 Ruff Formatter
+        language: system
+        types: [python]
+        entry: ruff format
+        require_serial: true
+        stages: [pre-commit, pre-push, manual]
+
+      # Python checks
+      - id: check-ast
+        name: 🐍 Check Python AST
+        language: python
+        types: [python]
+        entry: python -m py_compile
+        pass_filenames: true
+        additional_dependencies: []
+
+      # Type checking with mypy
+      - id: mypy
+        name: 🔍 mypy Type Checking
+        language: system
+        types: [python]
+        entry: mypy --config-file=pyproject.toml --explicit-package-bases custom_components/ekz_ha/
+        require_serial: true
+        pass_filenames: false
+        files: ^custom_components/
+        stages: [pre-push, manual]
+
+      # JSON/TOML validation
+      - id: check-json
+        name: ｛ Check JSON files
+        language: python
+        types: [json]
+        entry: bash -c 'for f in "$@"; do python -m json.tool "$f" > /dev/null || exit 1; done' --
+        pass_filenames: true
+        additional_dependencies: []
+
+      - id: check-toml
+        name: ✅ Check TOML files
+        language: python
+        types: [toml]
+        entry: python -c "import sys, tomllib; [tomllib.load(open(f, 'rb')) for f in sys.argv[1:]]"
+        pass_filenames: true
+        additional_dependencies: []
+
+      # General file checks
+      - id: check-case-conflict
+        name: 🔠 Check for case conflicts
+        language: system
+        entry: bash -c 'files=("$@"); declare -A lower; for f in "${files[@]}"; do l=$(echo "$f" | tr "[:upper:]" "[:lower:]"); if [[ -n "${lower[$l]}" && "${lower[$l]}" != "$f" ]]; then exit 1; fi; lower[$l]="$f"; done' --
+        pass_filenames: true
+
+      - id: check-merge-conflict
+        name: 💥 Check for merge conflicts
+        language: system
+        types: [text]
+        entry: bash -c 'for f in "$@"; do if grep -qE "^(<<<<<<<|=======|>>>>>>>)" "$f"; then exit 1; fi; done' --
+        pass_filenames: true
+
+      - id: check-symlinks
+        name: 🔗 Check for broken symlinks
+        language: system
+        types: [symlink]
+        entry: bash -c 'for f in "$@"; do if [[ -L "$f" && ! -e "$f" ]]; then exit 1; fi; done' --
+        pass_filenames: true
+
+      - id: end-of-file-fixer
+        name: ⮐ Fix End of Files
+        language: system
+        types: [text]
+        entry: bash -c 'for f in "$@"; do if [[ -s "$f" ]] && [[ $(tail -c1 "$f" | wc -l) -eq 0 ]]; then echo >> "$f"; fi; done' --
+        pass_filenames: true
+        stages: [pre-commit, pre-push, manual]
+
+      - id: trailing-whitespace
+        name: ✄ Trim Trailing Whitespace
+        language: system
+        types: [text]
+        entry: bash -c 'for f in "$@"; do sed -i "" -e "s/[[:space:]]*$//" "$f"; done' --
+        pass_filenames: true
+        stages: [pre-commit, pre-push, manual]
+
+      - id: detect-private-key
+        name: 🕵️ Detect Private Keys
+        language: system
+        types: [text]
+        entry: bash -c 'for f in "$@"; do if grep -qE "-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----" "$f"; then exit 1; fi; done' --
+        pass_filenames: true
+
+      # Prevent commits to main branch
+      - id: no-commit-to-main
+        name: 🛑 Don't commit to main branch
+        language: system
+        entry: bash -c 'branch=$(git branch --show-current); if [[ "$branch" == "main" ]]; then exit 1; fi' --
+        pass_filenames: false
+        always_run: true
+
+      # Home Assistant specific checks
+      - id: validate-manifest
+        name: 🏠 Validate manifest.json
+        language: python
+        types: [json]
+        entry: python -c "import sys, json; manifest = json.load(open('custom_components/ekz_ha/manifest.json')); required = ['domain', 'name', 'version', 'documentation', 'requirements']; missing = [k for k in required if k not in manifest]; sys.exit(1 if missing else 0)"
+        pass_filenames: false
+        files: ^custom_components/ekz_ha/manifest\.json$
+        additional_dependencies: []
+
+      # Pytest
+      - id: pytest
+        name: 🧪 Run pytest
+        language: system
+        entry: pytest tests/ -v --tb=short
+        pass_filenames: false
+        always_run: false
+        stages: [pre-push, manual]
+
+# Pre-commit configuration
+default_language_version:
+  python: python3.12
+
+# Skip these files
+exclude: |
+  (?x)^(
+      \.git/|
+      \.venv/|
+      \.pytest_cache/|
+      __pycache__/|
+      \.mypy_cache/|
+      \.ruff_cache/|
+      ekz_ha\.egg-info/|
+      tests/fixtures/.*\.json$
+  )
+
+# Run all hooks on all files when installing
+default_install_hook_types: [pre-commit, pre-push]

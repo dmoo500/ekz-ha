@@ -1,7 +1,5 @@
 """Tests for API models."""
 
-
-
 from custom_components.ekz_ha.api.models import (
     ApiValue,
     ConsumptionData,

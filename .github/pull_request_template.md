@@ -1,49 +1,49 @@
-## Beschreibung
+## Description
 
-<!-- Beschreibe deine Änderungen im Detail -->
+<!-- Describe your changes in detail -->
 
-## Art der Änderung
+## Type of Change
 
-<!-- Bitte markiere die zutreffenden Optionen -->
+<!-- Please check the relevant options -->
 
-- [ ] 🐛 Bugfix (nicht-breaking change der ein Problem behebt)
-- [ ] ✨ Neues Feature (nicht-breaking change der neue Funktionalität hinzufügt)
-- [ ] 💥 Breaking Change (Änderung die bestehende Funktionalität ändert)
-- [ ] 📚 Dokumentation (nur Dokumentationsänderungen)
-- [ ] 🧹 Refactoring (Code-Änderung ohne neue Features oder Bugfixes)
-- [ ] ⚡ Performance-Verbesserung
-- [ ] ✅ Tests (neue oder verbesserte Tests)
+- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)
+- [ ] ✨ New feature (non-breaking change that adds functionality)
+- [ ] 💥 Breaking change (change that modifies existing functionality)
+- [ ] 📚 Documentation (documentation changes only)
+- [ ] 🧹 Refactoring (code change without new features or bug fixes)
+- [ ] ⚡ Performance improvement
+- [ ] ✅ Tests (new or improved tests)
 
-## Bezogene Issues
+## Related Issues
 
-<!-- Verlinke bezogene Issues, z.B.: Fixes #123, Closes #456 -->
+<!-- Link related issues, e.g.: Fixes #123, Closes #456 -->
 
 Fixes #
 
-## Wie wurde das getestet?
+## How Has This Been Tested?
 
-<!-- Beschreibe wie du deine Änderungen getestet hast -->
+<!-- Describe how you tested your changes -->
 
-- [ ] Manuelle Tests durchgeführt
-- [ ] Unit Tests hinzugefügt/aktualisiert
-- [ ] Integration Tests durchgeführt
-- [ ] Getestet mit Home Assistant Version: ___
+- [ ] Manual tests performed
+- [ ] Unit tests added/updated
+- [ ] Integration tests performed
+- [ ] Tested with Home Assistant version: ___
 
-## Checkliste
+## Checklist
 
-- [ ] Mein Code folgt den Code-Style-Guidelines dieses Projekts
-- [ ] Ich habe eine Self-Review meines Codes durchgeführt
-- [ ] Ich habe meinen Code kommentiert, besonders bei komplexen Stellen
-- [ ] Ich habe die Dokumentation entsprechend aktualisiert
-- [ ] Meine Änderungen erzeugen keine neuen Warnungen
-- [ ] Ich habe Tests hinzugefügt die beweisen dass mein Fix funktioniert oder das neue Feature korrekt ist
-- [ ] Neue und bestehende Unit Tests laufen lokal durch
-- [ ] Abhängige Änderungen wurden gemerged und veröffentlicht
+- [ ] My code follows the code style guidelines of this project
+- [ ] I have performed a self-review of my code
+- [ ] I have commented my code, especially in complex areas
+- [ ] I have updated the documentation accordingly
+- [ ] My changes generate no new warnings
+- [ ] I have added tests that prove my fix works or the new feature is correct
+- [ ] New and existing unit tests pass locally
+- [ ] Dependent changes have been merged and published
 
-## Screenshots (falls zutreffend)
+## Screenshots (if applicable)
 
-<!-- Füge Screenshots hinzu um deine Änderungen zu zeigen -->
+<!-- Add screenshots to demonstrate your changes -->
 
-## Zusätzliche Hinweise
+## Additional Notes
 
-<!-- Alle weiteren Informationen die für den Review wichtig sind -->
+<!-- Any other information that is important for the review -->

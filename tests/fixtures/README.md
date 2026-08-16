@@ -1,19 +1,19 @@
 # Test Fixtures
 
-Dieses Verzeichnis enthält echte JSON-Antworten von der EKZ API, die als Fixtures für Integration-Tests verwendet werden.
+This directory contains real JSON responses from the EKZ API used as fixtures for integration tests.
 
-## Datenschutz
+## Privacy
 
-**Wichtig:** Diese Fixture-Dateien enthalten **keine sensiblen persönlichen Daten**. Sie beinhalten nur:
-- Verbrauchswerte in kWh (anonyme Zahlen)
-- Zeitstempel und Daten
-- Technische Status-Informationen
+**Important:** These fixture files contain **no sensitive personal data**. They include only:
+- Consumption values in kWh (anonymous numbers)
+- Timestamps and dates
+- Technical status information
 
-Sensible Daten wie Vertragsnummern, Installation-IDs oder persönliche Identifikatoren sind **nicht** in diesen Dateien enthalten. Diese werden nur in separaten API-Responses (z.B. `installation_selection_data`) zurückgegeben und sollten in Tests mit generischen Mock-Werten ersetzt werden.
+Sensitive data such as contract numbers, installation IDs, or personal identifiers are **not** included in these files. These are only returned in separate API responses (e.g., `installation_selection_data`) and should be replaced with generic mock values in tests.
 
-### Empfohlene Test-IDs für Mocks
+### Recommended Test IDs for Mocks
 
-Falls Installation- oder Vertragsdaten in Tests benötigt werden, verwende diese generischen Werte:
+If installation or contract data is needed in tests, use these generic values:
 
 ```python
 MOCK_INSTALLATION_ID = "TEST_INST_001"
@@ -29,39 +29,39 @@ MOCK_CONTRACT_DATA = {
 ## Consumption Fixtures
 
 - **import_2026-03-06-2026-03-16-PK_VERB_15MIN.json** (1.2MB)
-  - 15-Minuten Verbrauchsdaten (QUARTER_HOUR)
-  - Periode: 06.03.2026 - 16.03.2026
-  - Enthält: seriesHt, seriesNt mit je 4028 Werten
-  - Verwendet in: `tests/integration/test_consumption_import.py`
+  - 15-minute consumption data (QUARTER_HOUR)
+  - Period: 2026-03-06 to 2026-03-16
+  - Contains: seriesHt, seriesNt with 4028 values each
+  - Used in: `tests/integration/test_consumption_import.py`
 
 - **import_2026_03_16-2026_04_16-PK_VERB_TAG_METER.json** (9.6KB)
-  - Tägliche Verbrauchsdaten (DAY)
-  - Periode: 16.03.2026 - 16.04.2026
-  - Enthält: seriesHt, seriesNt mit Tageswerten
-  - Verwendet in: `tests/integration/test_consumption_import.py`
+  - Daily consumption data (DAY)
+  - Period: 2026-03-16 to 2026-04-16
+  - Contains: seriesHt, seriesNt with daily values
+  - Used in: `tests/integration/test_consumption_import.py`
 
 - **import_2026-01-31-2026-03-02.json** (884KB)
-  - 15-Minuten Verbrauchsdaten
-  - Periode: 31.01.2026 - 02.03.2026
-  - Alternative Testdaten
+  - 15-minute consumption data
+  - Period: 2026-01-31 to 2026-03-02
+  - Alternative test data
 
 - **import_2026-04-03-2026-05-15_PK_VERB_16Min.json** (893KB)
-  - 15-Minuten Verbrauchsdaten
-  - Periode: 03.04.2026 - 15.05.2026
-  - Alternative Testdaten
+  - 15-minute consumption data
+  - Period: 2026-04-03 to 2026-05-15
+  - Alternative test data
 
 ## Production Fixtures
 
 - **import_production_2026-08-03_WIRK_NEG_15MIN.json**
-  - 15-Minuten Produktionsdaten (Rücklieferung/Solar)
-  - Periode: 03.08.2026 (1 Tag)
-  - Enthält: seriesNt mit 96 Werten (4 pro Stunde)
-  - Quelle: Extrahiert aus GitHub Issue #18 Debug-Logs
-  - Verwendet in: Geplant für Production-Integration-Tests
+  - 15-minute production data (feed-in/solar)
+  - Period: 2026-08-03 (1 day)
+  - Contains: seriesNt with 96 values (4 per hour)
+  - Source: Extracted from GitHub Issue #18 debug logs
+  - Used in: Planned for production integration tests
 
-## Hinweise
+## Notes
 
-- Diese Dateien enthalten echte API-Responses im JSON-Format
-- Sensible Daten (Installation-IDs, Vertragsnummern) sind in den Tests gemockt
-- Die Zeitstempel verwenden das EKZ-Format: `YYYYMMDDHHmmss`
-- DST-Übergänge sind in den Daten enthalten (92/96/100 Slots pro Tag)
+- These files contain real API responses in JSON format
+- Sensitive data (installation IDs, contract numbers) are mocked in tests
+- Timestamps use the EKZ format: `YYYYMMDDHHmmss`
+- DST transitions are included in the data (92/96/100 slots per day)

@@ -34,7 +34,7 @@ jobs:
             
             // Auto-detect type from PR template checkboxes
             if (body.includes('[x] 🐛 Bugfix')) labels.push('bug', 'fix');
-            if (body.includes('[x] ✨ Neues Feature')) labels.push('enhancement', 'feature');
+            if (body.includes('[x] ✨ New feature')) labels.push('enhancement', 'feature');
             if (body.includes('[x] 💥 Breaking Change')) labels.push('breaking-change');
             if (body.includes('[x] 📚 Dokumentation')) labels.push('documentation');
             if (body.includes('[x] 🧹 Refactoring')) labels.push('refactor');

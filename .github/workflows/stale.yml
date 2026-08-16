@@ -19,13 +19,13 @@ jobs:
           
           # Issues
           stale-issue-message: |
-            Dieses Issue wurde als inaktiv markiert weil es seit 60 Tagen keine Aktivität gab.
-            Es wird in 7 Tagen automatisch geschlossen wenn keine weitere Aktivität erfolgt.
+            This issue has been marked as inactive because there has been no activity for 60 days.
+            It will be automatically closed in 7 days if no further activity occurs.
             
-            Wenn du glaubst dass dieses Issue noch relevant ist, kommentiere bitte hier um es offen zu halten.
+            If you believe this issue is still relevant, please comment here to keep it open.
           close-issue-message: |
-            Dieses Issue wurde automatisch geschlossen wegen Inaktivität.
-            Bei Bedarf kann es jederzeit wieder geöffnet werden.
+            This issue has been automatically closed due to inactivity.
+            It can be reopened at any time if needed.
           days-before-issue-stale: 60
           days-before-issue-close: 7
           stale-issue-label: stale
@@ -33,13 +33,13 @@ jobs:
           
           # Pull Requests
           stale-pr-message: |
-            Dieser Pull Request wurde als inaktiv markiert weil es seit 30 Tagen keine Aktivität gab.
-            Er wird in 7 Tagen automatisch geschlossen wenn keine weitere Aktivität erfolgt.
+            This pull request has been marked as inactive because there has been no activity for 30 days.
+            It will be automatically closed in 7 days if no further activity occurs.
             
-            Bitte aktualisiere den PR wenn er noch relevant ist.
+            Please update the PR if it is still relevant.
           close-pr-message: |
-            Dieser Pull Request wurde automatisch geschlossen wegen Inaktivität.
-            Bei Bedarf kann er jederzeit wieder geöffnet werden.
+            This pull request has been automatically closed due to inactivity.
+            It can be reopened at any time if needed.
           days-before-pr-stale: 30
           days-before-pr-close: 7
           stale-pr-label: stale

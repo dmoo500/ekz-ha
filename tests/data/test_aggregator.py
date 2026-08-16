@@ -1,6 +1,5 @@
 """Tests for data aggregation."""
 
-
 from custom_components.ekz_ha.api.models import ApiValue
 from custom_components.ekz_ha.data.aggregator import DataAggregator, normalize_timestamp
 

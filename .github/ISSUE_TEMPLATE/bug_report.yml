@@ -1,41 +1,41 @@
 name: 🐛 Bug Report
-description: Melde einen Bug oder ein Problem
+description: Report a bug or problem
 title: "[Bug]: "
 labels: ["bug", "triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Danke für deine Bug-Meldung! Bitte fülle die folgenden Felder so detailliert wie möglich aus.
+        Thank you for reporting a bug! Please fill out the following fields as detailed as possible.
         
   - type: textarea
     id: description
     attributes:
-      label: Beschreibung des Problems
-      description: Eine klare und präzise Beschreibung des Problems
-      placeholder: Was ist passiert?
+      label: Problem Description
+      description: A clear and concise description of the problem
+      placeholder: What happened?
     validations:
       required: true
       
   - type: textarea
     id: steps
     attributes:
-      label: Schritte zur Reproduktion
-      description: Schritte um das Problem zu reproduzieren
+      label: Steps to Reproduce
+      description: Steps to reproduce the problem
       placeholder: |
-        1. Gehe zu '...'
-        2. Klicke auf '...'
-        3. Scrolle runter zu '...'
-        4. Siehe Fehler
+        1. Go to '...'
+        2. Click on '...'
+        3. Scroll down to '...'
+        4. See error
     validations:
       required: true
       
   - type: textarea
     id: expected
     attributes:
-      label: Erwartetes Verhalten
-      description: Was sollte stattdessen passieren?
-      placeholder: Beschreibe was du erwartet hast
+      label: Expected Behavior
+      description: What should happen instead?
+      placeholder: Describe what you expected
     validations:
       required: true
       
@@ -43,17 +43,17 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Relevante Log-Auszüge (falls vorhanden)
+      description: Relevant log excerpts (if available)
       placeholder: |
-        Füge Home Assistant Logs hier ein
+        Paste Home Assistant logs here
       render: shell
       
   - type: input
     id: version
     attributes:
       label: EKZ Integration Version
-      description: Welche Version der Integration verwendest du?
-      placeholder: z.B. 0.2.0-alpha.1
+      description: Which version of the integration are you using?
+      placeholder: e.g. 0.2.0-alpha.1
     validations:
       required: true
       
@@ -61,14 +61,14 @@ body:
     id: ha_version
     attributes:
       label: Home Assistant Version
-      description: Welche Home Assistant Version verwendest du?
-      placeholder: z.B. 2024.8.0
+      description: Which Home Assistant version are you using?
+      placeholder: e.g. 2024.8.0
     validations:
       required: true
       
   - type: textarea
     id: additional
     attributes:
-      label: Zusätzlicher Kontext
-      description: Weitere Informationen die hilfreich sein könnten
-      placeholder: Screenshots, Konfiguration, etc.
+      label: Additional Context
+      description: Other information that might be helpful
+      placeholder: Screenshots, configuration, etc.
