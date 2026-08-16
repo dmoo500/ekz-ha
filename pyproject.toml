@@ -20,9 +20,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "homeassistant>=2026.8.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-    "pytest-homeassistant-custom-component>=0.13.0",
+    "pytest-homeassistant-custom-component>=0.13.356",
     "pytest-cov>=4.1.0",
     "ruff>=0.3.0",
     "mypy>=1.9.0",

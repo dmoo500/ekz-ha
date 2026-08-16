@@ -9,9 +9,16 @@ from homeassistant import core
 from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.recorder.models import (
     StatisticData,
-    StatisticMeanType,
     StatisticMetaData,
 )
+
+try:
+    from homeassistant.components.recorder.models import StatisticMeanType
+
+    MEAN_TYPE_NONE = StatisticMeanType.NONE
+except ImportError:
+    # HA 2024.2+ removed StatisticMeanType enum, use None directly
+    MEAN_TYPE_NONE = None  # type: ignore[assignment]
 from homeassistant.components.recorder.statistics import (
     async_import_statistics,
     get_last_statistics,
@@ -37,7 +44,7 @@ def _make_stat_meta(statistic_id: str) -> StatisticMetaData:
     """Build StatisticMetaData, adding unit_class='energy' when supported (HA 2024.3+)."""
     kwargs = {
         "has_sum": True,
-        "mean_type": StatisticMeanType.NONE,
+        "mean_type": MEAN_TYPE_NONE,
         "source": "recorder",
         "statistic_id": statistic_id,
         "name": None,
