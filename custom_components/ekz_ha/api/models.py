@@ -1,7 +1,6 @@
 """Data models for EKZ API responses."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 
@@ -142,9 +141,7 @@ class InstallationSelectionData:
         if not data or not isinstance(data, dict):
             return cls()
 
-        contracts = [
-            InstallationContract.from_dict(c) for c in data.get("contracts", [])
-        ]
+        contracts = [InstallationContract.from_dict(c) for c in data.get("contracts", [])]
         return cls(contracts=contracts)
 
     def get_installation_ids(self) -> list[str]:

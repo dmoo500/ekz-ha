@@ -1,9 +1,8 @@
 """Consumption data importer."""
 
 import logging
-from datetime import datetime, timedelta
-
 import zoneinfo
+from datetime import datetime, timedelta
 
 from ..api.models import ConsumptionData
 from .importer import BaseImporter

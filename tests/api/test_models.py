@@ -1,8 +1,6 @@
 """Tests for API models."""
 
-from datetime import datetime
 
-import pytest
 
 from custom_components.ekz_ha.api.models import (
     ApiValue,
@@ -21,9 +19,9 @@ class TestApiValue:
             "value": 2.5,
             "status": "VALID",
         }
-        
+
         value = ApiValue.from_dict(data, tariff="HT")
-        
+
         assert value.timestamp == "20260813120000"
         assert value.value == 2.5
         assert value.status == "VALID"
@@ -37,9 +35,9 @@ class TestApiValue:
             "value": 1.5,
             "status": "VALID",
         }
-        
+
         value = ApiValue.from_dict(data)
-        
+
         assert value.date == "2026-08-13"
         assert value.tariff == "TOTAL"
 
@@ -58,9 +56,9 @@ class TestSeriesData:
             ],
             "level": "QUARTER_HOUR",
         }
-        
+
         series = SeriesData.from_dict(data, tariff="NT")
-        
+
         assert len(series.values) == 2
         assert series.values[0].value == 2.5
         assert series.values[1].value == 1.5
@@ -85,9 +83,9 @@ class TestConsumptionData:
                 ],
             },
         }
-        
+
         consumption = ConsumptionData.from_dict(data)
-        
+
         assert consumption.level == "QUARTER_HOUR"
         assert consumption.series_ht is not None
         assert consumption.series_nt is not None
@@ -109,10 +107,10 @@ class TestConsumptionData:
                 ],
             },
         }
-        
+
         consumption = ConsumptionData.from_dict(data)
         values = consumption.get_all_values()
-        
+
         # Should use HT value, not series
         assert len(values) == 1
         assert values[0].value == 1.0
@@ -131,6 +129,6 @@ class TestConsumptionData:
                 ],
             },
         }
-        
+
         consumption = ConsumptionData.from_dict(data)
         assert not consumption.is_empty()

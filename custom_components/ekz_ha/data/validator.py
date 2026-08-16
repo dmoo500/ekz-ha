@@ -1,11 +1,9 @@
 """Data validation utilities."""
 
 import logging
+import zoneinfo
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any
-
-import zoneinfo
 
 from ..api.models import ApiValue
 
@@ -74,9 +72,7 @@ class DataValidator:
         return 96
 
     @staticmethod
-    def find_complete_days(
-        values: list[ApiValue], timezone: zoneinfo.ZoneInfo = ZRH
-    ) -> list[str]:
+    def find_complete_days(values: list[ApiValue], timezone: zoneinfo.ZoneInfo = ZRH) -> list[str]:
         """
         Find dates that have all expected 15-minute slots.
 

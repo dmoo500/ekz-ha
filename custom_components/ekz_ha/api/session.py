@@ -3,10 +3,8 @@
 import logging
 
 import aiohttp
-from bs4 import BeautifulSoup
 import pyotp
-
-from .apitypes import ConsumptionData, InstallationData, InstallationSelectionData
+from bs4 import BeautifulSoup
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,11 +39,13 @@ class Session:
 
     async def _reset_session(self):
         if self._session is not None:
-            await self._session.close()            
+            await self._session.close()
         self._session = None
         self._logged_in = False
 
-    async def _fetch_with_retry(self, url: str, operation_name: str, empty_value, extra_context: str = ""):
+    async def _fetch_with_retry(
+        self, url: str, operation_name: str, empty_value, extra_context: str = ""
+    ):
         """Fetch data with automatic retry on failure."""
         async with self._session.get(url, headers=JSON_HEADERS) as r:
             if not r.ok:
@@ -88,9 +88,7 @@ class Session:
             return
         self._init_session()
 
-        async with self._session.get(
-            "https://my.ekz.ch/verbrauch/", headers=HTML_HEADERS
-        ) as r:
+        async with self._session.get("https://my.ekz.ch/verbrauch/", headers=HTML_HEADERS) as r:
             if not r.ok:
                 raise ValueError("EKZ seems unreachable")
             html = await r.text()
@@ -140,10 +138,16 @@ class Session:
                         for inp in radio_inputs:
                             cred_id = inp.get("value", "")
                             inp_id = inp.get("id", "")
-                            label_tag = otpform[0].select_one(f"label[for={inp_id}]") if inp_id else None
+                            label_tag = (
+                                otpform[0].select_one(f"label[for={inp_id}]") if inp_id else None
+                            )
                             if label_tag:
                                 title_span = label_tag.select_one("span.pf-c-tile__title")
-                                device_label = title_span.get_text(strip=True) if title_span else label_tag.get_text(strip=True)
+                                device_label = (
+                                    title_span.get_text(strip=True)
+                                    if title_span
+                                    else label_tag.get_text(strip=True)
+                                )
                             else:
                                 device_label = cred_id
                             candidates.append((cred_id, device_label))
@@ -166,7 +170,8 @@ class Session:
                                 if inp.has_attr("checked"):
                                     chosen_id = inp.get("value", "")
                                     chosen_label = next(
-                                        (lbl for cid, lbl in candidates if cid == chosen_id), chosen_id
+                                        (lbl for cid, lbl in candidates if cid == chosen_id),
+                                        chosen_id,
                                     )
                                     break
                         if chosen_id is None:
@@ -177,7 +182,9 @@ class Session:
                         )
                         post_data["selectedCredentialId"] = chosen_id
 
-                    _LOGGER.debug("[EKZ login] Submitting OTP form with fields: %s", list(post_data.keys()))
+                    _LOGGER.debug(
+                        "[EKZ login] Submitting OTP form with fields: %s", list(post_data.keys())
+                    )
                     async with self._session.post(
                         otp_action, data=post_data, allow_redirects=True
                     ) as r:
@@ -211,7 +218,7 @@ class Session:
 
                 self._logged_in = True
 
-    async def installation_selection_data(self) -> InstallationSelectionData:
+    async def installation_selection_data(self) -> dict:
         """Fetch the available installations."""
         await self._ensure_logged_in()
         for variant in ["?installationVariant=CONSUMPTION", ""]:
@@ -238,12 +245,13 @@ class Session:
             if variant == "":
                 _LOGGER.warning(
                     "[installation_selection_data] No contracts found in either API variant. "
-                    "Full response: %s", data
+                    "Full response: %s",
+                    data,
                 )
                 return data
-        return InstallationSelectionData()
+        return {}
 
-    async def production_installation_selection_data(self) -> InstallationSelectionData:
+    async def production_installation_selection_data(self) -> dict:
         """Fetch installations with solar/production variant."""
         await self._ensure_logged_in()
         async with self._session.get(
@@ -256,16 +264,16 @@ class Session:
                     "[production_installation_selection_data] Request failed (status %s) — no production installations",
                     r.status,
                 )
-                return InstallationSelectionData()
+                return {}
             data = await r.json()
             _LOGGER.debug(
                 "[production_installation_selection_data] keys=%s, contracts=%s",
                 list(data.keys()) if isinstance(data, dict) else type(data).__name__,
                 data.get("contracts") if isinstance(data, dict) else data,
             )
-            return data if isinstance(data, dict) else InstallationSelectionData()
+            return data if isinstance(data, dict) else {}
 
-    async def get_installation_data(self, installation_id: str) -> InstallationData:
+    async def get_installation_data(self, installation_id: str) -> dict:
         """Fetch the metadata for an installation."""
         await self._ensure_logged_in()
         url = (
@@ -275,12 +283,12 @@ class Session:
         return await self._fetch_with_retry(
             url,
             "InstallationData",
-            InstallationData(),
+            {},
         )
 
     async def get_consumption_data(
         self, installation_id: str, data_type: str, date_from: str, date_to: str
-    ) -> ConsumptionData:
+    ) -> dict:
         """Fetch the consumption date at the given intallation in the date range provided."""
         await self._ensure_logged_in()
         url = (
@@ -290,5 +298,5 @@ class Session:
         return await self._fetch_with_retry(
             url,
             "ConsumptionData",
-            ConsumptionData(),
+            {},
         )

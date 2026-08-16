@@ -4,11 +4,10 @@ import logging
 
 import pyotp
 import voluptuous as vol
-
 from homeassistant import config_entries
 
+from .api.client import EkzApiClient
 from .const import DOMAIN
-from .session import Session
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,8 +49,12 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 {
                     vol.Required("user", default=(user_input or {}).get("user", "")): str,
                     vol.Required("password"): str,
-                    vol.Required("totp_secret", default=(user_input or {}).get("totp_secret", "")): str,
-                    vol.Optional("device_name", default=(user_input or {}).get("device_name", "")): str,
+                    vol.Required(
+                        "totp_secret", default=(user_input or {}).get("totp_secret", "")
+                    ): str,
+                    vol.Optional(
+                        "device_name", default=(user_input or {}).get("device_name", "")
+                    ): str,
                 }
             ),
             errors=errors,
@@ -62,21 +65,16 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            session = Session(
+            api_client = EkzApiClient(
                 self._credentials["user"],
                 self._credentials["password"],
                 self._credentials["totp_secret"],
-                self._credentials.get("device_name") or None,
+                self._credentials.get("device_name"),
             )
             try:
-                data = await session.installation_selection_data()
-                contracts = data.get("contracts") if isinstance(data, dict) else None
-                _LOGGER.warning(
-                    "[config_flow] installation_selection_data response keys=%s contracts=%s",
-                    list(data.keys()) if isinstance(data, dict) else type(data).__name__,
-                    contracts,
-                )
-                if not contracts:
+                # Try to fetch installation data to verify login
+                data = await api_client.get_consumption_installations()
+                if not data.contracts:
                     _LOGGER.warning(
                         "[config_flow] Login succeeded but no contracts found for user %s",
                         self._credentials["user"],
@@ -99,7 +97,7 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("[config_flow] Unexpected error during login: %s", e)
                 errors["base"] = "cannot_connect"
             finally:
-                await session._reset_session()
+                await api_client.close()
 
         # Generate current TOTP code to display to the user
         totp_code = pyotp.TOTP(self._credentials["totp_secret"]).now()

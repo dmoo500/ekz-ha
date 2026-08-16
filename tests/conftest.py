@@ -1,8 +1,7 @@
 """Common test fixtures for EKZ integration tests."""
 
+
 import pytest
-from datetime import datetime
-import zoneinfo
 
 from custom_components.ekz_ha.api.models import ApiValue
 
@@ -12,18 +11,10 @@ def sample_api_values():
     """Provide sample API values for testing."""
     return [
         ApiValue(
-            timestamp="20260813120000",
-            value=1.5,
-            status="VALID",
-            date="2026-08-13",
-            tariff="HT"
+            timestamp="20260813120000", value=1.5, status="VALID", date="2026-08-13", tariff="HT"
         ),
         ApiValue(
-            timestamp="20260813130000",
-            value=2.0,
-            status="VALID",
-            date="2026-08-13",
-            tariff="HT"
+            timestamp="20260813130000", value=2.0, status="VALID", date="2026-08-13", tariff="HT"
         ),
     ]
 
@@ -40,7 +31,7 @@ def sample_15min_values():
                     value=0.25,
                     status="VALID",
                     date="2026-08-13",
-                    tariff="TOTAL"
+                    tariff="TOTAL",
                 )
             )
     return values
@@ -50,10 +41,18 @@ def sample_15min_values():
 def sample_ht_nt_values():
     """Provide HT and NT values for same timestamps."""
     return [
-        ApiValue(timestamp="20260813120000", value=1.0, status="VALID", date="2026-08-13", tariff="HT"),
-        ApiValue(timestamp="20260813120000", value=0.5, status="VALID", date="2026-08-13", tariff="NT"),
-        ApiValue(timestamp="20260813130000", value=1.5, status="VALID", date="2026-08-13", tariff="HT"),
-        ApiValue(timestamp="20260813130000", value=0.8, status="VALID", date="2026-08-13", tariff="NT"),
+        ApiValue(
+            timestamp="20260813120000", value=1.0, status="VALID", date="2026-08-13", tariff="HT"
+        ),
+        ApiValue(
+            timestamp="20260813120000", value=0.5, status="VALID", date="2026-08-13", tariff="NT"
+        ),
+        ApiValue(
+            timestamp="20260813130000", value=1.5, status="VALID", date="2026-08-13", tariff="HT"
+        ),
+        ApiValue(
+            timestamp="20260813130000", value=0.8, status="VALID", date="2026-08-13", tariff="NT"
+        ),
     ]
 
 

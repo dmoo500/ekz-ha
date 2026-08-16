@@ -1,9 +1,8 @@
 """Transform API data to Home Assistant statistics format."""
 
 import logging
-from datetime import datetime
-
 import zoneinfo
+from datetime import datetime
 
 from ..api.models import ApiValue
 
@@ -16,9 +15,7 @@ class StatisticsTransformer:
     """Transforms measurement values to Home Assistant statistics."""
 
     @staticmethod
-    def values_to_statistics(
-        values: list[ApiValue], running_sum_offset: float = 0.0
-    ) -> list[dict]:
+    def values_to_statistics(values: list[ApiValue], running_sum_offset: float = 0.0) -> list[dict]:
         """
         Convert ApiValue list to Home Assistant statistics format.
 
@@ -64,9 +61,7 @@ class StatisticsTransformer:
                     running_sum,
                 )
 
-        _LOGGER.debug(
-            "[StatisticsTransformer] Created %d statistics entries", len(statistics)
-        )
+        _LOGGER.debug("[StatisticsTransformer] Created %d statistics entries", len(statistics))
         return statistics
 
     @staticmethod

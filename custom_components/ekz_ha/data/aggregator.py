@@ -2,9 +2,6 @@
 
 import itertools
 import logging
-from datetime import datetime, timedelta
-from typing import Callable
-
 import zoneinfo
 
 from ..api.models import ApiValue
@@ -47,7 +44,7 @@ class DataAggregator:
             List of merged ApiValue objects
         """
         merged = []
-        for ts, group in itertools.groupby(
+        for _ts, group in itertools.groupby(
             sorted(values, key=lambda v: v.timestamp), lambda v: v.timestamp
         ):
             group_list = list(group)
@@ -89,9 +86,7 @@ class DataAggregator:
             ts_norm = normalize_timestamp(v.timestamp)
             return ts_norm[:10]
 
-        for hour_str, group in itertools.groupby(
-            sorted(values, key=hour_key), hour_key
-        ):
+        for hour_str, group in itertools.groupby(sorted(values, key=hour_key), hour_key):
             group_list = list(group)
             total_value = sum(v.value for v in group_list)
             first = group_list[0]

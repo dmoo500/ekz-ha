@@ -1,6 +1,6 @@
 """Entities for EKZ installations."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.helpers.update_coordinator import (
@@ -10,14 +10,20 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 
+
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EKZ sensors from a config entry."""
     coordinator = hass.data[DOMAIN]["coordinator"]
     meta_entities = {}
-    sensors = (
-        [EkzEntity(coordinator, installationId) for installationId in coordinator.installations]
-        + [EkzPredictionEntity(coordinator, installationId) for installationId in coordinator.installations]
-    )
+    sensors = [
+        EkzEntity(coordinator, installationId) for installationId in coordinator.installations
+    ]
+    # TODO: Re-enable predictions after implementing prediction service
+    # + [
+    #     EkzPredictionEntity(coordinator, installationId)
+    #     for installationId in coordinator.installations
+    # ]
+
     # Create meta entities and contract-start entities per consumption installation
     for installationId in coordinator.installations:
         meta = EkzMetaEntity(coordinator, installationId)
@@ -39,11 +45,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     async_add_entities(sensors, True)
 
+
 class EkzEntity(CoordinatorEntity, SensorEntity):
     """Represents the electricity consumption of an EKZ installation."""
-    def __init__(
-        self, coordinator: DataUpdateCoordinator[str], installationId: str
-    ) -> None:
+
+    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._attr_device_class = SensorDeviceClass.ENERGY
@@ -73,18 +79,13 @@ class EkzEntity(CoordinatorEntity, SensorEntity):
 
 
 class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
-
-    def __init__(
-        self, coordinator: DataUpdateCoordinator[str], installationId: str
-    ) -> None:
+    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_native_unit_of_measurement = "kWh"
-        self._attr_unique_id = (
-            f"ekz_electricity_consumption_{installationId}_prediction"
-        )
+        self._attr_unique_id = f"ekz_electricity_consumption_{installationId}_prediction"
         self._attr_name = f"Electricity consumption EKZ {installationId} prediction"
 
     @property
@@ -107,10 +108,14 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
         return "mdi:lightning-bolt"
 
 
-
 # Tracks import progress and shows the last successfully imported timestamp as sensor state
 class EkzMetaEntity(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str, model: str = "Electricity Meter") -> None:
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator[str],
+        installationId: str,
+        model: str = "Electricity Meter",
+    ) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._model = model
@@ -143,17 +148,17 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         """Return the last successfully imported statistic timestamp."""
         if self._last_import is None:
             return None
-        from datetime import timezone
+
         if isinstance(self._last_import, datetime):
             if self._last_import.tzinfo is None:
-                return self._last_import.replace(tzinfo=timezone.utc)
+                return self._last_import.replace(tzinfo=UTC)
             return self._last_import
         # date → datetime at midnight UTC
         return datetime(
             self._last_import.year,
             self._last_import.month,
             self._last_import.day,
-            tzinfo=timezone.utc,
+            tzinfo=UTC,
         )
 
     @property
@@ -194,6 +199,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._pending_from = pending_from
         self._pending_sum_offset = sum_offset
 
+
 class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
     """Shows the EKZ contract start date for an installation."""
 
@@ -226,9 +232,7 @@ class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
 class EkzProductionEntity(CoordinatorEntity, SensorEntity):
     """Represents the solar/feed-in production of an EKZ installation."""
 
-    def __init__(
-        self, coordinator: DataUpdateCoordinator, installationId: str
-    ) -> None:
+    def __init__(self, coordinator: DataUpdateCoordinator, installationId: str) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._attr_device_class = SensorDeviceClass.ENERGY

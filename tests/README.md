@@ -78,6 +78,7 @@ For async tests, use the `@pytest.mark.asyncio` decorator:
 ```python
 import pytest
 
+
 @pytest.mark.asyncio
 async def test_async_function():
     result = await some_async_function()
@@ -91,10 +92,11 @@ Use `unittest.mock` or `pytest-mock` for mocking:
 ```python
 from unittest.mock import Mock, AsyncMock
 
+
 def test_with_mock():
     mock_api = Mock(spec=EkzApiClient)
     mock_api.get_consumption_15min = AsyncMock(return_value=ConsumptionData())
-    
+
     importer = ConsumptionImporter(mock_api)
     # Test importer behavior
 ```

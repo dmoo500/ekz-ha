@@ -1,21 +1,31 @@
 """Entrypoint."""
 
 import asyncio
-from datetime import datetime, timedelta
 import logging
 import zoneinfo
+from datetime import datetime, timedelta
 
 from homeassistant import core
 from homeassistant.components.recorder import get_instance as get_recorder_instance
-from homeassistant.components.recorder.models import StatisticData, StatisticMeanType, StatisticMetaData
-from homeassistant.components.recorder.statistics import async_import_statistics, get_last_statistics, statistics_during_period
+from homeassistant.components.recorder.models import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+)
+from homeassistant.components.recorder.statistics import (
+    async_import_statistics,
+    get_last_statistics,
+    statistics_during_period,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .api.client import EkzApiClient
 from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
-from .EkzFetcher import EkzFetcher
+from .statistics.consumption import ConsumptionImporter
+from .statistics.production import ProductionImporter
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
@@ -44,7 +54,7 @@ class EkzCoordinator(DataUpdateCoordinator):
     def __init__(
         self,
         hass: HomeAssistant,
-        ekz_fetcher: EkzFetcher,
+        api_client: EkzApiClient,
         update_interval: timedelta,
         config,
     ) -> None:
@@ -61,7 +71,7 @@ class EkzCoordinator(DataUpdateCoordinator):
             # being dispatched to listeners
             always_update=True,
         )
-        self.ekz_fetcher = ekz_fetcher
+        self.api_client = api_client
         self.config = config
         self.installations = []
         self.production_installations = {}
@@ -77,9 +87,31 @@ class EkzCoordinator(DataUpdateCoordinator):
 
     async def _async_setup(self):
         """Load installations on first start."""
-        self.installations = await self.ekz_fetcher.getInstallations()
-        self.production_installations = await self.ekz_fetcher.getProductionInstallations()
-        _LOGGER.debug(f"Production installations found: {list(self.production_installations.keys())}")
+        installations_data = await self.api_client.get_consumption_installations()
+        self.installations = {
+            inst_id: {"contract_start": info["contract_start"]}
+            for inst_id, info in installations_data.items()
+        }
+
+        # Production installations: Check each consumption installation for production data
+        self.production_installations = {}
+        for inst_id in self.installations:
+            try:
+                # Try to fetch production data to see if this installation has solar
+                test_data = await self.api_client.get_production_15min(
+                    inst_id, datetime.now(tz=ZRH) - timedelta(days=7), datetime.now(tz=ZRH)
+                )
+                if not test_data.is_empty():
+                    self.production_installations[inst_id] = {
+                        "contract_start": self.installations[inst_id]["contract_start"]
+                    }
+                    _LOGGER.info(f"Production data available for installation {inst_id}")
+            except Exception as e:
+                _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
+
+        _LOGGER.debug(
+            f"Production installations found: {list(self.production_installations.keys())}"
+        )
 
     async def _async_update_data(self):
         """Acquire reset lock then delegate to _do_update_data."""
@@ -93,20 +125,40 @@ class EkzCoordinator(DataUpdateCoordinator):
         so entities can quickly look up their data.
         """
         if self.installations is None or self.installations == []:
-            self.installations = await self.ekz_fetcher.getInstallations()
+            installations_data = await self.api_client.get_consumption_installations()
+            self.installations = {
+                inst_id: {"contract_start": info["contract_start"]}
+                for inst_id, info in installations_data.items()
+            }
+
         if not self.production_installations:
-            self.production_installations = await self.ekz_fetcher.getProductionInstallations()
+            # Check for production installations on first update
+            for inst_id in self.installations:
+                try:
+                    test_data = await self.api_client.get_production_15min(
+                        inst_id, datetime.now(tz=ZRH) - timedelta(days=7), datetime.now(tz=ZRH)
+                    )
+                    if not test_data.is_empty():
+                        self.production_installations[inst_id] = {
+                            "contract_start": self.installations[inst_id]["contract_start"]
+                        }
+                        _LOGGER.info(f"Production data available for installation {inst_id}")
+                except Exception as e:
+                    _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
+
         meta_entities = getattr(self, "meta_entities", None)
         if not meta_entities:
-            _LOGGER.debug("meta_entities not yet available during update — entities not initialized yet.")
+            _LOGGER.debug(
+                "meta_entities not yet available during update — entities not initialized yet."
+            )
+            return
+
+        # --- Consumption import loop ---
         for key in self.installations:
             meta_entity = meta_entities.get(key) if meta_entities else None
-            if meta_entity is not None:
-                _LOGGER.debug(f"Meta entity for {key}: unique_id={getattr(meta_entity, 'unique_id', None)}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
-            else:
-                _LOGGER.debug(f"Meta entity for {key}: None")
             if meta_entity is None:
                 continue  # meta entity required for tracking import state
+
             # Determine contract_start
             contract_start = meta_entity._contract_start if meta_entity is not None else None
             if contract_start is None:
@@ -115,12 +167,10 @@ class EkzCoordinator(DataUpdateCoordinator):
                     meta_entity.set_contract_start(
                         datetime.strptime(contract_start, "%Y-%m-%d").date()
                     )
-                    _LOGGER.debug(f"Meta entity for {key}: unique_id={meta_entity.unique_id}, last_import={getattr(meta_entity, '_last_import', None)}, contract_start={getattr(meta_entity, '_contract_start', None)}")
 
-            # Query DB only on first cycle after (re)start to restore last import date.
-            # In-memory state (set by EkzFetcher after each import) is trusted for all subsequent cycles.
-            # Querying every cycle risks overwriting with a stale DB result if the recorder is not yet ready.
             statistic_id = f"sensor.electricity_consumption_ekz_{key}"
+
+            # Query DB only on first cycle after (re)start to restore last import date
             if meta_entity._last_import is None:
                 try:
                     last_stats = await get_recorder_instance(self.hass).async_add_executor_job(
@@ -130,30 +180,27 @@ class EkzCoordinator(DataUpdateCoordinator):
                         last_stat_data = last_stats[statistic_id]
                         if last_stat_data:
                             raw_start = last_stat_data[0]["start"]
-                            # HA returns start as float (Unix timestamp) or datetime depending on version
                             if isinstance(raw_start, (int, float)):
                                 import_dt = datetime.fromtimestamp(float(raw_start), tz=ZRH)
                             elif hasattr(raw_start, "tzinfo") and raw_start.tzinfo is not None:
                                 import_dt = raw_start.astimezone(ZRH)
                             else:
                                 import_dt = raw_start.replace(tzinfo=ZRH)
-                            # Go back 1 day from the last DB entry: the last imported day may have
-                            # been partial (EKZ has a ~2-day delay), so we always re-fetch it on
-                            # restart to pick up any slots that were added later by EKZ.
+                            # Go back 1 day from the last DB entry
                             import_date = import_dt.date() - timedelta(days=1)
-                            _LOGGER.info(f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date} to re-check last day")
-                            # Set last_import one day BEFORE the rewind date so the fetcher
-                            # starts from import_date (last_import + 1 = import_date).
+                            _LOGGER.info(
+                                f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date}"
+                            )
                             meta_entity.set_last_import(import_date - timedelta(days=1))
-                            # Pre-initialise catching_up flag so sensor shows correct value immediately
-                            # (The running offset will be queried from DB just before the fetch below.)
+
+                            # Pre-initialize catching_up flag
                             today_date = datetime.now(tz=ZRH).date()
                             if (today_date - import_date).days <= 1:
                                 self.catching_up[key] = False
                 except Exception as e:
                     _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
 
-            # One-time migration: clear data stored under the old statistic_id from early integration versions
+            # One-time migration: clear old statistic_id
             old_statistic_id = f"sensor.ekz_electricity_consumption_{key}"
             try:
                 old_stats = await get_recorder_instance(self.hass).async_add_executor_job(
@@ -162,40 +209,40 @@ class EkzCoordinator(DataUpdateCoordinator):
                 if old_stats and old_statistic_id in old_stats:
                     _LOGGER.info(f"Migrating: clearing old statistics under {old_statistic_id}")
                     try:
-                        from homeassistant.components.recorder.statistics import async_clear_statistics
+                        from homeassistant.components.recorder.statistics import (
+                            async_clear_statistics,
+                        )
+
                         await async_clear_statistics(self.hass, [old_statistic_id])
                     except ImportError:
                         _LOGGER.info(
-                            f"async_clear_statistics not available in this HA version — "
-                            f"old statistics under {old_statistic_id} will remain but won't affect functionality"
+                            f"async_clear_statistics not available — old statistics under {old_statistic_id} will remain"
                         )
             except Exception as e:
                 _LOGGER.debug(f"Migration check failed for {key}: {e}")
 
-            # Fall back to contract_start when no statistics exist yet (first-ever import)
+            # Fall back to contract_start when no statistics exist yet
             if meta_entity._last_import is None and contract_start is not None:
-                start = contract_start if not isinstance(contract_start, str) else datetime.strptime(contract_start, "%Y-%m-%d")
+                start = (
+                    contract_start
+                    if not isinstance(contract_start, str)
+                    else datetime.strptime(contract_start, "%Y-%m-%d")
+                )
                 meta_entity.set_last_import(start)
-                _LOGGER.info(f"No existing statistics for {key}, starting import from contract start {start}")
+                _LOGGER.info(
+                    f"No existing statistics for {key}, starting import from contract start {start}"
+                )
 
-            # Import exactly one 30-day chunk per update cycle.
-            # If pending days were detected in the previous cycle, re-fetch from that earlier date
-            # so EKZ can fill in previously incomplete days.
-            pending_from = getattr(meta_entity, "_pending_from", None)
-            if pending_from is not None:
-                _LOGGER.info(f"[{key}] Pending day lookback: re-fetching from {pending_from}")
-
-            # Always query the DB for the correct running offset at the start of from_date.
-            # from_date = (last_import + 1 day) midnight CEST = last_import 22:00 UTC.
-            # Querying the DB here is the only reliable way to avoid double-counting when
-            # the same slots are re-imported across cycles (e.g. pending days or restarts).
+            # Query DB for running offset
             _last_import_date = meta_entity._last_import
             if _last_import_date is not None:
                 if isinstance(_last_import_date, datetime):
                     _last_import_date = _last_import_date.date()
-                offset_boundary = datetime.combine(
-                    _last_import_date + timedelta(days=1), datetime.min.time()
-                ).replace(tzinfo=ZRH).astimezone(UTC)
+                offset_boundary = (
+                    datetime.combine(_last_import_date + timedelta(days=1), datetime.min.time())
+                    .replace(tzinfo=ZRH)
+                    .astimezone(UTC)
+                )
                 try:
                     pre_stats = await get_recorder_instance(self.hass).async_add_executor_job(
                         statistics_during_period,
@@ -209,46 +256,58 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
                     if pre_stats and statistic_id in pre_stats and pre_stats[statistic_id]:
                         running_sum = pre_stats[statistic_id][-1]["sum"]
-                        _LOGGER.info(f"DB offset for {key}: {running_sum:.3f} kWh (boundary {offset_boundary})"
+                        _LOGGER.info(
+                            f"DB offset for {key}: {running_sum:.3f} kWh (boundary {offset_boundary})"
                         )
                     else:
                         running_sum = 0.0
-                        _LOGGER.debug(f"No DB stats found before {offset_boundary} for {key}, using 0")
+                        _LOGGER.debug(
+                            f"No DB stats found before {offset_boundary} for {key}, using 0"
+                        )
                 except Exception as e_offset:
                     _LOGGER.debug(f"Could not query DB offset for {key}: {e_offset}")
                     running_sum = self.last_sums.get(key, 0.0)
             else:
                 running_sum = 0.0
-            # EkzFetcher updates meta_entity._last_import after each import so the next cycle continues from there.
-            result = await self.ekz_fetcher.import_full_history_to_statistics(
-                self.hass, key, contract_start, meta_entity,
-                running_sum_offset=running_sum,
-                force_from_date=pending_from,
+
+            # Import using new architecture
+            importer = ConsumptionImporter(self.api_client)
+            contract_start_dt = (
+                datetime.strptime(contract_start, "%Y-%m-%d")
+                if isinstance(contract_start, str)
+                else datetime.combine(contract_start, datetime.min.time())
             )
-            _LOGGER.debug(f"Chunk result for {key}: from={result.get('from_date')} to={result.get('to_date')}, entries={len(result.get('statistics', []))}")
+            result = await importer.import_statistics(
+                self.hass,
+                key,
+                contract_start_dt,
+                meta_entity,
+                running_sum_offset=running_sum,
+            )
+
+            _LOGGER.debug(
+                f"Chunk result for {key}: from={result.get('from_date')} to={result.get('to_date')}, entries={len(result.get('statistics', []))}"
+            )
+
             if result.get("statistics"):
-                last_full_day = result.get("last_full_day")
-                if last_full_day is not None:
-                    # Keep last_sums updated as fallback in case the DB query ever fails.
-                    # Only set it when we have a complete day so the value stays at the CEST
-                    # midnight boundary — partial-day imports are handled by the DB query above.
-                    next_day_utc = datetime.combine(
-                        last_full_day.date() + timedelta(days=1), datetime.min.time()
-                    ).replace(tzinfo=ZRH).astimezone(UTC)
-                    complete_stats = [s for s in result["statistics"] if s["start"] < next_day_utc]
-                    self.last_sums[key] = complete_stats[-1]["sum"] if complete_stats else result["statistics"][-1]["sum"]
-                # Do NOT update last_sums for partial-only imports: the DB query already
-                # returns the correct boundary sum every cycle, so there is no need to persist
-                # an inflated end-of-chunk value that would cause double-counting on retry.
-                _LOGGER.info(f"Importing chunk of {len(result['statistics'])} statistics for {key}, range {result['statistics'][0]['start']} to {result['statistics'][-1]['start']}")
+                # Update running sum
+                self.last_sums[key] = result["statistics"][-1]["sum"]
+
+                _LOGGER.info(
+                    f"Importing chunk of {len(result['statistics'])} statistics for {key}, range {result['statistics'][0]['start']} to {result['statistics'][-1]['start']}"
+                )
                 try:
                     async_import_statistics(
                         self.hass,
                         _make_stat_meta(f"sensor.electricity_consumption_ekz_{key}"),
-                        [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in result["statistics"]],
+                        [
+                            StatisticData(start=s["start"], sum=s["sum"], state=s["state"])
+                            for s in result["statistics"]
+                        ],
                     )
                 except Exception as e:
                     _LOGGER.error(f"Failed to import statistics chunk for {key}: {e}")
+
             # Adjust polling interval based on catch-up status
             today = datetime.now(tz=ZRH).date()
             to_date = result.get("to_date")
@@ -256,70 +315,14 @@ class EkzCoordinator(DataUpdateCoordinator):
             self.catching_up[key] = still_catching_up
             if still_catching_up:
                 if self.update_interval != CATCHUP_SCAN_INTERVAL:
-                    _LOGGER.info(f"Catch-up mode for {key}: imported up to {to_date}, switching poll interval to {CATCHUP_SCAN_INTERVAL}")
+                    _LOGGER.info(
+                        f"Catch-up mode for {key}: imported up to {to_date}, switching poll interval to {CATCHUP_SCAN_INTERVAL}"
+                    )
                     self.update_interval = CATCHUP_SCAN_INTERVAL
             else:
                 if self.update_interval != NORMAL_SCAN_INTERVAL:
                     _LOGGER.info(f"Catch-up complete for {key}, switching to daily poll interval")
                     self.update_interval = NORMAL_SCAN_INTERVAL
-
-            # Accumulate hourly averages across all imported chunks for prediction.
-            # averages_raw: {month*100+hour_utc: (sum_kwh, count_slots)} from EkzFetcher.
-            averages = None
-            if result.get("averages_raw"):
-                raw = result["averages_raw"]
-                existing_raw = self.consumption_averages_raw.get(key, {})
-                for mh_key, (new_sum, new_count) in raw.items():
-                    ex_sum, ex_count = existing_raw.get(mh_key, (0.0, 0))
-                    existing_raw[mh_key] = (ex_sum + new_sum, ex_count + new_count)
-                self.consumption_averages_raw[key] = existing_raw
-                # 4 slots per hour → avg kWh/h = total_kwh / (count_slots / 4)
-                averages = {
-                    k: v[0] / (v[1] / 4)
-                    for k, v in existing_raw.items()
-                    if v[1] >= 4  # require at least 1 complete hour of data
-                }
-                self.consumption_averages[key] = averages
-                _LOGGER.debug(f"Updated hourly averages for {key}: {len(averages)} month-hour buckets")
-            elif key in self.consumption_averages:
-                averages = self.consumption_averages[key]
-
-            # Only run predictions when fully caught up (gap fills the recent EKZ delay)
-            if averages and len(result["statistics"]) > 0 and not still_catching_up:
-                # Zero out predictions for all periods already covered by real data in this chunk,
-                # then extrapolate forward using historical averages.
-                predictions = [
-                    {"start": x["start"], "sum": 0, "state": 0}
-                    for x in result["statistics"]
-                ]
-                last_actual_start = result["statistics"][-1]["start"]
-                # Start predictions at the next full hour after the last real data entry
-                pred_start = last_actual_start + timedelta(hours=1)
-                running_total = 0.0
-                now_utc = datetime.now(tz=UTC)
-                while pred_start < now_utc:
-                    mh_key = pred_start.month * 100 + pred_start.hour
-                    hourly_kwh = averages.get(mh_key, 0.0)
-                    running_total += hourly_kwh
-                    predictions.append(
-                        {
-                            "start": pred_start,
-                            "sum": running_total,
-                            "state": hourly_kwh,
-                        }
-                    )
-                    pred_start = pred_start + timedelta(hours=1)
-
-                if len(predictions) > 1:
-                    _LOGGER.info(
-                        f"Predictions for {key}: {len(predictions)} entries, "
-                        f"gap coverage {result['statistics'][-1]['start'].date()} → {pred_start.date()}"
-                    )
-                    async_import_statistics(
-                        self.hass,
-                        _make_stat_meta(f"sensor.electricity_consumption_ekz_{key}_prediction"),
-                        [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in predictions],
-                    )
 
         # --- Production (solar feed-in) import loop ---
         production_meta_entities = getattr(self, "production_meta_entities", {})
@@ -327,9 +330,11 @@ class EkzCoordinator(DataUpdateCoordinator):
             prod_meta = production_meta_entities.get(key) if production_meta_entities else None
             if prod_meta is None:
                 continue
+
             contract_start = info.get("contract_start")
             if prod_meta._contract_start is None and contract_start:
                 prod_meta.set_contract_start(datetime.strptime(contract_start, "%Y-%m-%d").date())
+
             statistic_id = f"sensor.electricity_production_ekz_{key}"
             if prod_meta._last_import is None:
                 try:
@@ -347,26 +352,46 @@ class EkzCoordinator(DataUpdateCoordinator):
                             else:
                                 import_dt = raw_start.replace(tzinfo=ZRH)
                             import_date = import_dt.date() - timedelta(days=1)
-                            _LOGGER.info(f"Restored last import for production {key} from DB: {import_dt.date()} → rewinding to {import_date} to re-check last day")
+                            _LOGGER.info(
+                                f"Restored last import for production {key} from DB: {import_dt.date()} → rewinding to {import_date}"
+                            )
                             prod_meta.set_last_import(import_date - timedelta(days=1))
                             if last_stat_data[0].get("sum") is not None:
                                 self.last_production_sums[key] = last_stat_data[0]["sum"]
                 except Exception as e:
                     _LOGGER.debug(f"Could not query existing production statistics for {key}: {e}")
+
             if prod_meta._last_import is None and contract_start:
                 prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
-            result = await self.ekz_fetcher.import_production_history_to_statistics(
-                self.hass, key, contract_start, prod_meta,
+
+            # Import using new architecture
+            importer = ProductionImporter(self.api_client)
+            contract_start_dt = (
+                datetime.strptime(contract_start, "%Y-%m-%d")
+                if isinstance(contract_start, str)
+                else datetime.combine(contract_start, datetime.min.time())
+            )
+            result = await importer.import_statistics(
+                self.hass,
+                key,
+                contract_start_dt,
+                prod_meta,
                 running_sum_offset=self.last_production_sums.get(key, 0.0),
             )
+
             if result.get("statistics"):
                 self.last_production_sums[key] = result["statistics"][-1]["sum"]
-                _LOGGER.info(f"Importing {len(result['statistics'])} production statistics for {key}")
+                _LOGGER.info(
+                    f"Importing {len(result['statistics'])} production statistics for {key}"
+                )
                 try:
                     async_import_statistics(
                         self.hass,
                         _make_stat_meta(statistic_id),
-                        [StatisticData(start=s["start"], sum=s["sum"], state=s["state"]) for s in result["statistics"]],
+                        [
+                            StatisticData(start=s["start"], sum=s["sum"], state=s["state"])
+                            for s in result["statistics"]
+                        ],
                     )
                 except Exception as e:
                     _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
@@ -378,8 +403,16 @@ class EkzCoordinator(DataUpdateCoordinator):
 async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up integration entry."""
     scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-    ekz_fetcher = EkzFetcher(entry.data["user"], entry.data["password"], entry.data.get("totp_secret"), entry.data.get("device_name"))
-    coordinator = EkzCoordinator(hass, ekz_fetcher, scan_interval, entry)
+
+    # Create API client using new architecture
+    api_client = EkzApiClient(
+        entry.data["user"],
+        entry.data["password"],
+        entry.data.get("totp_secret"),
+        entry.data.get("device_name"),
+    )
+
+    coordinator = EkzCoordinator(hass, api_client, scan_interval, entry)
 
     hass.data[DOMAIN] = {
         "conf": entry,
@@ -397,6 +430,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             # Approach 1: module-level function (most HA versions)
             try:
                 from homeassistant.components.recorder.statistics import async_clear_statistics
+
                 result = async_clear_statistics(hass, statistic_ids)
                 if inspect.isawaitable(result):
                     await result
@@ -450,6 +484,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
 
     hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)
     return True
+
 
 async def async_unload_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""

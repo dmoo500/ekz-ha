@@ -37,9 +37,7 @@ class EkzApiClient:
         data = await self.session.production_installation_selection_data()
         return InstallationSelectionData.from_dict(data)
 
-    async def get_installation_metadata(
-        self, installation_id: str
-    ) -> InstallationData:
+    async def get_installation_metadata(self, installation_id: str) -> InstallationData:
         """Fetch metadata for a specific installation."""
         data = await self.session.get_installation_data(installation_id)
         return InstallationData.from_dict(data)
@@ -78,9 +76,7 @@ class EkzApiClient:
         self, installation_id: str, date_from: date | str, date_to: date | str
     ) -> ConsumptionData:
         """Fetch 15-minute consumption data."""
-        return await self.get_consumption_data(
-            installation_id, "PK_VERB_15MIN", date_from, date_to
-        )
+        return await self.get_consumption_data(installation_id, "PK_VERB_15MIN", date_from, date_to)
 
     async def get_consumption_daily(
         self, installation_id: str, date_from: date | str, date_to: date | str

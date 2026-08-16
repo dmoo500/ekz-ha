@@ -1,11 +1,10 @@
 """Base importer for statistics."""
 
 import logging
+import zoneinfo
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from typing import Any
-
-import zoneinfo
 
 from ..api.client import EkzApiClient
 from ..api.models import ConsumptionData
@@ -113,13 +112,9 @@ class BaseImporter(ABC):
 
         # Determine date range
         last_import = meta_entity._last_import if meta_entity else None
-        from_date, to_date = self.calculate_date_range(
-            last_import, contract_start, max_days=30
-        )
+        from_date, to_date = self.calculate_date_range(last_import, contract_start, max_days=30)
 
-        _LOGGER.debug(
-            "[%s] Fetching data: period %s to %s", data_type, from_date, to_date
-        )
+        _LOGGER.debug("[%s] Fetching data: period %s to %s", data_type, from_date, to_date)
 
         # Fetch data from API
         consumption_data = await self.fetch_data(installation_id, from_date, to_date)
@@ -171,9 +166,7 @@ class BaseImporter(ABC):
         return {
             "statistics": statistics,
             "last_import": (
-                self.transformer.get_last_import_date(statistics).date()
-                if statistics
-                else None
+                self.transformer.get_last_import_date(statistics).date() if statistics else None
             ),
             "from_date": from_date.date(),
             "to_date": to_date.date(),
