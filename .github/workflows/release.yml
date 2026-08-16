@@ -98,12 +98,25 @@ jobs:
             echo "Initial release" >> CHANGELOG.md
           fi
 
+      - name: Detect pre-release
+        id: prerelease
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          # Check for PEP 440 pre-release formats (a, b, rc) or dash formats (alpha, beta, rc)
+          if [[ $TAG_NAME =~ (a|b|rc)[0-9]+$ ]] || [[ $TAG_NAME =~ -(alpha|beta|rc) ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "✓ Detected pre-release version: $TAG_NAME"
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "✓ Detected stable release: $TAG_NAME"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           body_path: CHANGELOG.md
           draft: false
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
