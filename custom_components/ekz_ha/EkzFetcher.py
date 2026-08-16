@@ -442,19 +442,24 @@ class EkzFetcher:
         values = get_values(data)
         _LOGGER.debug(f"[import_production_history_to_statistics] Values after filter: {len(values)}")
 
-        def total(group):
+        # QUARTER_HOUR data (WIRK_NEG_15MIN): aggregate 4 x 15-min slots into hourly buckets.
+        # Home Assistant's statistics API only accepts timestamps at the top of the hour
+        # (minutes = 0, seconds = 0) — sub-hourly timestamps are rejected.
+        # Group by the UTC hour (first 10 chars of the 14-digit timestamp = YYYYMMDDHH) and sum.
+        def total_hour(group):
             group = list(group)
+            hour_ts = normalize_timestamp(str(group[0]["timestamp"])[:10] + "0000")
             return {
+                **group[0],
                 "value": sum(x["value"] for x in group),
-                "date": min(x["date"] for x in group),
-                "timestamp": normalize_timestamp(min(str(x["timestamp"])[:10] for x in group)),
+                "timestamp": hour_ts,
             }
-
-        values = [
-            total(g)
-            for _, g in itertools.groupby(values, lambda v: str(v["timestamp"])[:10])
-        ]
-        values = sorted(values, key=lambda x: x["timestamp"])
+        
+        values = [total_hour(g) for _, g in itertools.groupby(
+            sorted(values, key=lambda v: str(v["timestamp"])[:10]),
+            lambda v: str(v["timestamp"])[:10],
+        )]
+        _LOGGER.debug(f"[import_production_history_to_statistics] Total hourly-aggregated values: {len(values)}")
 
         running_sum = running_sum_offset
         statistics = []
