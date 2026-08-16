@@ -67,7 +67,15 @@ class ConsumptionData:
         if not data or data == []:
             return cls()
 
+        # Try to get level from top-level or from any series
         level = data.get("level", "UNKNOWN")
+        if level == "UNKNOWN":
+            for series_key in ("seriesHt", "seriesNt", "series"):
+                if series_key in data and data[series_key] and isinstance(data[series_key], dict):
+                    level = data[series_key].get("level", "UNKNOWN")
+                    if level != "UNKNOWN":
+                        break
+
         series_ht = None
         series_nt = None
         series_total = None

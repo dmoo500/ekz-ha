@@ -25,6 +25,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .api.client import EkzApiClient
 from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
 from .statistics.consumption import ConsumptionImporter
+from .statistics.prediction import PredictionService
 from .statistics.production import ProductionImporter
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
@@ -83,6 +84,9 @@ class EkzCoordinator(DataUpdateCoordinator):
         self._normal_interval = update_interval  # remember configured interval for later restore
         self._reset_lock = asyncio.Lock()
         self.consumption_averages_raw: dict[str, dict] = {}  # accumulated slot sums for prediction
+        self.prediction_services: dict[
+            str, PredictionService
+        ] = {}  # prediction service per installation
         self.next_update_time: datetime | None = None
 
     async def _async_setup(self):
@@ -324,6 +328,59 @@ class EkzCoordinator(DataUpdateCoordinator):
                     _LOGGER.info(f"Catch-up complete for {key}, switching to daily poll interval")
                     self.update_interval = NORMAL_SCAN_INTERVAL
 
+            # --- Prediction: Accumulate and generate predictions ---
+            # Initialize prediction service if needed
+            if key not in self.prediction_services:
+                self.prediction_services[key] = PredictionService()
+
+            prediction_service = self.prediction_services[key]
+
+            # Accumulate raw values from this import chunk
+            if result.get("raw_values"):
+                prediction_service.accumulate_values(result["raw_values"])
+                prediction_service.calculate_averages()
+                averages = prediction_service.get_averages()
+                _LOGGER.debug(
+                    f"Updated prediction averages for {key}: {len(averages)} month-hour buckets"
+                )
+
+            # Generate predictions only when caught up (gap fills the recent EKZ delay)
+            if result.get("statistics") and not still_catching_up:
+                predictions = []
+                averages = prediction_service.get_averages()
+
+                if averages:
+                    # Zero out predictions for periods already covered by real data
+                    predictions = [
+                        {"start": s["start"], "sum": 0, "state": 0} for s in result["statistics"]
+                    ]
+
+                    # Generate forward predictions from last real data to now
+                    last_actual_start = result["statistics"][-1]["start"]
+                    now_utc = datetime.now(tz=UTC)
+
+                    forward_predictions = prediction_service.generate_predictions(
+                        last_actual_start, now_utc
+                    )
+                    predictions.extend(forward_predictions)
+
+                if len(predictions) > 1:
+                    _LOGGER.info(
+                        f"Predictions for {key}: {len(predictions)} entries, "
+                        f"gap coverage {result['statistics'][-1]['start'].date()} → {datetime.now(tz=UTC).date()}"
+                    )
+                    try:
+                        async_import_statistics(
+                            self.hass,
+                            _make_stat_meta(f"sensor.electricity_consumption_ekz_{key}_prediction"),
+                            [
+                                StatisticData(start=p["start"], sum=p["sum"], state=p["state"])
+                                for p in predictions
+                            ],
+                        )
+                    except Exception as e:
+                        _LOGGER.error(f"Failed to import prediction statistics for {key}: {e}")
+
         # --- Production (solar feed-in) import loop ---
         production_meta_entities = getattr(self, "production_meta_entities", {})
         for key, info in self.production_installations.items():
@@ -473,6 +530,11 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator.last_production_sums = {}
             coordinator.last_prediction_sums = {}
             coordinator.catching_up = {}
+            coordinator.consumption_averages_raw = {}
+            # Reset all prediction services
+            for prediction_service in coordinator.prediction_services.values():
+                prediction_service.reset()
+            coordinator.prediction_services = {}
             for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
                 meta.set_last_import(None)
             for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():

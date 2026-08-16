@@ -17,12 +17,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
     meta_entities = {}
     sensors = [
         EkzEntity(coordinator, installationId) for installationId in coordinator.installations
+    ] + [
+        EkzPredictionEntity(coordinator, installationId)
+        for installationId in coordinator.installations
     ]
-    # TODO: Re-enable predictions after implementing prediction service
-    # + [
-    #     EkzPredictionEntity(coordinator, installationId)
-    #     for installationId in coordinator.installations
-    # ]
 
     # Create meta entities and contract-start entities per consumption installation
     for installationId in coordinator.installations:

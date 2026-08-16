@@ -142,16 +142,21 @@ class BaseImporter(ABC):
         values = consumption_data.get_all_values()
         _LOGGER.debug("[%s] Raw values from API: %d", data_type, len(values))
 
-        values = self.aggregator.merge_tariffs(values)
-        _LOGGER.debug("[%s] After merging tariffs: %d", data_type, len(values))
+        merged_values = self.aggregator.merge_tariffs(values)
+        _LOGGER.debug("[%s] After merging tariffs: %d", data_type, len(merged_values))
+
+        # Keep raw merged values for prediction accumulation
+        raw_values_for_prediction = merged_values.copy()
 
         # Aggregate to hourly
         if consumption_data.level == "QUARTER_HOUR":
-            values = self.aggregator.aggregate_to_hourly(values)
+            values = self.aggregator.aggregate_to_hourly(merged_values)
         elif consumption_data.level == "DAY":
             # Daily data is already at the right granularity, but we still
             # aggregate to ensure consistent format
-            values = self.aggregator.aggregate_to_daily(values)
+            values = self.aggregator.aggregate_to_daily(merged_values)
+        else:
+            values = merged_values
 
         # Convert to statistics
         statistics = self.transformer.values_to_statistics(values, running_sum_offset)
@@ -170,4 +175,5 @@ class BaseImporter(ABC):
             ),
             "from_date": from_date.date(),
             "to_date": to_date.date(),
+            "raw_values": raw_values_for_prediction,  # For prediction accumulation
         }

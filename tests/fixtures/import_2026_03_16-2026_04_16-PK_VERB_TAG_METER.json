@@ -1,0 +1,408 @@
+{
+  "series" : null,
+  "seriesHt" : {
+    "level" : "DAY",
+    "energyType" : null,
+    "sourceType" : null,
+    "tariffType" : "HT",
+    "ab" : "2026-03-16",
+    "bis" : "2026-04-17",
+    "values" : [ {
+      "value" : 3.0,
+      "timestamp" : 20260315230000,
+      "date" : "2026-03-16",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260316230000,
+      "date" : "2026-03-17",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 4.0,
+      "timestamp" : 20260317230000,
+      "date" : "2026-03-18",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260318230000,
+      "date" : "2026-03-19",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 6.0,
+      "timestamp" : 20260319230000,
+      "date" : "2026-03-20",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260320230000,
+      "date" : "2026-03-21",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260321230000,
+      "date" : "2026-03-22",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260322230000,
+      "date" : "2026-03-23",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260323230000,
+      "date" : "2026-03-24",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 4.0,
+      "timestamp" : 20260324230000,
+      "date" : "2026-03-25",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260325230000,
+      "date" : "2026-03-26",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 4.0,
+      "timestamp" : 20260326230000,
+      "date" : "2026-03-27",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260327230000,
+      "date" : "2026-03-28",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260328230000,
+      "date" : "2026-03-29",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260329220000,
+      "date" : "2026-03-30",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260330220000,
+      "date" : "2026-03-31",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 4.0,
+      "timestamp" : 20260331220000,
+      "date" : "2026-04-01",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260401220000,
+      "date" : "2026-04-02",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 5.0,
+      "timestamp" : 20260402220000,
+      "date" : "2026-04-03",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260403220000,
+      "date" : "2026-04-04",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260404220000,
+      "date" : "2026-04-05",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260405220000,
+      "date" : "2026-04-06",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260406220000,
+      "date" : "2026-04-07",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 5.0,
+      "timestamp" : 20260407220000,
+      "date" : "2026-04-08",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260408220000,
+      "date" : "2026-04-09",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 4.0,
+      "timestamp" : 20260409220000,
+      "date" : "2026-04-10",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260410220000,
+      "date" : "2026-04-11",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260411220000,
+      "date" : "2026-04-12",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 4.0,
+      "timestamp" : 20260412220000,
+      "date" : "2026-04-13",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260413220000,
+      "date" : "2026-04-14",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 5.0,
+      "timestamp" : 20260414220000,
+      "date" : "2026-04-15",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260415220000,
+      "date" : "2026-04-16",
+      "time" : "00:00:00",
+      "status" : "MISSING"
+    } ]
+  },
+  "seriesNt" : {
+    "level" : "DAY",
+    "energyType" : null,
+    "sourceType" : null,
+    "tariffType" : "NT",
+    "ab" : "2026-03-16",
+    "bis" : "2026-04-17",
+    "values" : [ {
+      "value" : 2.0,
+      "timestamp" : 20260315230000,
+      "date" : "2026-03-16",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 1.0,
+      "timestamp" : 20260316230000,
+      "date" : "2026-03-17",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260317230000,
+      "date" : "2026-03-18",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260318230000,
+      "date" : "2026-03-19",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260319230000,
+      "date" : "2026-03-20",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 6.0,
+      "timestamp" : 20260320230000,
+      "date" : "2026-03-21",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 7.0,
+      "timestamp" : 20260321230000,
+      "date" : "2026-03-22",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260322230000,
+      "date" : "2026-03-23",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260323230000,
+      "date" : "2026-03-24",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260324230000,
+      "date" : "2026-03-25",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260325230000,
+      "date" : "2026-03-26",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260326230000,
+      "date" : "2026-03-27",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 8.0,
+      "timestamp" : 20260327230000,
+      "date" : "2026-03-28",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 7.0,
+      "timestamp" : 20260328230000,
+      "date" : "2026-03-29",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260329220000,
+      "date" : "2026-03-30",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260330220000,
+      "date" : "2026-03-31",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260331220000,
+      "date" : "2026-04-01",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260401220000,
+      "date" : "2026-04-02",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260402220000,
+      "date" : "2026-04-03",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 7.0,
+      "timestamp" : 20260403220000,
+      "date" : "2026-04-04",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 8.0,
+      "timestamp" : 20260404220000,
+      "date" : "2026-04-05",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260405220000,
+      "date" : "2026-04-06",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260406220000,
+      "date" : "2026-04-07",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260407220000,
+      "date" : "2026-04-08",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 3.0,
+      "timestamp" : 20260408220000,
+      "date" : "2026-04-09",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260409220000,
+      "date" : "2026-04-10",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 6.0,
+      "timestamp" : 20260410220000,
+      "date" : "2026-04-11",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 7.0,
+      "timestamp" : 20260411220000,
+      "date" : "2026-04-12",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260412220000,
+      "date" : "2026-04-13",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260413220000,
+      "date" : "2026-04-14",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 2.0,
+      "timestamp" : 20260414220000,
+      "date" : "2026-04-15",
+      "time" : "00:00:00",
+      "status" : "VALID"
+    }, {
+      "value" : 0.0,
+      "timestamp" : 20260415220000,
+      "date" : "2026-04-16",
+      "time" : "00:00:00",
+      "status" : "MISSING"
+    } ]
+  },
+  "seriesNetz" : null,
+  "seriesNetzHt" : null,
+  "seriesNetzNt" : null
+}
