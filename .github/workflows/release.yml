@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+
+jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          
+      - name: Run tests
+        run: pytest
+        
+      - name: Validate version consistency
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/}
+          MANIFEST_VERSION=$(python -c "import json; print(json.load(open('custom_components/ekz_ha/manifest.json'))['version'])")
+          
+          echo "Tag version: $TAG_VERSION"
+          echo "Manifest version: $MANIFEST_VERSION"
+          
+          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "❌ Version mismatch!"
+            exit 1
+          fi
+          
+          echo "✓ Versions match"
+
+  release:
+    name: Create Release
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+          
+          echo "# Changelog" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          
+          if [ -n "$PREV_TAG" ]; then
+            echo "Changes from $PREV_TAG to $CURRENT_TAG:" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            
+            # Group commits by type
+            echo "## 🐛 Bug Fixes" >> CHANGELOG.md
+            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --grep="fix:" --grep="bug:" >> CHANGELOG.md || true
+            echo "" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            
+            echo "## ✨ Features" >> CHANGELOG.md
+            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --grep="feat:" --grep="feature:" >> CHANGELOG.md || true
+            echo "" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            
+            echo "## 🔧 Other Changes" >> CHANGELOG.md
+            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --invert-grep --grep="fix:" --grep="bug:" --grep="feat:" --grep="feature:" >> CHANGELOG.md || true
+          else
+            echo "Initial release" >> CHANGELOG.md
+          fi
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Release ${{ github.ref_name }} created successfully!"

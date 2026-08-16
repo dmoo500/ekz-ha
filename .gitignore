@@ -4,4 +4,8 @@
 venv*/
 __pycache__/
 dist/
-ekzexport.egg-info/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/

@@ -1,0 +1,43 @@
+# Auto labeling based on file changes
+
+api:
+  - changed-files:
+    - any-glob-to-any-file: 'custom_components/ekz_ha/api/**'
+
+data:
+  - changed-files:
+    - any-glob-to-any-file: 'custom_components/ekz_ha/data/**'
+
+statistics:
+  - changed-files:
+    - any-glob-to-any-file: 'custom_components/ekz_ha/statistics/**'
+
+tests:
+  - changed-files:
+    - any-glob-to-any-file: 'tests/**'
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file: 
+      - '**/*.md'
+      - 'docs/**'
+
+config:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '*.json'
+      - '*.yaml'
+      - '*.yml'
+      - 'pyproject.toml'
+      - 'setup.py'
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file: '.github/**'
+
+dependencies:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'custom_components/ekz_ha/manifest.json'
+      - 'pyproject.toml'
+      - 'requirements*.txt'

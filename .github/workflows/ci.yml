@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main, refactor/*, fix/*, feat/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff mypy
+          pip install -e ".[dev]"
+          
+      - name: Run Ruff (linting)
+        run: ruff check custom_components/ tests/
+        
+      - name: Run Ruff (formatting)
+        run: ruff format --check custom_components/ tests/
+        
+      - name: Run mypy (type checking)
+        run: mypy custom_components/ekz_ha/
+        continue-on-error: true
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          
+      - name: Run tests with coverage
+        run: |
+          pytest --cov=custom_components.ekz_ha --cov-report=xml --cov-report=term
+          
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  validate-ha:
+    name: Validate Home Assistant
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Validate manifest
+        run: |
+          python -m pip install --upgrade pip
+          pip install jsonschema requests
+          
+          # Download HA manifest schema
+          curl -sSL https://raw.githubusercontent.com/home-assistant/core/dev/homeassistant/helpers/json_schema/manifest.json -o /tmp/manifest_schema.json
+          
+          # Validate manifest.json
+          python -c "
+          import json
+          import jsonschema
+          with open('custom_components/ekz_ha/manifest.json') as f:
+              manifest = json.load(f)
+          with open('/tmp/manifest_schema.json') as f:
+              schema = json.load(f)
+          jsonschema.validate(manifest, schema)
+          print('✓ manifest.json is valid')
+          "
+
+  hassfest:
+    name: Hassfest Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Hassfest
+        uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: HACS validation
+        uses: hacs/action@main
+        with:
+          category: integration

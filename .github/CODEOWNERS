@@ -1,0 +1,24 @@
+# Code owners for pull request reviews
+
+# Default owners for everything
+* @dmoo500
+
+# API layer
+/custom_components/ekz_ha/api/ @dmoo500
+
+# Data processing layer
+/custom_components/ekz_ha/data/ @dmoo500
+
+# Statistics layer
+/custom_components/ekz_ha/statistics/ @dmoo500
+
+# Tests
+/tests/ @dmoo500
+
+# CI/CD workflows
+/.github/ @dmoo500
+
+# Configuration files
+/custom_components/ekz_ha/manifest.json @dmoo500
+/pyproject.toml @dmoo500
+/hacs.json @dmoo500

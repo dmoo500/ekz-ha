@@ -1,0 +1,41 @@
+name: ✨ Feature Request
+description: Schlage ein neues Feature oder eine Verbesserung vor
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Danke für deinen Feature-Vorschlag!
+        
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: Gibt es ein Problem das gelöst werden soll? Beschreibe es.
+      placeholder: Ich bin immer frustriert wenn...
+    validations:
+      required: true
+      
+  - type: textarea
+    id: solution
+    attributes:
+      label: Vorgeschlagene Lösung
+      description: Wie würdest du das Problem lösen?
+      placeholder: Beschreibe deine Idee
+    validations:
+      required: true
+      
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Lösungen
+      description: Hast du andere Lösungsansätze in Betracht gezogen?
+      placeholder: Alternative Ansätze...
+      
+  - type: textarea
+    id: additional
+    attributes:
+      label: Zusätzlicher Kontext
+      description: Weitere Informationen die hilfreich sein könnten
+      placeholder: Screenshots, Links, etc.

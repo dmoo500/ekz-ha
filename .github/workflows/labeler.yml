@@ -1,0 +1,109 @@
+name: Auto Labeler
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  issues:
+    types: [opened, edited]
+
+jobs:
+  label-pr:
+    name: Label Pull Request
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Label based on files
+        uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          
+      - name: Label based on PR content
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || '';
+            const title = pr.title || '';
+            const labels = [];
+            
+            // Auto-detect type from PR template checkboxes
+            if (body.includes('[x] 🐛 Bugfix')) labels.push('bug', 'fix');
+            if (body.includes('[x] ✨ Neues Feature')) labels.push('enhancement', 'feature');
+            if (body.includes('[x] 💥 Breaking Change')) labels.push('breaking-change');
+            if (body.includes('[x] 📚 Dokumentation')) labels.push('documentation');
+            if (body.includes('[x] 🧹 Refactoring')) labels.push('refactor');
+            if (body.includes('[x] ⚡ Performance')) labels.push('performance');
+            if (body.includes('[x] ✅ Tests')) labels.push('tests');
+            
+            // Auto-detect from title
+            if (title.toLowerCase().includes('[bug]')) labels.push('bug');
+            if (title.toLowerCase().includes('[feature]')) labels.push('enhancement');
+            if (title.toLowerCase().includes('breaking')) labels.push('breaking-change');
+            
+            // Add size label based on changes
+            const changedFiles = pr.changed_files;
+            const additions = pr.additions;
+            const deletions = pr.deletions;
+            const totalChanges = additions + deletions;
+            
+            if (totalChanges < 10) labels.push('size/XS');
+            else if (totalChanges < 50) labels.push('size/S');
+            else if (totalChanges < 200) labels.push('size/M');
+            else if (totalChanges < 500) labels.push('size/L');
+            else labels.push('size/XL');
+            
+            // Apply labels
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: labels
+              });
+            }
+
+  label-issue:
+    name: Label Issue
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issues'
+    permissions:
+      issues: write
+    steps:
+      - name: Label based on issue content
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const title = issue.title || '';
+            const body = issue.body || '';
+            const labels = [];
+            
+            // Auto-detect from title
+            if (title.toLowerCase().includes('[bug]')) labels.push('bug');
+            if (title.toLowerCase().includes('[feature]')) labels.push('enhancement');
+            if (title.toLowerCase().includes('production')) labels.push('production');
+            if (title.toLowerCase().includes('consumption')) labels.push('consumption');
+            if (title.toLowerCase().includes('statistics')) labels.push('statistics');
+            
+            // Auto-detect priority
+            if (title.toLowerCase().includes('critical') || body.toLowerCase().includes('critical')) {
+              labels.push('priority: critical');
+            } else if (title.toLowerCase().includes('urgent')) {
+              labels.push('priority: high');
+            }
+            
+            // Apply labels
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: labels
+              });
+            }

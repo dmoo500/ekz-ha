@@ -1,0 +1,46 @@
+name: Stale Issues & PRs
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Daily at midnight
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          
+          # Issues
+          stale-issue-message: |
+            Dieses Issue wurde als inaktiv markiert weil es seit 60 Tagen keine Aktivität gab.
+            Es wird in 7 Tagen automatisch geschlossen wenn keine weitere Aktivität erfolgt.
+            
+            Wenn du glaubst dass dieses Issue noch relevant ist, kommentiere bitte hier um es offen zu halten.
+          close-issue-message: |
+            Dieses Issue wurde automatisch geschlossen wegen Inaktivität.
+            Bei Bedarf kann es jederzeit wieder geöffnet werden.
+          days-before-issue-stale: 60
+          days-before-issue-close: 7
+          stale-issue-label: stale
+          exempt-issue-labels: 'pinned,security,bug,critical,priority: critical,priority: high'
+          
+          # Pull Requests
+          stale-pr-message: |
+            Dieser Pull Request wurde als inaktiv markiert weil es seit 30 Tagen keine Aktivität gab.
+            Er wird in 7 Tagen automatisch geschlossen wenn keine weitere Aktivität erfolgt.
+            
+            Bitte aktualisiere den PR wenn er noch relevant ist.
+          close-pr-message: |
+            Dieser Pull Request wurde automatisch geschlossen wegen Inaktivität.
+            Bei Bedarf kann er jederzeit wieder geöffnet werden.
+          days-before-pr-stale: 30
+          days-before-pr-close: 7
+          stale-pr-label: stale
+          exempt-pr-labels: 'pinned,security,in-progress,work-in-progress'
