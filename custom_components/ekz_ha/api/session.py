@@ -1,6 +1,8 @@
 """Interact with EKZ."""
 
 import logging
+import re
+from datetime import datetime
 
 import aiohttp
 import pyotp
@@ -27,7 +29,25 @@ class Session:
         self._session.headers.add("User-Agent", "ekz-ha")
         self._username = username
         self._password = password
-        self._totp_secret = totp_secret.strip().replace(" ", "") if totp_secret else None
+
+        # Clean and validate TOTP secret
+        if totp_secret:
+            cleaned_secret = totp_secret.strip().replace(" ", "").replace("-", "").upper()
+            # Validate Base32 format (only A-Z, 2-7)
+            if not re.match(r'^[A-Z2-7]+=*$', cleaned_secret):
+                raise ValueError(
+                    f"Invalid TOTP secret format. Secret must be Base32 encoded (only A-Z and 2-7). "
+                    f"Received secret contains invalid characters. "
+                    f"Please check your authenticator app and re-enter the secret."
+                )
+            self._totp_secret = cleaned_secret
+            _LOGGER.debug(
+                "[EKZ TOTP] Secret validated (length=%d). Format OK.",
+                len(cleaned_secret)
+            )
+        else:
+            self._totp_secret = None
+
         self._device_name = device_name.strip() if device_name else None
         self._logged_in = False
 
@@ -125,7 +145,18 @@ class Session:
                             "Please reconfigure the integration and enter the TOTP secret key from your authenticator app."
                         )
                     otp_action = otpform[0]["action"]
-                    totp_code = pyotp.TOTP(self._totp_secret).now()
+
+                    # Generate TOTP code
+                    current_time = datetime.now()
+                    totp = pyotp.TOTP(self._totp_secret)
+                    totp_code = totp.now()
+
+                    _LOGGER.info(
+                        "[EKZ TOTP] Generated code at %s (UTC: %s). Code: %s",
+                        current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                        totp_code[:3] + "***"  # Log first 3 digits only for privacy
+                    )
 
                     # The OTP form may also contain a device selector (selectedCredentialId).
                     # Both fields must be submitted together in a single POST.
@@ -197,8 +228,19 @@ class Session:
                             "[EKZ login] Step: after TOTP submit. Forms on page: %s", all_form_ids
                         )
                         if soup.select("form[id=otp], form[id=kc-otp-login-form]"):
+                            _LOGGER.error(
+                                "[EKZ TOTP] Code was rejected. Current system time: %s (UTC: %s). "
+                                "Please verify: 1) TOTP secret is correct, 2) System clock is synchronized.",
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                            )
                             raise ValueError(
-                                "TOTP code was rejected by EKZ. Check that your TOTP secret key is correct and that the system clock is accurate."
+                                "TOTP code was rejected by EKZ. "
+                                "Possible causes:\n"
+                                "1. TOTP secret key is incorrect - please check your authenticator app\n"
+                                "2. System clock is not synchronized - TOTP requires accurate time\n"
+                                "3. TOTP secret was not properly copied (check for missing characters)\n\n"
+                                "To fix: Remove and re-add the integration with the correct TOTP secret."
                             )
                 elif smscode_form:
                     raise ValueError(

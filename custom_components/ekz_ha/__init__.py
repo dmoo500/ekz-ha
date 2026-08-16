@@ -100,9 +100,16 @@ class EkzCoordinator(DataUpdateCoordinator):
         """Load installations on first start."""
         installations_data = await self.api_client.get_consumption_installations()
         self.installations = {
-            inst_id: {"contract_start": info["contract_start"]}
-            for inst_id, info in installations_data.items()
+            contract.anlage: {"contract_start": contract.einzdat}
+            for contract in installations_data.contracts
+            if contract.anlage  # Skip contracts without installation ID
         }
+
+        if not self.installations:
+            _LOGGER.warning("No installations found in EKZ account")
+            return
+
+        _LOGGER.info("Found %d installation(s): %s", len(self.installations), list(self.installations.keys()))
 
         # Production installations: Check each consumption installation for production data
         self.production_installations = {}
@@ -138,8 +145,9 @@ class EkzCoordinator(DataUpdateCoordinator):
         if self.installations is None or self.installations == []:
             installations_data = await self.api_client.get_consumption_installations()
             self.installations = {
-                inst_id: {"contract_start": info["contract_start"]}
-                for inst_id, info in installations_data.items()
+                contract.anlage: {"contract_start": contract.einzdat}
+                for contract in installations_data.contracts
+                if contract.anlage
             }
 
         if not self.production_installations:
