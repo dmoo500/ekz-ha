@@ -13,6 +13,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Validate tag format (no 'v' prefix)
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          if [[ $TAG_NAME =~ ^v ]]; then
+            echo "❌ ERROR: Tag '$TAG_NAME' starts with 'v'"
+            echo "This project uses tags WITHOUT 'v' prefix"
+            echo "Correct format: 0.2.0-alpha.1 (not v0.2.0-alpha.1)"
+            echo "See CONTRIBUTING.md for details"
+            exit 1
+          fi
+          echo "✓ Tag format is correct: $TAG_NAME"
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
