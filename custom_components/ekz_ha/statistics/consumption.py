@@ -47,8 +47,10 @@ class ConsumptionImporter(BaseImporter):
 
         # If no data and this is an older period (> 30 days ago), try daily data
         if data.is_empty():
+            # Ensure date_from is timezone-aware for comparison
+            date_from_aware = date_from if date_from.tzinfo else date_from.replace(tzinfo=ZRH)
             recent_threshold = datetime.now(tz=ZRH) - timedelta(days=30)
-            if date_from >= recent_threshold:
+            if date_from_aware >= recent_threshold:
                 # Recent period with no data likely means session error
                 _LOGGER.info(
                     "[Consumption] No 15-min data for recent period %s (likely session error) - skipping daily fallback",
