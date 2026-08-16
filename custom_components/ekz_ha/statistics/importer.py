@@ -74,8 +74,11 @@ class BaseImporter(ABC):
             # Start from contract begin
             from_date = contract_start
 
+        # Convert date to datetime if needed
+        if not isinstance(from_date, datetime):
+            from_date = datetime.combine(from_date, datetime.min.time(), tzinfo=ZRH)
         # Ensure from_date is timezone-aware
-        if from_date.tzinfo is None:
+        elif from_date.tzinfo is None:
             from_date = from_date.replace(tzinfo=ZRH)
 
         # Fetch up to max_days or tomorrow, whichever is sooner
