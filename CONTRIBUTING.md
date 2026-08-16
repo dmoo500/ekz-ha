@@ -188,31 +188,44 @@ The PR template loads automatically. Fill out all sections:
 
 ✅ **Correct:**
 ```bash
-git tag 0.2.0-alpha.1
+# Stable releases
 git tag 0.2.0
 git tag 1.0.0
+
+# Pre-releases (PEP 440 format - recommended)
+git tag 0.2.0a1      # Alpha 1
+git tag 0.2.0b1      # Beta 1
+git tag 0.2.0rc1     # Release Candidate 1
+
+# Pre-releases (alternative format)
+git tag 0.2.0-alpha.1
+git tag 0.2.0-beta.1
 ```
 
 ❌ **Wrong:**
 ```bash
 git tag v0.2.0-alpha.1  # DO NOT USE
 git tag v0.2.0          # DO NOT USE
+git tag v0.2.0a1        # DO NOT USE
 ```
 
 ### Semantic Versioning
 
-Format: `MAJOR.MINOR.PATCH[-PRERELEASE]`
+Format: `MAJOR.MINOR.PATCH[PRERELEASE]`
+
+We follow [PEP 440](https://peps.python.org/pep-0440/) versioning for pre-releases.
 
 - **MAJOR** - Breaking changes
 - **MINOR** - New features (backwards compatible)
 - **PATCH** - Bug fixes
-- **PRERELEASE** - alpha, beta, rc
+- **PRERELEASE** - a (alpha), b (beta), rc (release candidate)
 
 **Examples:**
 - `0.1.12` - Patch release
 - `0.2.0` - Minor release with new features
-- `0.2.0-alpha.1` - Alpha pre-release
-- `0.2.0-beta.1` - Beta pre-release
+- `0.2.0a1` - Alpha pre-release (PEP 440)
+- `0.2.0b1` - Beta pre-release (PEP 440)
+- `0.2.0rc1` - Release candidate (PEP 440)
 - `1.0.0` - Major release
 
 ### Creating a Release
