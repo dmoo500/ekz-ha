@@ -36,9 +36,9 @@ class Session:
             # Validate Base32 format (only A-Z, 2-7)
             if not re.match(r'^[A-Z2-7]+=*$', cleaned_secret):
                 raise ValueError(
-                    f"Invalid TOTP secret format. Secret must be Base32 encoded (only A-Z and 2-7). "
-                    f"Received secret contains invalid characters. "
-                    f"Please check your authenticator app and re-enter the secret."
+                    "Invalid TOTP secret format. Secret must be Base32 encoded (only A-Z and 2-7). "
+                    "Received secret contains invalid characters. "
+                    "Please check your authenticator app and re-enter the secret."
                 )
             self._totp_secret = cleaned_secret
             _LOGGER.debug(

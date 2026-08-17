@@ -42,16 +42,16 @@ _LOGGER = logging.getLogger(__name__)
 
 def _is_contract_active(contract) -> bool:
     """Check if a contract is currently active (not expired).
-    
+
     Args:
         contract: InstallationContract with optional auszdat (contract end date)
-        
+
     Returns:
         True if contract is active (no end date or end date in future/today)
     """
     if not contract.auszdat:
         return True  # No end date means active contract
-    
+
     try:
         end_date = datetime.strptime(contract.auszdat, "%Y-%m-%d").date()
         today = datetime.now(tz=ZRH).date()
@@ -124,14 +124,18 @@ class EkzCoordinator(DataUpdateCoordinator):
     async def _async_setup(self):
         """Load installations on first start."""
         installations_data = await self.api_client.get_consumption_installations()
-        
+
         # Filter for active contracts only
-        active_contracts = [c for c in installations_data.contracts if c.anlage and _is_contract_active(c)]
-        inactive_count = len([c for c in installations_data.contracts if c.anlage and not _is_contract_active(c)])
-        
+        active_contracts = [
+            c for c in installations_data.contracts if c.anlage and _is_contract_active(c)
+        ]
+        inactive_count = len(
+            [c for c in installations_data.contracts if c.anlage and not _is_contract_active(c)]
+        )
+
         if inactive_count > 0:
             _LOGGER.info("Skipping %d inactive/expired contract(s)", inactive_count)
-        
+
         self.installations = {
             contract.anlage: {"contract_start": contract.einzdat}
             for contract in active_contracts
@@ -141,7 +145,11 @@ class EkzCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("No active installations found in EKZ account")
             return
 
-        _LOGGER.info("Found %d active installation(s): %s", len(self.installations), list(self.installations.keys()))
+        _LOGGER.info(
+            "Found %d active installation(s): %s",
+            len(self.installations),
+            list(self.installations.keys()),
+        )
 
         # Production installations: Check each consumption installation for production data
         self.production_installations = {}
@@ -176,10 +184,14 @@ class EkzCoordinator(DataUpdateCoordinator):
         """
         if self.installations is None or self.installations == []:
             installations_data = await self.api_client.get_consumption_installations()
-            
+
             # Filter for active contracts only
-            active_contracts = [c for c in installations_data.contracts if c.anlage and _is_contract_active(c)]
-            
+            active_contracts = [
+                c
+                for c in installations_data.contracts
+                if c.anlage and _is_contract_active(c)
+            ]
+
             self.installations = {
                 contract.anlage: {"contract_start": contract.einzdat}
                 for contract in active_contracts
