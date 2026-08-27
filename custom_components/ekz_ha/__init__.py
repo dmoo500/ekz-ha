@@ -474,7 +474,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                             _LOGGER.info(
                                 f"Restored last import for production {key} from DB: {import_dt.date()} → rewinding to {import_date}"
                             )
-                            prod_meta.set_last_import(import_date - timedelta(days=1))
+                            prod_meta.set_last_import(import_date)  # Already subtracted 1 day above
                             if last_stat_data[0].get("sum") is not None:
                                 self.last_production_sums[key] = last_stat_data[0]["sum"]
                 except Exception as e:
