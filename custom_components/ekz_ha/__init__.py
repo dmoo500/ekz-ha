@@ -151,18 +151,29 @@ class EkzCoordinator(DataUpdateCoordinator):
             list(self.installations.keys()),
         )
 
-        # Production installations: Check each consumption installation for production data
-        self.production_installations = {}
-        for inst_id in self.installations:
+        # Production installations have their own contract list and may use a
+        # different meter than the consumption contract.
+        production_data = await self.api_client.get_production_installations()
+        production_contracts = [
+            contract
+            for contract in production_data.contracts
+            if contract.anlage and _is_contract_active(contract)
+        ]
+        self.production_installations = {
+            contract.anlage: {"contract_start": contract.einzdat}
+            for contract in production_contracts
+        }
+        # Some accounts expose production on the consumption installation
+        # instead of returning it in the separate production contract list.
+        for inst_id, info in self.installations.items():
+            if inst_id in self.production_installations:
+                continue
             try:
-                # Try to fetch production data to see if this installation has solar
                 test_data = await self.api_client.get_production_15min(
                     inst_id, datetime.now(tz=ZRH) - timedelta(days=7), datetime.now(tz=ZRH)
                 )
                 if not test_data.is_empty():
-                    self.production_installations[inst_id] = {
-                        "contract_start": self.installations[inst_id]["contract_start"]
-                    }
+                    self.production_installations[inst_id] = info.copy()
                     _LOGGER.info(f"Production data available for installation {inst_id}")
             except Exception as e:
                 _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
@@ -198,16 +209,25 @@ class EkzCoordinator(DataUpdateCoordinator):
             }
 
         if not self.production_installations:
-            # Check for production installations on first update
-            for inst_id in self.installations:
+            production_data = await self.api_client.get_production_installations()
+            production_contracts = [
+                contract
+                for contract in production_data.contracts
+                if contract.anlage and _is_contract_active(contract)
+            ]
+            self.production_installations = {
+                contract.anlage: {"contract_start": contract.einzdat}
+                for contract in production_contracts
+            }
+            for inst_id, info in self.installations.items():
+                if inst_id in self.production_installations:
+                    continue
                 try:
                     test_data = await self.api_client.get_production_15min(
                         inst_id, datetime.now(tz=ZRH) - timedelta(days=7), datetime.now(tz=ZRH)
                     )
                     if not test_data.is_empty():
-                        self.production_installations[inst_id] = {
-                            "contract_start": self.installations[inst_id]["contract_start"]
-                        }
+                        self.production_installations[inst_id] = info.copy()
                         _LOGGER.info(f"Production data available for installation {inst_id}")
                 except Exception as e:
                     _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
@@ -257,7 +277,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                             _LOGGER.info(
                                 f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date}"
                             )
-                            meta_entity.set_last_import(import_date - timedelta(days=1))
+                            meta_entity.set_last_import(import_date)
 
                             # Pre-initialize catching_up flag
                             today_date = datetime.now(tz=ZRH).date()
