@@ -204,7 +204,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 {"sum"},
             )
             if pre_stats and statistic_id in pre_stats and pre_stats[statistic_id]:
-                return pre_stats[statistic_id][-1]["sum"]
+                return float(pre_stats[statistic_id][-1]["sum"])
         except Exception as err:
             _LOGGER.debug("Could not query DB offset for %s: %s", statistic_id, err)
             return fallback
