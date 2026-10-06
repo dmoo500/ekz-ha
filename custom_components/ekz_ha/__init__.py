@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import zoneinfo
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from homeassistant import core
 from homeassistant.components.recorder import get_instance as get_recorder_instance
@@ -60,7 +60,7 @@ def _is_contract_active(contract) -> bool:
         _LOGGER.warning(
             "Invalid contract end date format for installation %s: %s",
             contract.anlage,
-            contract.auszdat
+            contract.auszdat,
         )
         return True  # If parsing fails, assume active to avoid data loss
 
@@ -137,8 +137,7 @@ class EkzCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Skipping %d inactive/expired contract(s)", inactive_count)
 
         self.installations = {
-            contract.anlage: {"contract_start": contract.einzdat}
-            for contract in active_contracts
+            contract.anlage: {"contract_start": contract.einzdat} for contract in active_contracts
         }
 
         if not self.installations:
@@ -187,6 +186,30 @@ class EkzCoordinator(DataUpdateCoordinator):
         async with self._reset_lock:
             await self._do_update_data()
 
+    async def _get_running_sum_before(
+        self, statistic_id: str, import_date: date, fallback: float = 0.0
+    ) -> float:
+        boundary = (
+            datetime.combine(import_date, datetime.min.time()).replace(tzinfo=ZRH).astimezone(UTC)
+        )
+        try:
+            pre_stats = await get_recorder_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                boundary - timedelta(hours=26),
+                boundary,
+                {statistic_id},
+                "hour",
+                None,
+                {"sum"},
+            )
+            if pre_stats and statistic_id in pre_stats and pre_stats[statistic_id]:
+                return pre_stats[statistic_id][-1]["sum"]
+        except Exception as err:
+            _LOGGER.debug("Could not query DB offset for %s: %s", statistic_id, err)
+            return fallback
+        return 0.0
+
     async def _do_update_data(self):
         """Fetch data from API endpoint.
 
@@ -198,9 +221,7 @@ class EkzCoordinator(DataUpdateCoordinator):
 
             # Filter for active contracts only
             active_contracts = [
-                c
-                for c in installations_data.contracts
-                if c.anlage and _is_contract_active(c)
+                c for c in installations_data.contracts if c.anlage and _is_contract_active(c)
             ]
 
             self.installations = {
@@ -319,40 +340,20 @@ class EkzCoordinator(DataUpdateCoordinator):
                     f"No existing statistics for {key}, starting import from contract start {start}"
                 )
 
-            # Query DB for running offset
+            # Rebuild the running sum before the day being re-imported.
             _last_import_date = meta_entity._last_import
             if _last_import_date is not None:
                 if isinstance(_last_import_date, datetime):
                     _last_import_date = _last_import_date.date()
-                offset_boundary = (
-                    datetime.combine(_last_import_date + timedelta(days=1), datetime.min.time())
-                    .replace(tzinfo=ZRH)
-                    .astimezone(UTC)
+                running_sum = await self._get_running_sum_before(
+                    statistic_id, _last_import_date, self.last_sums.get(key, 0.0)
                 )
-                try:
-                    pre_stats = await get_recorder_instance(self.hass).async_add_executor_job(
-                        statistics_during_period,
-                        self.hass,
-                        offset_boundary - timedelta(hours=26),
-                        offset_boundary,
-                        {statistic_id},
-                        "hour",
-                        None,
-                        {"sum"},
-                    )
-                    if pre_stats and statistic_id in pre_stats and pre_stats[statistic_id]:
-                        running_sum = pre_stats[statistic_id][-1]["sum"]
-                        _LOGGER.info(
-                            f"DB offset for {key}: {running_sum:.3f} kWh (boundary {offset_boundary})"
-                        )
-                    else:
-                        running_sum = 0.0
-                        _LOGGER.debug(
-                            f"No DB stats found before {offset_boundary} for {key}, using 0"
-                        )
-                except Exception as e_offset:
-                    _LOGGER.debug(f"Could not query DB offset for {key}: {e_offset}")
-                    running_sum = self.last_sums.get(key, 0.0)
+                _LOGGER.debug(
+                    "DB offset for %s before %s: %.3f kWh",
+                    key,
+                    _last_import_date,
+                    running_sum,
+                )
             else:
                 running_sum = 0.0
 
@@ -503,6 +504,19 @@ class EkzCoordinator(DataUpdateCoordinator):
             if prod_meta._last_import is None and contract_start:
                 prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
 
+            production_import_date = prod_meta._last_import
+            if isinstance(production_import_date, datetime):
+                production_import_date = production_import_date.date()
+            production_offset = (
+                await self._get_running_sum_before(
+                    statistic_id,
+                    production_import_date,
+                    self.last_production_sums.get(key, 0.0),
+                )
+                if production_import_date is not None
+                else 0.0
+            )
+
             # Import using new architecture
             importer = ProductionImporter(self.api_client)
             contract_start_dt = (
@@ -515,7 +529,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 key,
                 contract_start_dt,
                 prod_meta,
-                running_sum_offset=self.last_production_sums.get(key, 0.0),
+                running_sum_offset=production_offset,
             )
 
             if result.get("statistics"):

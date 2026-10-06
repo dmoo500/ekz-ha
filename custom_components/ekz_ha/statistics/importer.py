@@ -68,8 +68,7 @@ class BaseImporter(ABC):
             Tuple of (from_date, to_date)
         """
         if last_import:
-            # Continue from day after last import
-            from_date = last_import + timedelta(days=1)
+            from_date = last_import
         else:
             # Start from contract begin
             from_date = contract_start
