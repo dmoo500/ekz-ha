@@ -27,6 +27,7 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api.client import EkzApiClient
@@ -81,6 +82,12 @@ def _make_stat_meta(statistic_id: str) -> StatisticMetaData:
         return StatisticMetaData(**kwargs)
 
 
+def _prediction_statistic_id(hass: HomeAssistant, installation_id: str) -> str | None:
+    entity_registry = er.async_get(hass)
+    unique_id = f"ekz_electricity_consumption_{installation_id}_prediction"
+    return entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+
+
 class EkzCoordinator(DataUpdateCoordinator):
     """Coordinates data fetching from EKZ."""
 
@@ -119,6 +126,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.prediction_services: dict[
             str, PredictionService
         ] = {}  # prediction service per installation
+        self.migrated_prediction_statistics: set[str] = set()
         self.next_update_time: datetime | None = None
 
     async def _async_setup(self):
@@ -427,6 +435,41 @@ class EkzCoordinator(DataUpdateCoordinator):
                     f"Updated prediction averages for {key}: {len(averages)} month-hour buckets"
                 )
 
+            prediction_statistic_id = _prediction_statistic_id(self.hass, key)
+            legacy_prediction_statistic_id = f"sensor.electricity_consumption_ekz_{key}_prediction"
+            if (
+                prediction_statistic_id is not None
+                and prediction_statistic_id != legacy_prediction_statistic_id
+                and key not in self.migrated_prediction_statistics
+            ):
+                try:
+                    old_stats = await get_recorder_instance(self.hass).async_add_executor_job(
+                        get_last_statistics,
+                        self.hass,
+                        1,
+                        legacy_prediction_statistic_id,
+                        True,
+                        {"sum"},
+                    )
+                    if old_stats and legacy_prediction_statistic_id in old_stats:
+                        from homeassistant.components.recorder.statistics import (
+                            async_clear_statistics,
+                        )
+
+                        await async_clear_statistics(self.hass, [legacy_prediction_statistic_id])
+                        _LOGGER.info(
+                            "Cleared outdated prediction statistics for %s (%s)",
+                            key,
+                            legacy_prediction_statistic_id,
+                        )
+                    self.migrated_prediction_statistics.add(key)
+                except Exception as e:
+                    _LOGGER.warning(
+                        "Could not migrate outdated prediction statistics for %s: %s",
+                        key,
+                        e,
+                    )
+
             # Generate predictions only when caught up (gap fills the recent EKZ delay)
             if result.get("statistics") and not still_catching_up:
                 predictions = []
@@ -448,21 +491,27 @@ class EkzCoordinator(DataUpdateCoordinator):
                     predictions.extend(forward_predictions)
 
                 if len(predictions) > 1:
-                    _LOGGER.info(
-                        f"Predictions for {key}: {len(predictions)} entries, "
-                        f"gap coverage {result['statistics'][-1]['start'].date()} → {datetime.now(tz=UTC).date()}"
-                    )
-                    try:
-                        async_import_statistics(
-                            self.hass,
-                            _make_stat_meta(f"sensor.electricity_consumption_ekz_{key}_prediction"),
-                            [
-                                StatisticData(start=p["start"], sum=p["sum"], state=p["state"])
-                                for p in predictions
-                            ],
+                    if prediction_statistic_id is None:
+                        _LOGGER.warning(
+                            "Prediction entity for %s is not registered; skipping statistics import",
+                            key,
                         )
-                    except Exception as e:
-                        _LOGGER.error(f"Failed to import prediction statistics for {key}: {e}")
+                    else:
+                        _LOGGER.info(
+                            f"Predictions for {key}: {len(predictions)} entries, "
+                            f"gap coverage {result['statistics'][-1]['start'].date()} → {datetime.now(tz=UTC).date()}"
+                        )
+                        try:
+                            async_import_statistics(
+                                self.hass,
+                                _make_stat_meta(prediction_statistic_id),
+                                [
+                                    StatisticData(start=p["start"], sum=p["sum"], state=p["state"])
+                                    for p in predictions
+                                ],
+                            )
+                        except Exception as e:
+                            _LOGGER.error(f"Failed to import prediction statistics for {key}: {e}")
 
         # --- Production (solar feed-in) import loop ---
         production_meta_entities = getattr(self, "production_meta_entities", {})
@@ -609,6 +658,9 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         for key in coordinator.installations:
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}")
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}_prediction")
+            prediction_statistic_id = _prediction_statistic_id(hass, key)
+            if prediction_statistic_id is not None:
+                statistic_ids.append(prediction_statistic_id)
         for key in coordinator.production_installations:
             statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
 
