@@ -4,6 +4,7 @@ import asyncio
 import logging
 import zoneinfo
 from datetime import date, datetime, timedelta
+from typing import cast
 
 from homeassistant import core
 from homeassistant.components.recorder import get_instance as get_recorder_instance
@@ -85,7 +86,7 @@ def _make_stat_meta(statistic_id: str) -> StatisticMetaData:
 def _prediction_statistic_id(hass: HomeAssistant, installation_id: str) -> str | None:
     entity_registry = er.async_get(hass)
     unique_id = f"ekz_electricity_consumption_{installation_id}_prediction"
-    return entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+    return cast(str | None, entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id))
 
 
 class EkzCoordinator(DataUpdateCoordinator):
