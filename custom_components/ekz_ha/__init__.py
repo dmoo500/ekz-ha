@@ -1,6 +1,7 @@
 """Entrypoint."""
 
 import asyncio
+import inspect
 import logging
 import zoneinfo
 from datetime import date, datetime, timedelta
@@ -87,6 +88,33 @@ def _prediction_statistic_id(hass: HomeAssistant, installation_id: str) -> str |
     entity_registry = er.async_get(hass)
     unique_id = f"ekz_electricity_consumption_{installation_id}_prediction"
     return cast(str | None, entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id))
+
+
+async def _async_clear_statistics(hass: HomeAssistant, statistic_ids: list[str]) -> bool:
+    try:
+        from homeassistant.components.recorder import statistics as recorder_statistics
+
+        clear_fn = getattr(recorder_statistics, "async_clear_statistics", None)
+        if clear_fn is not None:
+            result = clear_fn(hass, statistic_ids)
+            if inspect.isawaitable(result):
+                await result
+            return True
+    except Exception as err:
+        _LOGGER.debug("Module-level async_clear_statistics failed: %s", err)
+
+    try:
+        recorder = get_recorder_instance(hass)
+        clear_fn = getattr(recorder, "async_clear_statistics", None)
+        if clear_fn is not None:
+            result = clear_fn(statistic_ids)
+            if inspect.isawaitable(result):
+                await result
+            return True
+    except Exception as err:
+        _LOGGER.debug("Recorder instance async_clear_statistics failed: %s", err)
+
+    return False
 
 
 class EkzCoordinator(DataUpdateCoordinator):
@@ -324,13 +352,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 )
                 if old_stats and old_statistic_id in old_stats:
                     _LOGGER.info(f"Migrating: clearing old statistics under {old_statistic_id}")
-                    try:
-                        from homeassistant.components.recorder.statistics import (
-                            async_clear_statistics,
-                        )
-
-                        await async_clear_statistics(self.hass, [old_statistic_id])
-                    except ImportError:
+                    if not await _async_clear_statistics(self.hass, [old_statistic_id]):
                         _LOGGER.info(
                             f"async_clear_statistics not available — old statistics under {old_statistic_id} will remain"
                         )
@@ -453,11 +475,10 @@ class EkzCoordinator(DataUpdateCoordinator):
                         {"sum"},
                     )
                     if old_stats and legacy_prediction_statistic_id in old_stats:
-                        from homeassistant.components.recorder.statistics import (
-                            async_clear_statistics,
-                        )
-
-                        await async_clear_statistics(self.hass, [legacy_prediction_statistic_id])
+                        if not await _async_clear_statistics(
+                            self.hass, [legacy_prediction_statistic_id]
+                        ):
+                            raise RuntimeError("No compatible statistics clearing API found")
                         _LOGGER.info(
                             "Cleared outdated prediction statistics for %s (%s)",
                             key,
@@ -626,35 +647,6 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
 
     async def handle_reset_statistics(call):
         """Delete all EKZ statistics from the DB and reset in-memory state so a full re-import starts."""
-        import inspect
-
-        async def _clear_statistics(statistic_ids: list[str]) -> bool:
-            """Try to clear statistics, handling different HA versions robustly."""
-            # Approach 1: module-level function (most HA versions)
-            try:
-                from homeassistant.components.recorder.statistics import async_clear_statistics
-
-                result = async_clear_statistics(hass, statistic_ids)
-                if inspect.isawaitable(result):
-                    await result
-                return True
-            except (ImportError, Exception) as err:
-                _LOGGER.debug("Module-level async_clear_statistics failed: %s", err)
-
-            # Approach 2: method on recorder instance (some HA versions)
-            try:
-                recorder = get_recorder_instance(hass)
-                clear_fn = getattr(recorder, "async_clear_statistics", None)
-                if clear_fn is not None:
-                    result = clear_fn(statistic_ids)
-                    if inspect.isawaitable(result):
-                        await result
-                    return True
-            except Exception as err:
-                _LOGGER.debug("Recorder instance async_clear_statistics failed: %s", err)
-
-            return False
-
         statistic_ids = []
         for key in coordinator.installations:
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}")
@@ -670,7 +662,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         # Hold the reset lock so any in-progress _async_update_data finishes first,
         # and new updates are blocked until the state is fully cleared.
         async with coordinator._reset_lock:
-            if not await _clear_statistics(statistic_ids):
+            if not await _async_clear_statistics(hass, statistic_ids):
                 _LOGGER.error("Cannot clear statistics: no compatible API found in this HA version")
                 return
 

@@ -14,6 +14,7 @@ _LOGGER = logging.getLogger(__name__)
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
+MAX_HISTORY_YEARS = 10
 
 
 class BaseImporter(ABC):
@@ -79,6 +80,14 @@ class BaseImporter(ABC):
         # Ensure from_date is timezone-aware
         elif from_date.tzinfo is None:
             from_date = from_date.replace(tzinfo=ZRH)
+
+        today = datetime.now(tz=ZRH).date()
+        try:
+            history_start_date = today.replace(year=today.year - MAX_HISTORY_YEARS)
+        except ValueError:
+            history_start_date = today.replace(year=today.year - MAX_HISTORY_YEARS, day=28)
+        history_start = datetime.combine(history_start_date, datetime.min.time(), tzinfo=ZRH)
+        from_date = max(from_date, history_start)
 
         # Fetch up to max_days or tomorrow, whichever is sooner
         tomorrow = datetime.now(tz=ZRH).date() + timedelta(days=1)
