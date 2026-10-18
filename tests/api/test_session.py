@@ -61,3 +61,51 @@ async def test_fetch_with_retry_raises_if_reauthenticated_response_is_html(monke
 
     with pytest.raises(aiohttp.ContentTypeError):
         await session._fetch_with_retry("https://example.test/data", "Data", {})
+
+
+@pytest.mark.parametrize(
+    ("method_name", "arguments", "query"),
+    [
+        ("installation_selection_data", (), "installationVariant=CONSUMPTION"),
+        ("production_installation_selection_data", (), "installationVariant=PRODUCTION"),
+        (
+            "get_consumption_data",
+            ("825821", "PK_VERB_15MIN", "2026-10-17", "2026-10-18"),
+            "type=PK_VERB_15MIN",
+        ),
+        (
+            "get_consumption_data",
+            ("825821", "WIRK_NEG_15MIN", "2026-10-17", "2026-10-18"),
+            "type=WIRK_NEG_15MIN",
+        ),
+    ],
+)
+async def test_public_api_recovers_expired_session(monkeypatch, method_name, arguments, query):
+    payload = {"contracts": [{"anlage": "825821"}]}
+    session, first_http, retry_http, reset, login = make_session(
+        monkeypatch, [FakeResponse(content_type_error=True), FakeResponse(data=payload)]
+    )
+
+    result = await getattr(session, method_name)(*arguments)
+
+    assert result == payload
+    assert query in first_http.get.call_args.args[0]
+    assert first_http.get.call_args == retry_http.get.call_args
+    reset.assert_awaited_once()
+    assert login.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "method_name", ["installation_selection_data", "production_installation_selection_data"]
+)
+async def test_installation_lookup_propagates_failed_retry(monkeypatch, method_name):
+    session, first_http, retry_http, reset, _ = make_session(
+        monkeypatch, [FakeResponse(content_type_error=True), FakeResponse(content_type_error=True)]
+    )
+
+    with pytest.raises(aiohttp.ContentTypeError):
+        await getattr(session, method_name)()
+
+    assert first_http.get.call_count == 1
+    assert retry_http.get.call_count == 1
+    reset.assert_awaited_once()
