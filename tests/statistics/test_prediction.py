@@ -87,6 +87,22 @@ class TestPredictionService:
         # Only has 2 slots (< 4), so should NOT be in averages
         assert 410 not in averages
 
+    def test_repeated_and_corrected_slots_replace_previous_values(
+        self, prediction_service, sample_values
+    ):
+        prediction_service.accumulate_values(sample_values)
+        prediction_service.accumulate_values(sample_values)
+        assert prediction_service.get_raw_accumulator()[310] == pytest.approx((2.6, 4))
+
+        corrected = ApiValue.from_dict({"timestamp": "2026-03-01 10:00:00", "value": 1.5})
+        prediction_service.accumulate_values([corrected])
+        assert prediction_service.get_raw_accumulator()[310] == pytest.approx((3.6, 4))
+        assert prediction_service.calculate_averages()[310] == pytest.approx(3.6)
+
+        prediction_service.reset()
+        prediction_service.accumulate_values(sample_values)
+        assert prediction_service.get_raw_accumulator()[310] == pytest.approx((2.6, 4))
+
     def test_merge_raw_accumulator(self, prediction_service):
         """Test merging new raw data into existing accumulator."""
         # Initial accumulation

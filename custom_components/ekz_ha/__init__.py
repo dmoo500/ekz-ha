@@ -5,7 +5,7 @@ import inspect
 import logging
 import zoneinfo
 from datetime import date, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 from homeassistant import core
 from homeassistant.components.recorder import get_instance as get_recorder_instance
@@ -19,7 +19,6 @@ try:
 
     MEAN_TYPE_NONE = StatisticMeanType.NONE
 except ImportError:
-    # HA 2024.2+ removed StatisticMeanType enum, use None directly
     MEAN_TYPE_NONE = None  # type: ignore[assignment]
 from homeassistant.components.recorder.statistics import (
     async_import_statistics,
@@ -30,7 +29,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EkzApiClient
 from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
@@ -72,22 +71,36 @@ def _make_stat_meta(statistic_id: str) -> StatisticMetaData:
     """Build StatisticMetaData, adding unit_class='energy' when supported (HA 2024.3+)."""
     kwargs = {
         "has_sum": True,
-        "mean_type": MEAN_TYPE_NONE,
         "source": "recorder",
         "statistic_id": statistic_id,
         "name": None,
         "unit_of_measurement": "kWh",
     }
-    try:
-        return StatisticMetaData(**kwargs, unit_class="energy")
-    except TypeError:
-        return StatisticMetaData(**kwargs)
+    if MEAN_TYPE_NONE is None:
+        kwargs["has_mean"] = False
+    else:
+        kwargs["mean_type"] = MEAN_TYPE_NONE
+    if "unit_class" in StatisticMetaData.__annotations__:
+        kwargs["unit_class"] = "energy"
+    return StatisticMetaData(**kwargs)
 
 
 def _prediction_statistic_id(hass: HomeAssistant, installation_id: str) -> str | None:
     entity_registry = er.async_get(hass)
     unique_id = f"ekz_electricity_consumption_{installation_id}_prediction"
     return cast(str | None, entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id))
+
+
+def _cache_sum_offsets(
+    coordinator: "EkzCoordinator", statistic_id: str, statistics: list[dict[str, Any]]
+) -> None:
+    offsets: dict[date, float] = {}
+    for statistic in statistics:
+        local_day = statistic["start"].astimezone(ZRH).date()
+        offsets.setdefault(local_day, statistic["sum"] - statistic["state"])
+    if not hasattr(coordinator, "_sum_offsets"):
+        coordinator._sum_offsets = {}
+    coordinator._sum_offsets[statistic_id] = offsets
 
 
 async def _async_clear_statistics(hass: HomeAssistant, statistic_ids: list[str]) -> bool:
@@ -147,6 +160,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.consumption_averages = {}
         self.last_sums: dict[str, float] = {}
         self.last_production_sums: dict[str, float] = {}
+        self._sum_offsets: dict[str, dict[date, float]] = {}
         self.last_prediction_sums: dict[str, float] = {}
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
@@ -176,10 +190,6 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.installations = {
             contract.anlage: {"contract_start": contract.einzdat} for contract in active_contracts
         }
-
-        if not self.installations:
-            _LOGGER.warning("No active installations found in EKZ account")
-            return
 
         _LOGGER.info(
             "Found %d active installation(s): %s",
@@ -217,6 +227,8 @@ class EkzCoordinator(DataUpdateCoordinator):
         _LOGGER.debug(
             f"Production installations found: {list(self.production_installations.keys())}"
         )
+        if not self.installations and not self.production_installations:
+            raise UpdateFailed("No active consumption or production installations found")
 
     async def _async_update_data(self):
         """Acquire reset lock then delegate to _do_update_data."""
@@ -226,26 +238,30 @@ class EkzCoordinator(DataUpdateCoordinator):
     async def _get_running_sum_before(
         self, statistic_id: str, import_date: date, fallback: float = 0.0
     ) -> float:
+        cached = getattr(self, "_sum_offsets", {}).get(statistic_id, {})
+        if import_date in cached:
+            return float(cached[import_date])
         boundary = (
             datetime.combine(import_date, datetime.min.time()).replace(tzinfo=ZRH).astimezone(UTC)
         )
         try:
-            pre_stats = await get_recorder_instance(self.hass).async_add_executor_job(
-                statistics_during_period,
-                self.hass,
-                boundary - timedelta(hours=26),
-                boundary,
-                {statistic_id},
-                "hour",
-                None,
-                {"sum"},
-            )
-            if pre_stats and statistic_id in pre_stats and pre_stats[statistic_id]:
-                return float(pre_stats[statistic_id][-1]["sum"])
+            for lookback in (timedelta(hours=26), timedelta(days=30), timedelta(days=3660)):
+                pre_stats = await get_recorder_instance(self.hass).async_add_executor_job(
+                    statistics_during_period,
+                    self.hass,
+                    boundary - lookback,
+                    boundary,
+                    {statistic_id},
+                    "hour",
+                    None,
+                    {"sum"},
+                )
+                if pre_stats and statistic_id in pre_stats and pre_stats[statistic_id]:
+                    return float(pre_stats[statistic_id][-1]["sum"])
         except Exception as err:
             _LOGGER.debug("Could not query DB offset for %s: %s", statistic_id, err)
             return fallback
-        return 0.0
+        return fallback
 
     async def _do_update_data(self):
         """Fetch data from API endpoint.
@@ -291,7 +307,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
 
         meta_entities = getattr(self, "meta_entities", None)
-        if not meta_entities:
+        if not meta_entities and not getattr(self, "production_meta_entities", None):
             _LOGGER.debug(
                 "meta_entities not yet available during update — entities not initialized yet."
             )
@@ -372,12 +388,19 @@ class EkzCoordinator(DataUpdateCoordinator):
                 )
 
             # Rebuild the running sum before the day being re-imported.
-            _last_import_date = meta_entity._last_import
+            pending_from = getattr(meta_entity, "_pending_from", None)
+            _last_import_date = pending_from or meta_entity._last_import
             if _last_import_date is not None:
                 if isinstance(_last_import_date, datetime):
                     _last_import_date = _last_import_date.date()
                 running_sum = await self._get_running_sum_before(
-                    statistic_id, _last_import_date, self.last_sums.get(key, 0.0)
+                    statistic_id,
+                    _last_import_date,
+                    (
+                        meta_entity._pending_sum_offset
+                        if pending_from is not None
+                        else self.last_sums.get(key, 0.0)
+                    ),
                 )
                 _LOGGER.debug(
                     "DB offset for %s before %s: %.3f kWh",
@@ -423,6 +446,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                             for s in result["statistics"]
                         ],
                     )
+                    _cache_sum_offsets(self, statistic_id, result["statistics"])
                 except Exception as e:
                     _LOGGER.error(f"Failed to import statistics chunk for {key}: {e}")
 
@@ -575,14 +599,19 @@ class EkzCoordinator(DataUpdateCoordinator):
             if prod_meta._last_import is None and contract_start:
                 prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
 
-            production_import_date = prod_meta._last_import
+            pending_from = getattr(prod_meta, "_pending_from", None)
+            production_import_date = pending_from or prod_meta._last_import
             if isinstance(production_import_date, datetime):
                 production_import_date = production_import_date.date()
             production_offset = (
                 await self._get_running_sum_before(
                     statistic_id,
                     production_import_date,
-                    self.last_production_sums.get(key, 0.0),
+                    (
+                        prod_meta._pending_sum_offset
+                        if pending_from is not None
+                        else self.last_production_sums.get(key, 0.0)
+                    ),
                 )
                 if production_import_date is not None
                 else 0.0
@@ -617,6 +646,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                             for s in result["statistics"]
                         ],
                     )
+                    _cache_sum_offsets(self, statistic_id, result["statistics"])
                 except Exception as e:
                     _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
 
@@ -670,6 +700,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator.last_sums = {}
             coordinator.last_production_sums = {}
             coordinator.last_prediction_sums = {}
+            coordinator._sum_offsets = {}
             coordinator.catching_up = {}
             coordinator.consumption_averages_raw = {}
             # Reset all prediction services
@@ -678,8 +709,10 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator.prediction_services = {}
             for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
                 meta.set_last_import(None)
+                meta.set_pending(None)
             for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
                 meta.set_last_import(None)
+                meta.set_pending(None)
 
         # Lock released — now it's safe to schedule the re-import
         _LOGGER.info("EKZ statistics reset complete — re-import will start on next poll")

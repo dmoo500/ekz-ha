@@ -126,7 +126,11 @@ class BaseImporter(ABC):
         )
 
         # Determine date range
-        last_import = meta_entity._last_import if meta_entity else None
+        last_import = (
+            getattr(meta_entity, "_pending_from", None) or meta_entity._last_import
+            if meta_entity
+            else None
+        )
         from_date, to_date = self.calculate_date_range(last_import, contract_start, max_days=30)
 
         _LOGGER.debug("[%s] Fetching data: period %s to %s", data_type, from_date, to_date)
@@ -161,15 +165,17 @@ class BaseImporter(ABC):
         _LOGGER.debug("[%s] After merging tariffs: %d", data_type, len(merged_values))
 
         # Keep raw merged values for prediction accumulation
-        raw_values_for_prediction = merged_values.copy()
+        raw_values_for_prediction = (
+            [value for value in merged_values if value.status != "DAILY_VALID"]
+            if consumption_data.level == "QUARTER_HOUR"
+            else []
+        )
 
         # Aggregate to hourly
         if consumption_data.level == "QUARTER_HOUR":
             values = self.aggregator.aggregate_to_hourly(merged_values)
         elif consumption_data.level == "DAY":
-            # Daily data is already at the right granularity, but we still
-            # aggregate to ensure consistent format
-            values = self.aggregator.aggregate_to_daily(merged_values)
+            values = merged_values
         else:
             values = merged_values
 
@@ -177,17 +183,40 @@ class BaseImporter(ABC):
         statistics = self.transformer.values_to_statistics(values, running_sum_offset)
 
         # Update metadata
+        last_import_dt = self.transformer.get_last_import_date(statistics)
         if meta_entity and statistics:
-            last_import_dt = self.transformer.get_last_import_date(statistics)
             if last_import_dt:
                 meta_entity.set_last_import(last_import_dt.astimezone(ZRH).date())
+                complete_days = set(self.validator.find_complete_days(raw_values_for_prediction))
+                complete_days.update(
+                    value.date
+                    for value in merged_values
+                    if consumption_data.level == "DAY" or value.status == "DAILY_VALID"
+                )
+                pending_day = max(
+                    from_date.date(), datetime.now(tz=ZRH).date() - timedelta(days=30)
+                )
+                end_day = min(
+                    to_date.date(),
+                    last_import_dt.astimezone(ZRH).date() + timedelta(days=1),
+                    datetime.now(tz=ZRH).date(),
+                )
+                while pending_day < end_day and pending_day.isoformat() in complete_days:
+                    pending_day += timedelta(days=1)
+                if pending_day < end_day:
+                    boundary = datetime.combine(pending_day, datetime.min.time(), tzinfo=ZRH)
+                    preceding = [
+                        statistic for statistic in statistics if statistic["start"] < boundary
+                    ]
+                    offset = preceding[-1]["sum"] if preceding else running_sum_offset
+                    meta_entity.set_pending(pending_day, offset)
+                else:
+                    meta_entity.set_pending(None)
             meta_entity.set_last_run_date(datetime.now(tz=ZRH))
 
         return {
             "statistics": statistics,
-            "last_import": (
-                self.transformer.get_last_import_date(statistics).date() if statistics else None
-            ),
+            "last_import": last_import_dt.astimezone(ZRH).date() if last_import_dt else None,
             "from_date": from_date.date(),
             "to_date": to_date.date(),
             "raw_values": raw_values_for_prediction,  # For prediction accumulation

@@ -65,7 +65,7 @@ Orchestrates data import workflows.
 
 - **`consumption.py`**: Consumption-specific importer
   - Tries 15-min data first
-  - Falls back to daily for old periods
+  - Fills days without 15-min data using daily values
 
 - **`production.py`**: Production-specific importer
   - Handles solar feed-in data
@@ -74,7 +74,9 @@ Orchestrates data import workflows.
 ## Usage Example
 
 ```python
-from custom_components.ekz_ha.api import EkzApiClient
+from datetime import datetime
+
+from custom_components.ekz_ha.api.client import EkzApiClient
 from custom_components.ekz_ha.statistics import ConsumptionImporter, ProductionImporter
 
 # Initialize API client

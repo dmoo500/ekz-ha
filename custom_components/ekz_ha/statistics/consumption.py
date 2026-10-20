@@ -2,9 +2,10 @@
 
 import logging
 import zoneinfo
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import datetime
 
-from ..api.models import ConsumptionData
+from ..api.models import ConsumptionData, SeriesData
 from .importer import BaseImporter
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,27 +46,27 @@ class ConsumptionImporter(BaseImporter):
             date_to.strftime("%Y-%m-%d"),
         )
 
-        # If no data and this is an older period (> 30 days ago), try daily data
+        available_days = {value.date for value in data.get_all_values()}
+        requested_days = (date_to.date() - date_from.date()).days
+        if len(available_days) >= requested_days:
+            return data
+
+        daily = await self.api.get_consumption_daily(
+            installation_id,
+            date_from.strftime("%Y-%m-%d"),
+            date_to.strftime("%Y-%m-%d"),
+        )
         if data.is_empty():
-            # Ensure date_from is timezone-aware for comparison
-            date_from_aware = date_from if date_from.tzinfo else date_from.replace(tzinfo=ZRH)
-            recent_threshold = datetime.now(tz=ZRH) - timedelta(days=30)
-            if date_from_aware >= recent_threshold:
-                # Recent period with no data likely means session error
-                _LOGGER.info(
-                    "[Consumption] No 15-min data for recent period %s (likely session error) - skipping daily fallback",
-                    date_from.date(),
-                )
-                return data
-
-            _LOGGER.info(
-                "[Consumption] No 15-min data for %s, trying daily data",
-                date_from.date(),
-            )
-            data = await self.api.get_consumption_daily(
-                installation_id,
-                date_from.strftime("%Y-%m-%d"),
-                date_to.strftime("%Y-%m-%d"),
-            )
-
-        return data
+            return daily
+        fallback_values = [
+            replace(value, status="DAILY_VALID")
+            for value in self.aggregator.merge_tariffs(daily.get_all_values())
+            if value.date not in available_days
+        ]
+        return ConsumptionData(
+            series_total=SeriesData(
+                values=self.aggregator.merge_tariffs(data.get_all_values()) + fallback_values,
+                level=data.level,
+            ),
+            level=data.level,
+        )

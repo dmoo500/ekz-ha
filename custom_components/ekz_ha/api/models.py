@@ -1,7 +1,9 @@
 """Data models for EKZ API responses."""
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 @dataclass
@@ -17,19 +19,20 @@ class ApiValue:
     @classmethod
     def from_dict(cls, data: dict[str, Any], tariff: str = "TOTAL") -> "ApiValue":
         """Create ApiValue from API response dict."""
-        # Extract date from timestamp (YYYY-MM-DD from YYYYMMDDHHmmss or YYYY-MM-DD HH:mm:ss)
         ts = str(data["timestamp"])
         if "-" in ts:
-            date_part = ts.split(" ")[0] if " " in ts else ts.split("T")[0]
+            timestamp = datetime.fromisoformat(ts)
         else:
-            # Format: YYYYMMDDHHmmss
-            date_part = f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}"
+            timestamp = datetime.strptime(ts, "%Y%m%d%H%M%S")
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        date_part = timestamp.astimezone(ZoneInfo("Europe/Zurich")).date().isoformat()
 
         return cls(
             timestamp=data["timestamp"],
             value=float(data["value"]),
             status=data.get("status", "VALID"),
-            date=date_part,
+            date=data.get("date") or date_part,
             tariff=tariff,
         )
 

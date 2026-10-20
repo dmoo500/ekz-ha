@@ -1,13 +1,22 @@
 """Integration tests for consumption data import using real JSON fixtures."""
 
 import json
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from types import MethodType, SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from custom_components.ekz_ha.api.models import ConsumptionData
+from custom_components.ekz_ha import EkzCoordinator, _make_stat_meta
+from custom_components.ekz_ha.api.models import (
+    ConsumptionData,
+    InstallationContract,
+    InstallationSelectionData,
+)
 from custom_components.ekz_ha.data import DataAggregator, StatisticsTransformer
+from custom_components.ekz_ha.statistics.production import ProductionImporter
 
 
 class TestConsumptionImportWithRealData:
@@ -184,3 +193,68 @@ class TestConsumptionImportWithRealData:
             dt = stat["start"]
             assert dt.tzinfo is not None, "Timestamp missing timezone"
             assert dt.tzinfo.tzname(dt) in ("UTC", "UTC+00:00"), f"Not UTC: {dt.tzinfo}"
+
+
+async def test_empty_discovery_is_retryable_and_production_only_is_supported():
+    production = InstallationSelectionData(
+        contracts=[InstallationContract("", "", "", "solar", "", einzdat="2026-01-01")]
+    )
+    coordinator = SimpleNamespace(
+        api_client=SimpleNamespace(
+            get_consumption_installations=AsyncMock(return_value=InstallationSelectionData()),
+            get_production_installations=AsyncMock(
+                side_effect=[InstallationSelectionData(), production]
+            ),
+        )
+    )
+    with pytest.raises(UpdateFailed):
+        await EkzCoordinator._async_setup(coordinator)
+    await EkzCoordinator._async_setup(coordinator)
+    assert coordinator.installations == {}
+    assert coordinator.production_installations == {"solar": {"contract_start": "2026-01-01"}}
+
+
+async def test_production_only_update_imports_without_consumption_metadata(monkeypatch):
+    import_date = date(2026, 10, 15)
+    metadata = SimpleNamespace(_last_import=import_date, _contract_start=import_date)
+    coordinator = SimpleNamespace(
+        hass=Mock(),
+        api_client=Mock(),
+        installations={},
+        production_installations={"solar": {"contract_start": "2026-01-01"}},
+        meta_entities={},
+        production_meta_entities={"solar": metadata},
+        last_production_sums={},
+        update_interval=timedelta(minutes=20),
+    )
+    coordinator._get_running_sum_before = MethodType(
+        EkzCoordinator._get_running_sum_before, coordinator
+    )
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    import_statistics = Mock()
+    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", import_statistics)
+    fetch = AsyncMock(
+        return_value={
+            "statistics": [{"start": datetime(2026, 10, 15, tzinfo=UTC), "state": 1.0, "sum": 1.0}]
+        }
+    )
+    monkeypatch.setattr(ProductionImporter, "import_statistics", fetch)
+
+    await EkzCoordinator._do_update_data(coordinator)
+
+    fetch.assert_awaited_once()
+    import_statistics.assert_called_once()
+    assert coordinator.last_production_sums == {"solar": 1.0}
+
+
+@pytest.mark.parametrize("mean_type", [None, 0])
+def test_statistic_metadata_matches_home_assistant_version(monkeypatch, mean_type):
+    monkeypatch.setattr("custom_components.ekz_ha.MEAN_TYPE_NONE", mean_type)
+    metadata = _make_stat_meta("sensor.electricity_consumption_ekz_test")
+    if mean_type is None:
+        assert metadata["has_mean"] is False
+        assert "mean_type" not in metadata
+    else:
+        assert metadata["mean_type"] == mean_type
+        assert "has_mean" not in metadata

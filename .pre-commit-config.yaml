@@ -90,7 +90,7 @@ repos:
         name: ✄ Trim Trailing Whitespace
         language: system
         types: [text]
-        entry: bash -c 'for f in "$@"; do sed -i "" -e "s/[[:space:]]*$//" "$f"; done' --
+        entry: bash -c 'for f in "$@"; do sed -i.bak -e "s/[[:space:]]*$//" "$f" && rm -- "$f.bak" || exit 1; done' --
         pass_filenames: true
         stages: [pre-commit, pre-push, manual]
 
@@ -98,7 +98,7 @@ repos:
         name: 🕵️ Detect Private Keys
         language: system
         types: [text]
-        entry: bash -c 'for f in "$@"; do if grep -qE "-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----" "$f"; then exit 1; fi; done' --
+        entry: bash -c 'for f in "$@"; do if grep -qE -- "-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----" "$f"; then exit 1; fi; done' --
         pass_filenames: true
 
       # Prevent commits to main branch

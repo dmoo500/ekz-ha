@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from ..data.aggregator import normalize_timestamp
+
 if TYPE_CHECKING:
     from custom_components.ekz_ha.api.models import ApiValue
 
@@ -24,6 +26,7 @@ class PredictionService:
         """Initialize prediction service with empty accumulator."""
         self._hourly_raw: dict[int, tuple[float, int]] = {}
         self._hourly_averages: dict[int, float] = {}
+        self._slot_values: dict[str, float] = {}
 
     def accumulate_values(self, values: list[ApiValue]) -> None:
         """Accumulate 15-minute slot data for average calculation.
@@ -33,9 +36,9 @@ class PredictionService:
         """
         for value in values:
             # Extract month and UTC hour from timestamp (YYYYMMDDHHmmss)
-            ts_str = str(value.timestamp)
-            if len(ts_str) < 10:
+            if len(str(value.timestamp)) < 10:
                 continue
+            ts_str = normalize_timestamp(value.timestamp)
 
             month = int(ts_str[4:6])  # MM
             hour_utc = int(ts_str[8:10])  # HH
@@ -46,10 +49,12 @@ class PredictionService:
 
             # Accumulate sum and count
             current_sum, current_count = self._hourly_raw.get(bucket_key, (0.0, 0))
+            previous_value = self._slot_values.get(ts_str)
             self._hourly_raw[bucket_key] = (
-                current_sum + value.value,
-                current_count + 1,
+                current_sum + value.value - (previous_value or 0.0),
+                current_count + (previous_value is None),
             )
+            self._slot_values[ts_str] = value.value
 
     def calculate_averages(self) -> dict[int, float]:
         """Calculate hourly averages from accumulated raw data.
@@ -150,3 +155,4 @@ class PredictionService:
         """Reset all accumulated data and averages."""
         self._hourly_raw.clear()
         self._hourly_averages.clear()
+        self._slot_values.clear()

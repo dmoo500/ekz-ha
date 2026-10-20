@@ -1,0 +1,96 @@
+name: Copilot PR Comments
+
+on:
+  workflow_run:
+    workflows: [Copilot PR Review]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  comment:
+    name: Publish PR Summary
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Identify the current pull request
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { data: pullRequests } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              ...context.repo,
+              commit_sha: run.head_sha,
+              per_page: 100,
+            });
+            const pr = pullRequests.find(pr =>
+              pr.state === 'open' &&
+              pr.head.sha === run.head_sha &&
+              pr.head.repo?.full_name === run.head_repository.full_name &&
+              pr.base.repo.full_name === `${context.repo.owner}/${context.repo.repo}`
+            );
+            if (pr) core.setOutput('number', pr.number);
+
+      - name: Download lint suggestions
+        if: steps.pr.outputs.number != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: copilot-lint-suggestions
+          path: lint-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Publish summary and suggestions
+        if: steps.pr.outputs.number != ''
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const issue_number = Number(process.env.PR_NUMBER);
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: issue_number,
+              per_page: 100,
+            });
+            const issues = JSON.parse(fs.readFileSync('lint-report/ruff_output.json', 'utf8'));
+            if (!Array.isArray(issues)) throw new Error('Invalid Ruff report');
+
+            let body = '## Copilot PR Summary\n\nThis PR modifies the following files:\n\n';
+            body += files.slice(0, 100).map(file => `- ${file.filename}`).join('\n');
+            if (files.length > 100) body += `\n... and ${files.length - 100} more files.\n`;
+            if (issues.length > 0) {
+              body += '\n\n### Code Quality Suggestions\n\n';
+              for (const issue of issues.slice(0, 10)) {
+                body += `- **${issue.code}** in ${issue.filename}:${issue.location.row}: ${issue.message}\n`;
+              }
+              if (issues.length > 10) body += `\n... and ${issues.length - 10} more issues.\n`;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find(comment =>
+              comment.user.login === 'github-actions[bot]' &&
+              comment.body.includes('Copilot PR Summary')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number,
+                body,
+              });
+            }
