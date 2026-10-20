@@ -46,7 +46,11 @@ class ConsumptionImporter(BaseImporter):
             date_to.strftime("%Y-%m-%d"),
         )
 
-        available_days = {value.date for value in data.get_all_values()}
+        available_days = {
+            value.date
+            for value in data.get_all_values()
+            if date_from.date().isoformat() <= value.date < date_to.date().isoformat()
+        }
         requested_days = (date_to.date() - date_from.date()).days
         if len(available_days) >= requested_days:
             return data
@@ -61,7 +65,8 @@ class ConsumptionImporter(BaseImporter):
         fallback_values = [
             replace(value, status="DAILY_VALID")
             for value in self.aggregator.merge_tariffs(daily.get_all_values())
-            if value.date not in available_days
+            if date_from.date().isoformat() <= value.date < date_to.date().isoformat()
+            and value.date not in available_days
         ]
         return ConsumptionData(
             series_total=SeriesData(

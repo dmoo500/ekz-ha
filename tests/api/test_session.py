@@ -9,9 +9,9 @@ from custom_components.ekz_ha.api.session import JSON_HEADERS, Session
 
 
 class FakeResponse:
-    def __init__(self, data=None, content_type_error=False):
-        self.ok = True
-        self.status = 200
+    def __init__(self, data=None, content_type_error=False, status=200):
+        self.ok = status < 400
+        self.status = status
         self.data = data
         self.content_type_error = content_type_error
 
@@ -53,6 +53,40 @@ async def test_fetch_with_retry_resets_session_for_html_response(monkeypatch):
     retry_http.get.assert_called_once_with("https://example.test/data", headers=JSON_HEADERS)
     reset.assert_awaited_once()
     ensure_logged_in.assert_awaited_once()
+
+
+async def test_installation_fallback_authenticates_after_empty_variant(monkeypatch):
+    session = Session.__new__(Session)
+    first_http = Mock(close=AsyncMock())
+    first_http.get.return_value = FakeResponse(data=[])
+    fallback_http = Mock(close=AsyncMock())
+    fallback_http.get.return_value = FakeResponse(data={"contracts": [{"anlage": "825821"}]})
+    session._session = first_http
+    session._logged_in = True
+
+    async def login():
+        if session._session is None:
+            session._session = fallback_http
+            session._logged_in = True
+
+    monkeypatch.setattr(session, "_ensure_logged_in", login)
+
+    result = await session.installation_selection_data()
+
+    assert result == {"contracts": [{"anlage": "825821"}]}
+    first_http.close.assert_awaited_once()
+    fallback_http.get.assert_called_once()
+
+
+@pytest.mark.parametrize("first_is_html", [False, True])
+async def test_exhausted_http_retries_raise_instead_of_returning_empty(monkeypatch, first_is_html):
+    first = FakeResponse(content_type_error=True) if first_is_html else FakeResponse(status=503)
+    session, _, _, reset, _ = make_session(monkeypatch, [first, FakeResponse(status=503)])
+
+    with pytest.raises(aiohttp.ClientError, match="503"):
+        await session._fetch_with_retry("https://example.test/data", "Data", {})
+
+    reset.assert_awaited_once()
 
 
 async def test_fetch_with_retry_raises_if_reauthenticated_response_is_html(monkeypatch):

@@ -1,5 +1,7 @@
 """Tests for API models."""
 
+import pytest
+
 from custom_components.ekz_ha.api.models import (
     ApiValue,
     ConsumptionData,
@@ -36,8 +38,19 @@ class TestApiValue:
 
         value = ApiValue.from_dict(data)
 
+        assert value.timestamp == "20260813120000"
         assert value.date == "2026-08-13"
         assert value.tariff == "TOTAL"
+
+    @pytest.mark.parametrize(
+        "timestamp",
+        ["2026-03-15T23:00:00Z", "2026-03-16T00:00:00+01:00", "20260315230000"],
+    )
+    def test_timestamp_is_normalized_to_utc_while_preserving_api_date(self, timestamp):
+        value = ApiValue.from_dict({"timestamp": timestamp, "value": 6.0, "date": "2026-03-16"})
+
+        assert value.timestamp == "20260315230000"
+        assert value.date == "2026-03-16"
 
 
 class TestSeriesData:

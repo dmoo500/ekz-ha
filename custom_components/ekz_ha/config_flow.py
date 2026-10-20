@@ -75,6 +75,8 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Try to fetch installation data to verify login
                 data = await api_client.get_consumption_installations()
                 if not data.contracts:
+                    data = await api_client.get_production_installations()
+                if not data.contracts:
                     _LOGGER.warning(
                         "[config_flow] Login succeeded but no contracts found for user %s",
                         self._credentials["user"],

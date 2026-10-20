@@ -1,6 +1,7 @@
 """Entities for EKZ installations."""
 
 from datetime import UTC, date, datetime
+from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.helpers.update_coordinator import (
@@ -128,6 +129,8 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._last_get_all = None
         self._contract_start: date | None = None
         self._last_import: date | None = None
+        self._history_cursor: date | None = None
+        self._recent_statistics: list[dict[str, Any]] = []
         self._last_run_date: datetime | None = None
         self._pending_from: date | None = None
         self._pending_sum_offset: float = 0.0
@@ -171,6 +174,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "last_get_all": self._last_get_all,
             "contract_start": self._contract_start.isoformat() if self._contract_start else None,
             "last_import_date": self._last_import.isoformat() if self._last_import else None,
+            "history_cursor": self._history_cursor.isoformat() if self._history_cursor else None,
             "last_run_datetime": self._last_run_date.isoformat() if self._last_run_date else None,
             "pending_from": self._pending_from.isoformat() if self._pending_from else None,
         }
@@ -192,6 +196,9 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
 
     def set_last_import(self, value: date):
         self._last_import = value
+
+    def set_history_cursor(self, value: date | None) -> None:
+        self._history_cursor = value
 
     def set_pending(self, pending_from: "date | None", sum_offset: float = 0.0):
         self._pending_from = pending_from

@@ -34,6 +34,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api.client import EkzApiClient
 from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
 from .statistics.consumption import ConsumptionImporter
+from .statistics.importer import get_import_start
 from .statistics.prediction import PredictionService
 from .statistics.production import ProductionImporter
 
@@ -389,7 +390,7 @@ class EkzCoordinator(DataUpdateCoordinator):
 
             # Rebuild the running sum before the day being re-imported.
             pending_from = getattr(meta_entity, "_pending_from", None)
-            _last_import_date = pending_from or meta_entity._last_import
+            _last_import_date = get_import_start(meta_entity)
             if _last_import_date is not None:
                 if isinstance(_last_import_date, datetime):
                     _last_import_date = _last_import_date.date()
@@ -447,6 +448,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                         ],
                     )
                     _cache_sum_offsets(self, statistic_id, result["statistics"])
+                    meta_entity._recent_statistics = result["statistics"]
                 except Exception as e:
                     _LOGGER.error(f"Failed to import statistics chunk for {key}: {e}")
 
@@ -519,24 +521,23 @@ class EkzCoordinator(DataUpdateCoordinator):
             # Generate predictions only when caught up (gap fills the recent EKZ delay)
             if result.get("statistics") and not still_catching_up:
                 predictions = []
-                averages = prediction_service.get_averages()
+                for statistic in result["statistics"]:
+                    covered_hour = statistic["start"]
+                    coverage_end = statistic.get("end", covered_hour + timedelta(hours=1))
+                    while covered_hour < coverage_end:
+                        predictions.append({"start": covered_hour, "sum": 0, "state": 0})
+                        covered_hour += timedelta(hours=1)
 
-                if averages:
-                    # Zero out predictions for periods already covered by real data
-                    predictions = [
-                        {"start": s["start"], "sum": 0, "state": 0} for s in result["statistics"]
-                    ]
+                last_actual_start = max(
+                    statistic.get("end", statistic["start"] + timedelta(hours=1))
+                    for statistic in result["statistics"]
+                ) - timedelta(hours=1)
+                forward_predictions = prediction_service.generate_predictions(
+                    last_actual_start, datetime.now(tz=UTC)
+                )
+                predictions.extend(forward_predictions)
 
-                    # Generate forward predictions from last real data to now
-                    last_actual_start = result["statistics"][-1]["start"]
-                    now_utc = datetime.now(tz=UTC)
-
-                    forward_predictions = prediction_service.generate_predictions(
-                        last_actual_start, now_utc
-                    )
-                    predictions.extend(forward_predictions)
-
-                if len(predictions) > 1:
+                if predictions:
                     if prediction_statistic_id is None:
                         _LOGGER.warning(
                             "Prediction entity for %s is not registered; skipping statistics import",
@@ -600,7 +601,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
 
             pending_from = getattr(prod_meta, "_pending_from", None)
-            production_import_date = pending_from or prod_meta._last_import
+            production_import_date = get_import_start(prod_meta)
             if isinstance(production_import_date, datetime):
                 production_import_date = production_import_date.date()
             production_offset = (
@@ -647,6 +648,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                         ],
                     )
                     _cache_sum_offsets(self, statistic_id, result["statistics"])
+                    prod_meta._recent_statistics = result["statistics"]
                 except Exception as e:
                     _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
 
@@ -709,9 +711,13 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator.prediction_services = {}
             for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
                 meta.set_last_import(None)
+                meta.set_history_cursor(None)
+                meta._recent_statistics = []
                 meta.set_pending(None)
             for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
                 meta.set_last_import(None)
+                meta.set_history_cursor(None)
+                meta._recent_statistics = []
                 meta.set_pending(None)
 
         # Lock released — now it's safe to schedule the re-import

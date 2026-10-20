@@ -100,7 +100,9 @@ class Session:
                     status,
                     extra_context,
                 )
-                return empty_value
+                raise aiohttp.ClientError(
+                    f"Fetching {operation_name} failed after retry (HTTP {status})"
+                ) from None
         else:
             if status >= 400:
                 _LOGGER.warning(
@@ -123,7 +125,9 @@ class Session:
                         status,
                         extra_context,
                     )
-                    return empty_value
+                    raise aiohttp.ClientError(
+                        f"Fetching {operation_name} failed after retry (HTTP {status})"
+                    )
 
             if data == []:
                 _LOGGER.warning(
@@ -300,8 +304,8 @@ class Session:
 
     async def installation_selection_data(self) -> dict:
         """Fetch the available installations."""
-        await self._ensure_logged_in()
         for variant in ["?installationVariant=CONSUMPTION", ""]:
+            await self._ensure_logged_in()
             url = (
                 "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-selection-data"
                 + variant

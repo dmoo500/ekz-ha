@@ -3,11 +3,15 @@
 import logging
 import zoneinfo
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import date, datetime, timedelta
 from typing import Any
 
+from homeassistant.components.recorder.statistics import statistics_during_period
+from homeassistant.helpers.recorder import get_instance as get_recorder_instance
+
 from ..api.client import EkzApiClient
-from ..api.models import ConsumptionData
+from ..api.models import ApiValue, ConsumptionData
 from ..data import DataAggregator, DataValidator, StatisticsTransformer
 
 _LOGGER = logging.getLogger(__name__)
@@ -15,6 +19,23 @@ _LOGGER = logging.getLogger(__name__)
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
 MAX_HISTORY_YEARS = 10
+
+
+def get_import_start(meta_entity: Any) -> date | None:
+    if meta_entity is None:
+        return None
+    pending: date | None = getattr(meta_entity, "_pending_from", None)
+    if pending is not None:
+        return pending
+    candidates: list[date] = [
+        value.date() if isinstance(value, datetime) else value
+        for value in (
+            meta_entity._last_import,
+            getattr(meta_entity, "_history_cursor", None),
+        )
+        if value is not None
+    ]
+    return max(candidates) if candidates else None
 
 
 class BaseImporter(ABC):
@@ -54,8 +75,70 @@ class BaseImporter(ABC):
         """Get the name of this data type for logging."""
         pass
 
+    async def _preserve_existing_hourly_values(
+        self,
+        hass: Any,
+        installation_id: str,
+        values: list[ApiValue],
+        level: str,
+        meta_entity: Any,
+    ) -> list[ApiValue]:
+        if hass is None:
+            return values
+        preserved = []
+        statistic_id = (
+            f"sensor.electricity_{self.get_data_type_name().lower()}_ekz_{installation_id}"
+        )
+        cached = getattr(meta_entity, "_recent_statistics", [])
+        for value in values:
+            if level != "DAY" and value.status != "DAILY_VALID":
+                preserved.append(value)
+                continue
+            start = datetime.combine(
+                date.fromisoformat(value.date), datetime.min.time(), tzinfo=ZRH
+            )
+            end = start + timedelta(days=1)
+            recorded = await get_recorder_instance(hass).async_add_executor_job(
+                statistics_during_period,
+                hass,
+                start,
+                end,
+                {statistic_id},
+                "hour",
+                None,
+                {"state", "sum"},
+            )
+            rows = {}
+            for row in [*(recorded or {}).get(statistic_id, []), *cached]:
+                raw_start = row["start"]
+                timestamp = (
+                    datetime.fromtimestamp(raw_start, tz=UTC)
+                    if isinstance(raw_start, (int, float))
+                    else raw_start.astimezone(UTC)
+                )
+                if start <= timestamp < end:
+                    rows[timestamp] = row
+            if not rows:
+                preserved.append(value)
+                continue
+            if len(rows) == 1 and start in rows and rows[start].get("end", end) == end:
+                preserved.append(value)
+                continue
+            for timestamp, row in sorted(rows.items()):
+                if row.get("state") is None:
+                    raise ValueError(f"Cannot preserve statistics without state for {statistic_id}")
+                preserved.append(
+                    replace(
+                        value,
+                        timestamp=timestamp.strftime("%Y%m%d%H%M%S"),
+                        value=float(row["state"]),
+                        status="RECORDED_VALID",
+                    )
+                )
+        return sorted(preserved, key=lambda value: value.timestamp)
+
     def calculate_date_range(
-        self, last_import: datetime | None, contract_start: datetime, max_days: int = 30
+        self, last_import: date | None, contract_start: date, max_days: int = 30
     ) -> tuple[datetime, datetime]:
         """
         Calculate the date range to fetch.
@@ -126,17 +209,27 @@ class BaseImporter(ABC):
         )
 
         # Determine date range
-        last_import = (
-            getattr(meta_entity, "_pending_from", None) or meta_entity._last_import
-            if meta_entity
-            else None
-        )
+        last_import = get_import_start(meta_entity)
         from_date, to_date = self.calculate_date_range(last_import, contract_start, max_days=30)
 
         _LOGGER.debug("[%s] Fetching data: period %s to %s", data_type, from_date, to_date)
 
         # Fetch data from API
         consumption_data = await self.fetch_data(installation_id, from_date, to_date)
+
+        merged_values = self.aggregator.merge_tariffs(consumption_data.get_all_values())
+        merged_values = await self._preserve_existing_hourly_values(
+            hass, installation_id, merged_values, consumption_data.level, meta_entity
+        )
+
+        if meta_entity:
+            recent_boundary = datetime.now(tz=ZRH).date() - timedelta(days=30)
+            history_cursor = min(to_date.date() - timedelta(days=1), recent_boundary)
+            if history_cursor > from_date.date():
+                meta_entity.set_history_cursor(history_cursor)
+            pending = getattr(meta_entity, "_pending_from", None)
+            if pending is not None and pending < recent_boundary:
+                meta_entity.set_pending(None)
 
         if consumption_data.is_empty():
             _LOGGER.info(
@@ -147,8 +240,6 @@ class BaseImporter(ABC):
                 to_date,
             )
             if meta_entity:
-                if to_date.date() < datetime.now(tz=ZRH).date():
-                    meta_entity.set_last_import(to_date.date())
                 meta_entity.set_last_run_date(datetime.now(tz=ZRH))
             return {
                 "statistics": [],
@@ -158,15 +249,15 @@ class BaseImporter(ABC):
             }
 
         # Get all values and merge tariffs (HT + NT)
-        values = consumption_data.get_all_values()
-        _LOGGER.debug("[%s] Raw values from API: %d", data_type, len(values))
-
-        merged_values = self.aggregator.merge_tariffs(values)
         _LOGGER.debug("[%s] After merging tariffs: %d", data_type, len(merged_values))
 
         # Keep raw merged values for prediction accumulation
         raw_values_for_prediction = (
-            [value for value in merged_values if value.status != "DAILY_VALID"]
+            [
+                value
+                for value in merged_values
+                if value.status not in ("DAILY_VALID", "RECORDED_VALID")
+            ]
             if consumption_data.level == "QUARTER_HOUR"
             else []
         )
@@ -181,6 +272,16 @@ class BaseImporter(ABC):
 
         # Convert to statistics
         statistics = self.transformer.values_to_statistics(values, running_sum_offset)
+        for statistic, value in zip(statistics, values, strict=True):
+            if value.status == "DAILY_VALID" or (
+                consumption_data.level == "DAY" and value.status != "RECORDED_VALID"
+            ):
+                next_day = date.fromisoformat(value.date) + timedelta(days=1)
+                statistic["end"] = datetime.combine(
+                    next_day, datetime.min.time(), tzinfo=ZRH
+                ).astimezone(UTC)
+            else:
+                statistic["end"] = statistic["start"] + timedelta(hours=1)
 
         # Update metadata
         last_import_dt = self.transformer.get_last_import_date(statistics)
@@ -191,7 +292,8 @@ class BaseImporter(ABC):
                 complete_days.update(
                     value.date
                     for value in merged_values
-                    if consumption_data.level == "DAY" or value.status == "DAILY_VALID"
+                    if (consumption_data.level == "DAY" and value.status != "RECORDED_VALID")
+                    or value.status == "DAILY_VALID"
                 )
                 pending_day = max(
                     from_date.date(), datetime.now(tz=ZRH).date() - timedelta(days=30)

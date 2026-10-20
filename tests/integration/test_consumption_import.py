@@ -16,6 +16,9 @@ from custom_components.ekz_ha.api.models import (
     InstallationSelectionData,
 )
 from custom_components.ekz_ha.data import DataAggregator, StatisticsTransformer
+from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
+from custom_components.ekz_ha.statistics.importer import ZRH
+from custom_components.ekz_ha.statistics.prediction import PredictionService
 from custom_components.ekz_ha.statistics.production import ProductionImporter
 
 
@@ -214,6 +217,42 @@ async def test_empty_discovery_is_retryable_and_production_only_is_supported():
     assert coordinator.production_installations == {"solar": {"contract_start": "2026-01-01"}}
 
 
+@pytest.mark.parametrize("production_available", [False, True])
+async def test_config_flow_checks_production_before_rejecting_account(
+    monkeypatch, production_available
+):
+    from custom_components.ekz_ha.config_flow import EkzConfigFlow
+
+    client = SimpleNamespace(
+        get_consumption_installations=AsyncMock(return_value=InstallationSelectionData()),
+        get_production_installations=AsyncMock(
+            return_value=InstallationSelectionData(
+                contracts=[InstallationContract("", "", "", "solar", "")]
+                if production_available
+                else []
+            )
+        ),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr("custom_components.ekz_ha.config_flow.EkzApiClient", lambda *args: client)
+    flow = SimpleNamespace(
+        _credentials={"user": "test", "password": "test", "totp_secret": "JBSWY3DPEHPK3PXP"},
+        async_create_entry=Mock(return_value="created"),
+        async_show_form=Mock(return_value="form"),
+    )
+
+    result = await EkzConfigFlow.async_step_confirm(flow, {})
+
+    client.get_production_installations.assert_awaited_once()
+    client.close.assert_awaited_once()
+    if production_available:
+        assert result == "created"
+        flow.async_create_entry.assert_called_once()
+    else:
+        assert result == "form"
+        assert flow.async_show_form.call_args.kwargs["errors"] == {"base": "no_contracts"}
+
+
 async def test_production_only_update_imports_without_consumption_metadata(monkeypatch):
     import_date = date(2026, 10, 15)
     metadata = SimpleNamespace(_last_import=import_date, _contract_start=import_date)
@@ -258,3 +297,69 @@ def test_statistic_metadata_matches_home_assistant_version(monkeypatch, mean_typ
     else:
         assert metadata["mean_type"] == mean_type
         assert "has_mean" not in metadata
+
+
+@pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
+@pytest.mark.parametrize("have_averages", [False, True])
+async def test_daily_import_clears_whole_day_before_predicting(
+    monkeypatch, freezer, local_day, have_averages
+):
+    start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH).astimezone(UTC)
+    end = datetime.combine(
+        local_day + timedelta(days=1), datetime.min.time(), tzinfo=ZRH
+    ).astimezone(UTC)
+    freezer.move_to(end + timedelta(hours=3))
+    service = PredictionService()
+    if have_averages:
+        service.merge_raw_accumulator({end.month * 100 + hour: (1.0, 4) for hour in range(24)})
+        service.calculate_averages()
+    key = "825821"
+    prediction_id = f"sensor.electricity_consumption_ekz_{key}_prediction"
+    metadata = SimpleNamespace(_last_import=local_day, _contract_start=local_day)
+    coordinator = SimpleNamespace(
+        hass=Mock(),
+        api_client=Mock(
+            get_production_installations=AsyncMock(return_value=InstallationSelectionData()),
+            get_production_15min=AsyncMock(return_value=ConsumptionData()),
+        ),
+        installations={key: {"contract_start": local_day.isoformat()}},
+        production_installations={},
+        meta_entities={key: metadata},
+        production_meta_entities={},
+        last_sums={},
+        last_production_sums={},
+        catching_up={},
+        prediction_services={key: service},
+        migrated_prediction_statistics=set(),
+        update_interval=timedelta(minutes=20),
+    )
+    coordinator._get_running_sum_before = MethodType(
+        EkzCoordinator._get_running_sum_before, coordinator
+    )
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha._prediction_statistic_id", lambda hass, key: prediction_id
+    )
+    result = {
+        "statistics": [{"start": start, "end": end, "state": 24.0, "sum": 24.0}],
+        "to_date": local_day + timedelta(days=1),
+    }
+    monkeypatch.setattr(ConsumptionImporter, "import_statistics", AsyncMock(return_value=result))
+    imported = {}
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.async_import_statistics",
+        lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
+    )
+
+    await EkzCoordinator._do_update_data(coordinator)
+
+    predictions = imported[prediction_id]
+    cleared = [row for row in predictions if row["start"] < end]
+    assert len(cleared) == int((end - start).total_seconds() / 3600)
+    assert all(row["sum"] == 0 and row["state"] == 0 for row in cleared)
+    future = [row for row in predictions if row["start"] >= end]
+    assert len(future) == (3 if have_averages else 0)
+    if have_averages:
+        assert future[0]["start"] == end
+        assert future[-1]["sum"] == 3.0

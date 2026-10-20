@@ -29,7 +29,7 @@ class ApiValue:
         date_part = timestamp.astimezone(ZoneInfo("Europe/Zurich")).date().isoformat()
 
         return cls(
-            timestamp=data["timestamp"],
+            timestamp=timestamp.astimezone(UTC).strftime("%Y%m%d%H%M%S"),
             value=float(data["value"]),
             status=data.get("status", "VALID"),
             date=data.get("date") or date_part,
