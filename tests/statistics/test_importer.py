@@ -729,7 +729,7 @@ async def test_daily_source_waits_for_complete_quarter_hour_backfill(
     assert complete["statistics"][-1]["start"] == end
     assert complete["statistics"][-1]["sum"] == pytest.approx(100.5 + hours * 2.0)
     assert all(row["source_resolution"] == "hour" for row in complete["statistics"])
-    assert len(complete["raw_values"]) == hours * 4
+    assert len(complete["raw_values"]) == hours * 4 + (1 if queued else 0)
     await _persist_source_resolution(source_metadata, statistic_id, complete["statistics"])
     assert source_metadata._daily_statistics[statistic_id] == []
 
@@ -871,3 +871,163 @@ async def test_recorded_hour_is_replaced_only_by_complete_hour(
 
         assert result["statistics"][-1]["sum"] == pytest.approx(104.0 if slot_count == 4 else 108.0)
         assert len(result["raw_values"]) == (6 if slot_count == 4 else 2)
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize("daily_response", [False, True])
+async def test_end_date_values_include_existing_statistics(
+    monkeypatch, importer_type, queued, daily_response
+):
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    date_from = datetime(2026, 10, 15, tzinfo=ZRH)
+    date_to = date_from + timedelta(days=1)
+    start = date_to.astimezone(UTC)
+    existing = [
+        {"start": start + timedelta(hours=index), "state": 1.0, "sum": 101.0 + index}
+        for index in range(2 if daily_response else 24)
+    ]
+    importer = importer_type(Mock())
+    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+
+    async def query(function, hass, begin, end, *args):
+        return (
+            {}
+            if queued
+            else {statistic_id: [row for row in existing if begin <= row["start"] < end]}
+        )
+
+    recorder = Mock(async_add_executor_job=AsyncMock(side_effect=query))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+    meta = EkzMetaEntity(Mock(), "825821")
+    meta.set_last_import(date_from.date())
+    meta._recent_statistics = existing if queued else []
+    meta._daily_statistics = set() if daily_response else {date_to.date().isoformat()}
+    if daily_response:
+        data = api_series("DAY", [(start.isoformat(), 6.0, "VALID")])
+    else:
+        data = api_series(
+            "QUARTER_HOUR",
+            [
+                ((start + timedelta(hours=12, minutes=15 * index)).isoformat(), 0.5, "VALID")
+                for index in range(4)
+            ],
+        )
+    monkeypatch.setattr(importer, "fetch_data", AsyncMock(return_value=data))
+    monkeypatch.setattr(
+        importer, "calculate_date_range", lambda *args, **kwargs: (date_from, date_to)
+    )
+
+    result = await importer.import_statistics(Mock(), "825821", date_from, meta, 100.0)
+
+    assert len(result["statistics"]) == 24
+    assert result["statistics"][-1]["sum"] == pytest.approx(106.0 if daily_response else 124.0)
+    assert result["statistics"][-1]["end"] == (date_to + timedelta(days=1)).astimezone(UTC)
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+@pytest.mark.parametrize("queued", [False, True])
+async def test_fuller_partial_hour_adds_backfilled_slots(monkeypatch, importer_type, queued):
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    start = datetime(2026, 10, 16, 12, tzinfo=ZRH).astimezone(UTC)
+    hour_key = start.strftime("%Y%m%d%H%M%S")
+    importer = importer_type(Mock())
+    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    existing = [{"start": start, "state": 0.5, "sum": 100.5}]
+    recorder = Mock(
+        async_add_executor_job=AsyncMock(return_value={} if queued else {statistic_id: existing})
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+    meta = EkzMetaEntity(Mock(), "825821")
+    meta.set_last_import(start.astimezone(ZRH).date())
+    meta._recent_statistics = existing if queued else []
+    meta._hourly_slots = {hour_key: {hour_key: 0.5}}
+    data = api_series(
+        "QUARTER_HOUR",
+        [((start + timedelta(minutes=15 * index)).isoformat(), 0.5, "VALID") for index in range(3)],
+    )
+    monkeypatch.setattr(importer, "fetch_data", AsyncMock(return_value=data))
+
+    result = await importer.import_statistics(Mock(), "825821", datetime(2026, 10, 16), meta, 100.0)
+
+    assert result["statistics"][0]["state"] == 1.5
+    assert result["statistics"][0]["sum"] == 101.5
+    assert len(result["statistics"][0]["slots"]) == 3
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+async def test_import_checkpoint_restores_pending_and_partial_slots(
+    monkeypatch, hass, freezer, importer_type
+):
+    from homeassistant.helpers.storage import Store
+
+    from custom_components.ekz_ha import _persist_import_checkpoint, _restore_import_checkpoint
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    freezer.move_to("2026-10-20 12:00:00+00:00")
+    start = datetime(2026, 10, 16, 12, tzinfo=ZRH).astimezone(UTC)
+    hour = start.strftime("%Y%m%d%H%M%S")
+    importer = importer_type(Mock())
+    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    key = f"ekz_ha.test.{importer.get_data_type_name()}.checkpoint"
+    old_meta = EkzMetaEntity(Mock(), "825821")
+    old_meta.set_pending(date(2026, 10, 15), 100.0)
+    old = SimpleNamespace(_import_checkpoint_store=Store(hass, 1, key))
+    rows = [{"start": start, "state": 0.5, "sum": 100.5, "slots": {hour: 0.5}}]
+    await _persist_import_checkpoint(old, statistic_id, old_meta, rows)
+    fresh = SimpleNamespace(
+        _import_checkpoint_store=Store(hass, 1, key),
+        api_client=Mock(
+            get_consumption_installations=AsyncMock(
+                return_value=SimpleNamespace(
+                    contracts=[SimpleNamespace(anlage="825821", einzdat="2026-10-01", auszdat=None)]
+                )
+            ),
+            get_production_installations=AsyncMock(return_value=SimpleNamespace(contracts=[])),
+            get_production_15min=AsyncMock(return_value=ConsumptionData()),
+        ),
+    )
+    await EkzCoordinator._async_setup(fresh)
+    meta = EkzMetaEntity(Mock(), "825821")
+    meta.set_last_import(date(2026, 10, 18))
+    _restore_import_checkpoint(fresh, statistic_id, meta)
+    assert meta._pending_from == date(2026, 10, 15)
+    assert meta._pending_sum_offset == 100.0
+    assert meta._hourly_slots == {hour: {hour: 0.5}}
+    assert (
+        await EkzCoordinator._get_running_sum_before(fresh, statistic_id, meta._pending_from)
+        == 100.0
+    )
+    recorder = Mock(
+        async_add_executor_job=AsyncMock(
+            return_value={statistic_id: [{"start": start.timestamp(), "state": 0.5, "sum": 100.5}]}
+        )
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+    fetch = AsyncMock(
+        return_value=api_series(
+            "QUARTER_HOUR",
+            [
+                ((start + timedelta(minutes=15 * index)).isoformat(), 0.5, "VALID")
+                for index in range(3)
+            ],
+        )
+    )
+    monkeypatch.setattr(importer, "fetch_data", fetch)
+
+    result = await importer.import_statistics(
+        hass, "825821", datetime(2026, 10, 1), meta, meta._pending_sum_offset
+    )
+
+    assert fetch.await_args.args[1].date() == date(2026, 10, 15)
+    assert result["statistics"][0]["sum"] == 101.5
+    await _persist_import_checkpoint(fresh, statistic_id, meta, result["statistics"])
+    assert len(fresh._import_checkpoints[statistic_id]["slots"][hour]) == 3

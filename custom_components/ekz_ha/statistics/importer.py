@@ -125,7 +125,12 @@ class BaseImporter(ABC):
         )
         cached = getattr(meta_entity, "_recent_statistics", [])
         daily_dates: set[str] = getattr(meta_entity, "_daily_statistics", set())
-        recorded = await self._load_day_statistics(hass, statistic_id, date_from, date_to, cached)
+        returned_days = [day_bounds(day) for day in {value.date for value in values}]
+        lookup_start = min([date_from] + [start for start, _ in returned_days])
+        lookup_end = max([date_to] + [end for _, end in returned_days])
+        recorded = await self._load_day_statistics(
+            hass, statistic_id, lookup_start, lookup_end, cached
+        )
         recorded_days: dict[str, dict[datetime, dict[str, Any]]] = {}
         for timestamp, row in recorded.items():
             day = timestamp.astimezone(ZRH).date().isoformat()
@@ -136,7 +141,11 @@ class BaseImporter(ABC):
         for day in recorded_days:
             by_day.setdefault(day, [])
         for day in daily_dates:
-            if date_from.date().isoformat() <= day < date_to.date().isoformat():
+            if (
+                lookup_start.astimezone(ZRH).date().isoformat()
+                <= day
+                < lookup_end.astimezone(ZRH).date().isoformat()
+            ):
                 by_day.setdefault(day, [])
         for day, day_values in sorted(by_day.items()):
             known_daily = day in daily_dates
@@ -149,14 +158,18 @@ class BaseImporter(ABC):
                     )
                 else:
                     preserved.extend(
-                        self.reconciler.reconcile_hourly_values([], rows, statistic_id)
+                        self.reconciler.reconcile_hourly_values(
+                            [], rows, statistic_id, getattr(meta_entity, "_hourly_slots", {})
+                        )
                     )
                 continue
             value = day_values[0]
             incoming_daily = value.origin is ValueOrigin.DAILY_TOTAL
             if not incoming_daily and not known_daily:
                 preserved.extend(
-                    self.reconciler.reconcile_hourly_values(day_values, rows, statistic_id)
+                    self.reconciler.reconcile_hourly_values(
+                        day_values, rows, statistic_id, getattr(meta_entity, "_hourly_slots", {})
+                    )
                 )
                 continue
             start, end = day_bounds(day)
@@ -321,7 +334,13 @@ class BaseImporter(ABC):
 
         # Convert to statistics
         statistics = self.transformer.values_to_statistics(values, running_sum_offset)
+        hourly_slots: dict[str, dict[str, float]] = {}
+        for value in raw_values_for_prediction:
+            hour_key = value.timestamp[:10] + "0000"
+            hourly_slots.setdefault(hour_key, {})[value.timestamp] = value.value
         for statistic, value in zip(statistics, values, strict=True):
+            if value.timestamp in hourly_slots:
+                statistic["slots"] = hourly_slots[value.timestamp]
             if value.origin is ValueOrigin.DAILY_TOTAL:
                 _, statistic["end"] = day_bounds(value.date)
             else:

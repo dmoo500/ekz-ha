@@ -16,6 +16,7 @@ class DataReconciler:
         values: list[ApiValue],
         rows: dict[datetime, dict[str, Any]],
         statistic_id: str,
+        known_slots: dict[str, dict[str, float]] | None = None,
     ) -> list[ApiValue]:
         reconciled = {value.timestamp: value for value in values}
         for timestamp, row in sorted(rows.items()):
@@ -24,6 +25,15 @@ class DataReconciler:
                 for index in range(4)
             }
             if slots.issubset(reconciled):
+                continue
+            hour_key = timestamp.strftime("%Y%m%d%H%M%S")
+            previous_slots = row.get("slots", (known_slots or {}).get(hour_key))
+            if previous_slots and len(previous_slots) < 4:
+                for slot, value in previous_slots.items():
+                    if slot in slots:
+                        reconciled.setdefault(
+                            slot, ApiValue.from_dict({"timestamp": slot, "value": value})
+                        )
                 continue
             if row.get("state") is None:
                 raise ValueError(f"Cannot restore statistics without state for {statistic_id}")

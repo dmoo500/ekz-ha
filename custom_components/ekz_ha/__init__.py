@@ -165,6 +165,58 @@ async def _persist_source_resolution(
     coordinator._daily_statistics = sources
 
 
+def _restore_import_checkpoint(coordinator: "EkzCoordinator", statistic_id: str, meta: Any) -> None:
+    if getattr(meta, "_checkpoint_restored", False):
+        return
+    state = getattr(coordinator, "_import_checkpoints", {}).get(statistic_id, {})
+    meta._hourly_slots = state.get("slots", {})
+    if state.get("pending_from"):
+        pending_date = date.fromisoformat(state["pending_from"])
+        pending_offset = float(state["pending_offset"])
+        meta.set_pending(pending_date, pending_offset)
+        if not hasattr(coordinator, "_sum_offsets"):
+            coordinator._sum_offsets = {}
+        coordinator._sum_offsets.setdefault(statistic_id, {})[pending_date] = pending_offset
+    meta._checkpoint_restored = True
+
+
+async def _persist_import_checkpoint(
+    coordinator: "EkzCoordinator", statistic_id: str, meta: Any, statistics: list[dict[str, Any]]
+) -> None:
+    slots = dict(getattr(meta, "_hourly_slots", {}))
+    daily_dates = {
+        row["start"].astimezone(ZRH).date()
+        for row in statistics
+        if row.get("source_resolution") == "day"
+    }
+    slots = {
+        hour: values
+        for hour, values in slots.items()
+        if datetime.strptime(hour, "%Y%m%d%H%M%S").replace(tzinfo=UTC).astimezone(ZRH).date()
+        not in daily_dates
+    }
+    for row in statistics:
+        hour = row["start"].astimezone(UTC).strftime("%Y%m%d%H%M%S")
+        if row.get("slots") and len(row["slots"]) < 4:
+            slots[hour] = dict(row["slots"])
+        else:
+            slots.pop(hour, None)
+    pending = getattr(meta, "_pending_from", None)
+    state = {
+        "slots": slots,
+        "pending_from": pending.isoformat() if pending else None,
+        "pending_offset": float(getattr(meta, "_pending_sum_offset", 0.0)),
+    }
+    checkpoints = dict(getattr(coordinator, "_import_checkpoints", {}))
+    if checkpoints.get(statistic_id) != state:
+        checkpoints[statistic_id] = state
+        store = getattr(coordinator, "_import_checkpoint_store", None)
+        if store is not None:
+            await store.async_save(checkpoints)
+        coordinator._import_checkpoints = checkpoints
+    meta._hourly_slots = slots
+
+
 class EkzCoordinator(DataUpdateCoordinator):
     """Coordinates data fetching from EKZ."""
 
@@ -200,6 +252,10 @@ class EkzCoordinator(DataUpdateCoordinator):
         self._source_resolution_store = Store[dict[str, list[str]]](
             hass, 1, f"{DOMAIN}.{config.entry_id}.source_resolution"
         )
+        self._import_checkpoints: dict[str, dict[str, Any]] = {}
+        self._import_checkpoint_store = Store[dict[str, dict[str, Any]]](
+            hass, 1, f"{DOMAIN}.{config.entry_id}.import_checkpoint"
+        )
         self.last_prediction_sums: dict[str, float] = {}
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
@@ -216,6 +272,9 @@ class EkzCoordinator(DataUpdateCoordinator):
         store = getattr(self, "_source_resolution_store", None)
         if store is not None:
             self._daily_statistics = await store.async_load() or {}
+        checkpoint_store = getattr(self, "_import_checkpoint_store", None)
+        if checkpoint_store is not None:
+            self._import_checkpoints = await checkpoint_store.async_load() or {}
         installations_data = await self.api_client.get_consumption_installations()
 
         # Filter for active contracts only
@@ -371,6 +430,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
 
             statistic_id = f"sensor.electricity_consumption_ekz_{key}"
+            _restore_import_checkpoint(self, statistic_id, meta_entity)
 
             # Query DB only on first cycle after (re)start to restore last import date
             if meta_entity._last_import is None:
@@ -500,12 +560,16 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
                     meta_entity._recent_statistics = result["statistics"]
                     await _persist_source_resolution(self, statistic_id, result["statistics"])
+                    await _persist_import_checkpoint(
+                        self, statistic_id, meta_entity, result["statistics"]
+                    )
                 except Exception as e:
                     _LOGGER.error(f"Failed to import statistics chunk for {key}: {e}")
             else:
                 _cache_sum_offsets(
                     self, statistic_id, [], get_import_start(meta_entity), running_sum
                 )
+                await _persist_import_checkpoint(self, statistic_id, meta_entity, [])
 
             # Adjust polling interval based on catch-up status
             today = datetime.now(tz=ZRH).date()
@@ -627,6 +691,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 prod_meta.set_contract_start(datetime.strptime(contract_start, "%Y-%m-%d").date())
 
             statistic_id = f"sensor.electricity_production_ekz_{key}"
+            _restore_import_checkpoint(self, statistic_id, prod_meta)
             if prod_meta._last_import is None:
                 try:
                     last_stats = await get_recorder_instance(self.hass).async_add_executor_job(
@@ -714,12 +779,16 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
                     prod_meta._recent_statistics = result["statistics"]
                     await _persist_source_resolution(self, statistic_id, result["statistics"])
+                    await _persist_import_checkpoint(
+                        self, statistic_id, prod_meta, result["statistics"]
+                    )
                 except Exception as e:
                     _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
             else:
                 _cache_sum_offsets(
                     self, statistic_id, [], get_import_start(prod_meta), production_offset
                 )
+                await _persist_import_checkpoint(self, statistic_id, prod_meta, [])
 
         # Track when the next update is scheduled so the next-sync sensor can display it
         self.next_update_time = datetime.now(tz=UTC) + self.update_interval
@@ -774,6 +843,8 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator._sum_offsets = {}
             coordinator._daily_statistics = {}
             await coordinator._source_resolution_store.async_save({})
+            coordinator._import_checkpoints = {}
+            await coordinator._import_checkpoint_store.async_save({})
             coordinator.catching_up = {}
             coordinator.consumption_averages_raw = {}
             # Reset all prediction services
@@ -785,12 +856,16 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 meta.set_history_cursor(None)
                 meta._recent_statistics = []
                 meta._daily_statistics = set()
+                meta._hourly_slots = {}
+                meta._checkpoint_restored = False
                 meta.set_pending(None)
             for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
                 meta.set_last_import(None)
                 meta.set_history_cursor(None)
                 meta._recent_statistics = []
                 meta._daily_statistics = set()
+                meta._hourly_slots = {}
+                meta._checkpoint_restored = False
                 meta.set_pending(None)
 
         # Lock released — now it's safe to schedule the re-import

@@ -4,6 +4,8 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -12,9 +14,23 @@ from homeassistant.helpers.update_coordinator import (
 from .const import DOMAIN
 
 
+def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> None:
+    registry = er.async_get(hass)
+    for installation_id in getattr(coordinator, "production_installations", {}):
+        if installation_id in coordinator.installations:
+            continue
+        old_unique_id = f"ekz_electricity_consumption_{installation_id}_meta"
+        new_unique_id = f"ekz_electricity_production_{installation_id}_meta"
+        old_entity_id = registry.async_get_entity_id("sensor", DOMAIN, old_unique_id)
+        new_entity_id = registry.async_get_entity_id("sensor", DOMAIN, new_unique_id)
+        if old_entity_id is not None and new_entity_id is None:
+            registry.async_update_entity(old_entity_id, new_unique_id=new_unique_id)
+
+
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EKZ sensors from a config entry."""
     coordinator = hass.data[DOMAIN]["coordinator"]
+    _migrate_production_meta_entities(hass, coordinator)
     meta_entities = {}
     sensors = [
         EkzEntity(coordinator, installationId) for installationId in coordinator.installations
@@ -132,6 +148,8 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._history_cursor: date | None = None
         self._recent_statistics: list[dict[str, Any]] = []
         self._daily_statistics: set[str] = set()
+        self._hourly_slots: dict[str, dict[str, float]] = {}
+        self._checkpoint_restored = False
         self._last_run_date: datetime | None = None
         self._pending_from: date | None = None
         self._pending_sum_offset: float = 0.0
