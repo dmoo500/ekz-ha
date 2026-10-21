@@ -73,77 +73,42 @@ class Session:
                     return response.status, None
                 return response.status, await response.json()
 
-        async def _retry_after_reset():
-            await self._reset_session()
-            await self._ensure_logged_in()
-            return await _request_json()
-
-        try:
-            status, data = await _request_json()
-        except aiohttp.ContentTypeError:
-            _LOGGER.warning(
-                "Refreshing session as fetching %s returned a non-JSON response%s - retrying once",
-                operation_name,
-                extra_context,
-            )
+        for attempt in range(2):
+            if attempt:
+                await self._reset_session()
+                await self._ensure_logged_in()
             try:
-                status, data = await _retry_after_reset()
+                status, data = await _request_json()
             except aiohttp.ContentTypeError:
-                _LOGGER.error(
-                    "Retry failed: fetching %s returned a non-JSON response", operation_name
-                )
-                raise
-            if status >= 400:
-                _LOGGER.error(
-                    "Retry failed: fetching %s failed (status %s%s)",
+                if attempt:
+                    raise
+                _LOGGER.warning(
+                    "Refreshing session as fetching %s returned a non-JSON response%s - retrying once",
                     operation_name,
-                    status,
                     extra_context,
                 )
-                raise aiohttp.ClientError(
-                    f"Fetching {operation_name} failed after retry (HTTP {status})"
-                ) from None
-        else:
+                continue
             if status >= 400:
+                if attempt:
+                    raise aiohttp.ClientError(
+                        f"Fetching {operation_name} failed after retry (HTTP {status})"
+                    )
                 _LOGGER.warning(
                     "Refreshing session as fetching %s failed (status %s%s) - retrying once",
                     operation_name,
                     status,
                     extra_context,
                 )
-                try:
-                    status, data = await _retry_after_reset()
-                except aiohttp.ContentTypeError:
-                    _LOGGER.error(
-                        "Retry failed: fetching %s returned a non-JSON response", operation_name
-                    )
-                    raise
-                if status >= 400:
-                    _LOGGER.error(
-                        "Retry failed: fetching %s failed (status %s%s)",
-                        operation_name,
-                        status,
-                        extra_context,
-                    )
-                    raise aiohttp.ClientError(
-                        f"Fetching {operation_name} failed after retry (HTTP {status})"
-                    )
-
-            if data == []:
+                continue
+            if data == [] and not attempt:
                 _LOGGER.warning(
-                    "Refreshing session as fetching %s returned empty results",
+                    "Refreshing session as fetching %s returned empty results%s - retrying once",
                     operation_name,
+                    extra_context,
                 )
-                await self._reset_session()
+                continue
             return data
-
-        if data == []:
-            _LOGGER.warning(
-                "Refreshing session as fetching %s returned empty results",
-                operation_name,
-            )
-            await self._reset_session()
-        return data
+        raise aiohttp.ClientError(f"Fetching {operation_name} failed after retry")
 
     async def _ensure_logged_in(self):
         if self._logged_in:
