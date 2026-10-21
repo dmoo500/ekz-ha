@@ -1,7 +1,7 @@
 """Reconcile daily totals with recorded hourly detail."""
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..api.models import ApiValue, ValueOrigin
@@ -10,6 +10,30 @@ from .validator import day_bounds, day_slots
 
 class DataReconciler:
     """Pure calculations for changes in measurement resolution."""
+
+    @staticmethod
+    def reconcile_hourly_values(
+        values: list[ApiValue],
+        rows: dict[datetime, dict[str, Any]],
+        statistic_id: str,
+    ) -> list[ApiValue]:
+        reconciled = {value.timestamp: value for value in values}
+        for timestamp, row in sorted(rows.items()):
+            slots = {
+                (timestamp + timedelta(minutes=15 * index)).strftime("%Y%m%d%H%M%S")
+                for index in range(4)
+            }
+            if slots.issubset(reconciled):
+                continue
+            if row.get("state") is None:
+                raise ValueError(f"Cannot restore statistics without state for {statistic_id}")
+            for slot in slots:
+                reconciled.pop(slot, None)
+            restored = ApiValue.from_dict(
+                {"timestamp": timestamp.strftime("%Y%m%d%H%M%S"), "value": row["state"]}
+            )
+            reconciled[restored.timestamp] = replace(restored, origin=ValueOrigin.RECORDED)
+        return sorted(reconciled.values(), key=lambda value: value.timestamp)
 
     @staticmethod
     def restore_daily_values(

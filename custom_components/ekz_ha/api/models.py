@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 class ValueOrigin(StrEnum):
     API = "api"
+    RECORDED = "recorded"
     DAILY_TOTAL = "daily_total"
     DAILY_RECONCILED = "daily_reconciled"
 

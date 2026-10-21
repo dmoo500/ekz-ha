@@ -114,6 +114,8 @@ class BaseImporter(ABC):
         values: list[ApiValue],
         level: str,
         meta_entity: Any,
+        date_from: datetime,
+        date_to: datetime,
     ) -> list[ApiValue]:
         if hass is None:
             return values
@@ -123,15 +125,39 @@ class BaseImporter(ABC):
         )
         cached = getattr(meta_entity, "_recent_statistics", [])
         daily_dates: set[str] = getattr(meta_entity, "_daily_statistics", set())
+        recorded = await self._load_day_statistics(hass, statistic_id, date_from, date_to, cached)
+        recorded_days: dict[str, dict[datetime, dict[str, Any]]] = {}
+        for timestamp, row in recorded.items():
+            day = timestamp.astimezone(ZRH).date().isoformat()
+            recorded_days.setdefault(day, {})[timestamp] = row
         by_day: dict[str, list[ApiValue]] = {}
         for value in values:
             by_day.setdefault(value.date, []).append(value)
+        for day in recorded_days:
+            by_day.setdefault(day, [])
+        for day in daily_dates:
+            if date_from.date().isoformat() <= day < date_to.date().isoformat():
+                by_day.setdefault(day, [])
         for day, day_values in sorted(by_day.items()):
+            known_daily = day in daily_dates
+            rows = recorded_days.get(day, {})
+            if not day_values:
+                template = ApiValue("", 0.0, "VALID", day, origin=ValueOrigin.RECORDED)
+                if known_daily:
+                    preserved.extend(
+                        self.reconciler.restore_daily_values(template, rows, statistic_id)
+                    )
+                else:
+                    preserved.extend(
+                        self.reconciler.reconcile_hourly_values([], rows, statistic_id)
+                    )
+                continue
             value = day_values[0]
             incoming_daily = value.origin is ValueOrigin.DAILY_TOTAL
-            known_daily = day in daily_dates
             if not incoming_daily and not known_daily:
-                preserved.extend(day_values)
+                preserved.extend(
+                    self.reconciler.reconcile_hourly_values(day_values, rows, statistic_id)
+                )
                 continue
             start, end = day_bounds(day)
             if not incoming_daily:
@@ -139,7 +165,6 @@ class BaseImporter(ABC):
                 if level == "QUARTER_HOUR" and {item.timestamp for item in day_values} == expected:
                     preserved.extend(day_values)
                     continue
-            rows = await self._load_day_statistics(hass, statistic_id, start, end, cached)
             if not incoming_daily:
                 preserved.extend(self.reconciler.restore_daily_values(value, rows, statistic_id))
                 continue
@@ -241,7 +266,13 @@ class BaseImporter(ABC):
             api_values = [replace(value, origin=ValueOrigin.DAILY_TOTAL) for value in api_values]
         merged_values = self.aggregator.merge_tariffs(api_values)
         merged_values = await self._reconcile_day_resolution(
-            hass, installation_id, merged_values, consumption_data.level, meta_entity
+            hass,
+            installation_id,
+            merged_values,
+            consumption_data.level,
+            meta_entity,
+            from_date,
+            to_date,
         )
 
         if meta_entity:
@@ -253,7 +284,7 @@ class BaseImporter(ABC):
             if pending is not None and pending < recent_boundary:
                 meta_entity.set_pending(None)
 
-        if consumption_data.is_empty():
+        if not merged_values:
             _LOGGER.info(
                 "[%s] No data for installation %s, period %s to %s",
                 data_type,
