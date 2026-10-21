@@ -26,7 +26,7 @@ def sample_15min_values():
         for minute in [0, 15, 30, 45]:
             values.append(
                 ApiValue(
-                    timestamp=f"202608{hour}{str(minute).zfill(2)}00",
+                    timestamp=f"20260813{hour:02d}{minute:02d}00",
                     value=0.25,
                     status="VALID",
                     date="2026-08-13",

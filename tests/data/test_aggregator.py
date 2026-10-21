@@ -33,6 +33,14 @@ class TestNormalizeTimestamp:
 class TestDataAggregator:
     """Tests for DataAggregator."""
 
+    def test_quarter_hour_fixture_has_correct_timestamps(self, sample_15min_values):
+        assert [value.timestamp for value in sample_15min_values] == [
+            f"20260813{hour:02d}{minute:02d}00" for hour in (12, 13) for minute in (0, 15, 30, 45)
+        ]
+        hourly = DataAggregator.aggregate_to_hourly(sample_15min_values)
+        assert [value.timestamp for value in hourly] == ["20260813120000", "20260813130000"]
+        assert [value.value for value in hourly] == [1.0, 1.0]
+
     @pytest.mark.parametrize("origin", list(ValueOrigin))
     def test_aggregation_preserves_origin_and_api_status(self, origin):
         values = [

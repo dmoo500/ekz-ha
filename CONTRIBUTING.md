@@ -231,9 +231,9 @@ We follow [PEP 440](https://peps.python.org/pep-0440/) versioning for pre-releas
 ### Creating a Release
 
 ```bash
-# 1. Update version in manifest.json
+# 1. Update version in manifest.json and [project].version in pyproject.toml
 # 2. Commit
-git add custom_components/ekz_ha/manifest.json
+git add custom_components/ekz_ha/manifest.json pyproject.toml
 git commit -m "chore: Bump version to 0.2.0"
 
 # 3. Create tag (WITHOUT "v"!)
@@ -245,6 +245,8 @@ git push origin 0.2.0
 ```
 
 The GitHub workflow automatically creates a release with changelog.
+The tag, integration manifest version, and package version in `pyproject.toml` must match;
+otherwise release validation fails.
 
 ## 🐛 Bug Reports
 
