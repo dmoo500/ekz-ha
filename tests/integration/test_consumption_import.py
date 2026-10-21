@@ -363,3 +363,90 @@ async def test_daily_import_clears_whole_day_before_predicting(
     if have_averages:
         assert future[0]["start"] == end
         assert future[-1]["sum"] == 3.0
+
+
+@pytest.mark.parametrize("entity_type", ["consumption", "production"])
+@pytest.mark.parametrize("failure", ["recorder", "source_store", "checkpoint_store"])
+async def test_failed_write_does_not_advance_import_state(monkeypatch, entity_type, failure):
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    key = "825821"
+    first_day = date(2026, 8, 1)
+    statistic_id = f"sensor.electricity_{entity_type}_ekz_{key}"
+    meta = EkzMetaEntity(Mock(), key)
+    meta.set_contract_start(first_day)
+    meta.set_last_import(first_day)
+    info = {key: {"contract_start": first_day.isoformat()}}
+    coordinator = SimpleNamespace(
+        hass=Mock(),
+        api_client=Mock(
+            get_production_installations=AsyncMock(return_value=InstallationSelectionData()),
+            get_production_15min=AsyncMock(return_value=ConsumptionData()),
+        ),
+        installations=info if entity_type == "consumption" else {},
+        production_installations=info if entity_type == "production" else {},
+        meta_entities={key: meta} if entity_type == "consumption" else {},
+        production_meta_entities={key: meta} if entity_type == "production" else {},
+        last_sums={key: 100.0},
+        last_production_sums={key: 100.0},
+        catching_up={},
+        prediction_services={},
+        migrated_prediction_statistics=set(),
+        _sum_offsets={},
+        _daily_statistics={},
+        _import_checkpoints={},
+        _source_resolution_store=Mock(
+            async_save=AsyncMock(
+                side_effect=OSError("source failure") if failure == "source_store" else None
+            )
+        ),
+        _import_checkpoint_store=Mock(
+            async_save=AsyncMock(
+                side_effect=OSError("checkpoint failure") if failure == "checkpoint_store" else None
+            )
+        ),
+        update_interval=timedelta(minutes=20),
+    )
+    coordinator._get_running_sum_before = MethodType(
+        EkzCoordinator._get_running_sum_before, coordinator
+    )
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.async_import_statistics",
+        Mock(side_effect=ValueError("recorder failure") if failure == "recorder" else None),
+    )
+    monkeypatch.setattr("custom_components.ekz_ha._prediction_statistic_id", lambda hass, key: None)
+
+    async def import_chunk(
+        self, hass, installation_id, contract_start, metadata, running_sum_offset
+    ):
+        metadata.set_last_import(date(2026, 8, 20))
+        metadata.set_history_cursor(date(2026, 8, 30))
+        metadata.set_pending(date(2026, 8, 15), 105.0)
+        return {
+            "statistics": [
+                {
+                    "start": datetime(2026, 8, 20, tzinfo=UTC),
+                    "state": 1.0,
+                    "sum": 101.0,
+                    "source_resolution": "day",
+                }
+            ],
+            "to_date": date(2026, 8, 31),
+        }
+
+    importer_type = ConsumptionImporter if entity_type == "consumption" else ProductionImporter
+    monkeypatch.setattr(importer_type, "import_statistics", import_chunk)
+
+    with pytest.raises(UpdateFailed):
+        await EkzCoordinator._do_update_data(coordinator)
+
+    assert meta._last_import == first_day
+    assert meta._history_cursor is None
+    assert meta._pending_from is None
+    assert meta._recent_statistics == []
+    assert coordinator._sum_offsets == {}
+    assert coordinator._daily_statistics == {}
+    assert statistic_id not in coordinator._import_checkpoints
+    assert coordinator.last_sums[key] == coordinator.last_production_sums[key] == 100.0

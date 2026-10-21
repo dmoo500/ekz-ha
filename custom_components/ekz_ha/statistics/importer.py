@@ -131,6 +131,12 @@ class BaseImporter(ABC):
         recorded = await self._load_day_statistics(
             hass, statistic_id, lookup_start, lookup_end, cached
         )
+        for hour, slots in getattr(meta_entity, "_hourly_slots", {}).items():
+            timestamp = datetime.strptime(hour, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
+            if lookup_start <= timestamp < lookup_end and slots:
+                recorded.setdefault(
+                    timestamp, {"start": timestamp, "state": sum(slots.values()), "slots": slots}
+                )
         recorded_days: dict[str, dict[datetime, dict[str, Any]]] = {}
         for timestamp, row in recorded.items():
             day = timestamp.astimezone(ZRH).date().isoformat()
@@ -318,19 +324,12 @@ class BaseImporter(ABC):
         _LOGGER.debug("[%s] After merging tariffs: %d", data_type, len(merged_values))
 
         # Keep raw merged values for prediction accumulation
-        raw_values_for_prediction = (
-            [value for value in merged_values if value.origin is ValueOrigin.API]
-            if consumption_data.level == "QUARTER_HOUR"
-            else []
-        )
+        raw_values_for_prediction = [
+            value for value in merged_values if value.origin is ValueOrigin.API
+        ]
 
         # Aggregate to hourly
-        if consumption_data.level == "QUARTER_HOUR":
-            values = self.aggregator.aggregate_to_hourly(merged_values)
-        elif consumption_data.level == "DAY":
-            values = merged_values
-        else:
-            values = merged_values
+        values = self.aggregator.aggregate_to_hourly(merged_values)
 
         # Convert to statistics
         statistics = self.transformer.values_to_statistics(values, running_sum_offset)

@@ -959,6 +959,40 @@ async def test_fuller_partial_hour_adds_backfilled_slots(monkeypatch, importer_t
     assert result["statistics"][0]["state"] == 1.5
     assert result["statistics"][0]["sum"] == 101.5
     assert len(result["statistics"][0]["slots"]) == 3
+    for amounts, expected in [
+        ([0.5, 0.5, 0.5], 1.5),
+        ([0.25, 0.5, 0.5], 1.25),
+        ([0.25], 1.25),
+        ([0.5] * 4, 2.0),
+    ]:
+        meta._hourly_slots = {hour_key: result["statistics"][0]["slots"]}
+        if queued:
+            meta._recent_statistics = result["statistics"]
+        else:
+            recorder.async_add_executor_job.return_value = {
+                statistic_id: [
+                    {
+                        "start": start,
+                        "state": result["statistics"][0]["state"],
+                        "sum": result["statistics"][0]["sum"],
+                    }
+                ]
+            }
+        data = api_series(
+            "QUARTER_HOUR",
+            [
+                ((start + timedelta(minutes=15 * index)).isoformat(), amount, "VALID")
+                for index, amount in enumerate(amounts)
+            ],
+        )
+        monkeypatch.setattr(importer, "fetch_data", AsyncMock(return_value=data))
+
+        result = await importer.import_statistics(
+            Mock(), "825821", datetime(2026, 10, 16), meta, 100.0
+        )
+
+        assert result["statistics"][0]["state"] == expected
+        assert result["statistics"][0]["sum"] == 100.0 + expected
 
 
 @pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
@@ -1031,3 +1065,96 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
     assert result["statistics"][0]["sum"] == 101.5
     await _persist_import_checkpoint(fresh, statistic_id, meta, result["statistics"])
     assert len(fresh._import_checkpoints[statistic_id]["slots"][hour]) == 3
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+@pytest.mark.parametrize("response_level", ["DAY", "QUARTER_HOUR", "UNKNOWN"])
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize("recorded_row", [False, True])
+async def test_restored_slots_are_hourly_for_every_response_level(
+    monkeypatch, freezer, importer_type, response_level, queued, recorded_row
+):
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    freezer.move_to("2026-10-20 12:00:00+00:00")
+    start = datetime(2026, 10, 16, 12, tzinfo=ZRH).astimezone(UTC)
+    hour = start.strftime("%Y%m%d%H%M%S")
+    slot = (start + timedelta(minutes=15)).strftime("%Y%m%d%H%M%S")
+    importer = importer_type(Mock())
+    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    rows = [{"start": start, "state": 0.5, "sum": 100.5}] if recorded_row else []
+    recorder = Mock(
+        async_add_executor_job=AsyncMock(return_value={} if queued else {statistic_id: rows})
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+    meta = EkzMetaEntity(Mock(), "825821")
+    meta.set_last_import(date(2026, 10, 16))
+    meta._recent_statistics = rows if queued else []
+    meta._hourly_slots = {hour: {slot: 0.5}}
+    entries = (
+        [(datetime(2026, 10, 17, tzinfo=ZRH).isoformat(), 6.0, "VALID")]
+        if response_level == "DAY"
+        else []
+    )
+    data = api_series(response_level, entries)
+    monkeypatch.setattr(importer, "fetch_data", AsyncMock(return_value=data))
+
+    result = await importer.import_statistics(Mock(), "825821", datetime(2026, 10, 16), meta, 100.0)
+
+    assert all(row["start"].minute == row["start"].second == 0 for row in result["statistics"])
+    assert result["statistics"][0]["start"] == start
+    assert result["statistics"][0]["slots"] == {slot: 0.5}
+    assert result["statistics"][-1]["sum"] == pytest.approx(
+        106.5 if response_level == "DAY" else 100.5
+    )
+    assert [value.timestamp for value in result["raw_values"]] == [slot]
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+@pytest.mark.parametrize("daily", [False, True])
+async def test_own_review_checkpoint_replays_unflushed_chunk(
+    monkeypatch, hass, freezer, importer_type, daily
+):
+    from homeassistant.helpers.storage import Store
+
+    from custom_components.ekz_ha import _persist_import_checkpoint, _restore_import_checkpoint
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    freezer.move_to("2026-10-20 12:00:00+00:00")
+    local_start = datetime(2026, 10, 16, tzinfo=ZRH)
+    start = local_start.astimezone(UTC)
+    importer = importer_type(Mock())
+    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    rows = [
+        {
+            "start": start,
+            "end": (local_start + timedelta(days=1)).astimezone(UTC)
+            if daily
+            else start + timedelta(hours=1),
+            "state": 6.0,
+            "sum": 106.0,
+            "source_resolution": "day" if daily else "hour",
+        }
+    ]
+    key = f"ekz_ha.test.unflushed.{importer.get_data_type_name()}.{daily}"
+    old = SimpleNamespace(_import_checkpoint_store=Store(hass, 1, key))
+    old_meta = EkzMetaEntity(Mock(), "825821")
+    await _persist_import_checkpoint(old, statistic_id, old_meta, rows)
+    restarted = SimpleNamespace(_import_checkpoints=await Store(hass, 1, key).async_load())
+    meta = EkzMetaEntity(Mock(), "825821")
+    meta.set_last_import(local_start.date())
+    meta._daily_statistics = {local_start.date().isoformat()} if daily else set()
+    _restore_import_checkpoint(restarted, statistic_id, meta)
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+    monkeypatch.setattr(importer, "fetch_data", AsyncMock(return_value=ConsumptionData()))
+
+    result = await importer.import_statistics(hass, "825821", local_start, meta, 100.0)
+
+    assert result["statistics"][0]["start"] == start
+    assert result["statistics"][-1]["sum"] == 106.0
+    assert result["statistics"][-1]["end"] == rows[0]["end"]

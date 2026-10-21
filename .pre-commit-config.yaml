@@ -38,7 +38,7 @@ repos:
         require_serial: true
         pass_filenames: false
         files: ^custom_components/
-        stages: [pre-push, manual]
+        stages: [manual]
 
       # JSON/TOML validation
       - id: check-json

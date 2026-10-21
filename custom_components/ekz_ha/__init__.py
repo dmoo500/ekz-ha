@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import zoneinfo
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from typing import Any, cast
 
@@ -170,6 +171,14 @@ def _restore_import_checkpoint(coordinator: "EkzCoordinator", statistic_id: str,
         return
     state = getattr(coordinator, "_import_checkpoints", {}).get(statistic_id, {})
     meta._hourly_slots = state.get("slots", {})
+    meta._recent_statistics = [
+        {
+            **row,
+            "start": datetime.fromisoformat(row["start"]),
+            "end": datetime.fromisoformat(row["end"]),
+        }
+        for row in state.get("statistics", [])
+    ]
     if state.get("pending_from"):
         pending_date = date.fromisoformat(state["pending_from"])
         pending_offset = float(state["pending_offset"])
@@ -206,6 +215,14 @@ async def _persist_import_checkpoint(
         "slots": slots,
         "pending_from": pending.isoformat() if pending else None,
         "pending_offset": float(getattr(meta, "_pending_sum_offset", 0.0)),
+        "statistics": [
+            {
+                **row,
+                "start": row["start"].isoformat(),
+                "end": row.get("end", row["start"] + timedelta(hours=1)).isoformat(),
+            }
+            for row in (statistics or getattr(meta, "_recent_statistics", []))
+        ],
     }
     checkpoints = dict(getattr(coordinator, "_import_checkpoints", {}))
     if checkpoints.get(statistic_id) != state:
@@ -215,6 +232,80 @@ async def _persist_import_checkpoint(
             await store.async_save(checkpoints)
         coordinator._import_checkpoints = checkpoints
     meta._hourly_slots = slots
+
+
+async def _async_import_chunk(
+    coordinator: "EkzCoordinator",
+    importer: ConsumptionImporter | ProductionImporter,
+    installation_id: str,
+    contract_start: datetime,
+    meta: Any,
+    statistic_id: str,
+    running_sum_offset: float,
+) -> dict[str, Any]:
+    tracked_fields = (
+        "_last_import",
+        "_history_cursor",
+        "_pending_from",
+        "_pending_sum_offset",
+        "_last_run_date",
+        "_hourly_slots",
+        "_recent_statistics",
+    )
+    previous_meta = {
+        field: deepcopy(getattr(meta, field)) for field in tracked_fields if hasattr(meta, field)
+    }
+    previous_sources = deepcopy(getattr(coordinator, "_daily_statistics", {}))
+    previous_checkpoints = deepcopy(getattr(coordinator, "_import_checkpoints", {}))
+    try:
+        result: dict[str, Any] = await importer.import_statistics(
+            coordinator.hass,
+            installation_id,
+            contract_start,
+            meta,
+            running_sum_offset=running_sum_offset,
+        )
+        statistics = result.get("statistics", [])
+        if statistics:
+            await _persist_source_resolution(coordinator, statistic_id, statistics)
+        await _persist_import_checkpoint(coordinator, statistic_id, meta, statistics)
+        if statistics:
+            async_import_statistics(
+                coordinator.hass,
+                _make_stat_meta(statistic_id),
+                [
+                    StatisticData(start=row["start"], sum=row["sum"], state=row["state"])
+                    for row in statistics
+                ],
+            )
+            meta._recent_statistics = statistics
+        _cache_sum_offsets(
+            coordinator, statistic_id, statistics, get_import_start(meta), running_sum_offset
+        )
+        return result
+    except Exception as err:
+        for attribute, previous, store_name in (
+            ("_daily_statistics", previous_sources, "_source_resolution_store"),
+            ("_import_checkpoints", previous_checkpoints, "_import_checkpoint_store"),
+        ):
+            if getattr(coordinator, attribute, {}) != previous:
+                store = getattr(coordinator, store_name, None)
+                if store is not None:
+                    try:
+                        await store.async_save(previous)
+                    except Exception as restore_err:
+                        _LOGGER.error(
+                            "Could not restore import metadata for %s: %s",
+                            statistic_id,
+                            restore_err,
+                        )
+            setattr(coordinator, attribute, previous)
+        for field in tracked_fields:
+            if field in previous_meta:
+                setattr(meta, field, previous_meta[field])
+            elif hasattr(meta, field):
+                delattr(meta, field)
+        raise UpdateFailed(f"Import failed for {statistic_id}: {err}") from err
 
 
 class EkzCoordinator(DataUpdateCoordinator):
@@ -523,12 +614,14 @@ class EkzCoordinator(DataUpdateCoordinator):
                 if isinstance(contract_start, str)
                 else datetime.combine(contract_start, datetime.min.time())
             )
-            result = await importer.import_statistics(
-                self.hass,
+            result = await _async_import_chunk(
+                self,
+                importer,
                 key,
                 contract_start_dt,
                 meta_entity,
-                running_sum_offset=running_sum,
+                statistic_id,
+                running_sum,
             )
 
             _LOGGER.debug(
@@ -542,34 +635,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(
                     f"Importing chunk of {len(result['statistics'])} statistics for {key}, range {result['statistics'][0]['start']} to {result['statistics'][-1]['start']}"
                 )
-                try:
-                    async_import_statistics(
-                        self.hass,
-                        _make_stat_meta(f"sensor.electricity_consumption_ekz_{key}"),
-                        [
-                            StatisticData(start=s["start"], sum=s["sum"], state=s["state"])
-                            for s in result["statistics"]
-                        ],
-                    )
-                    _cache_sum_offsets(
-                        self,
-                        statistic_id,
-                        result["statistics"],
-                        get_import_start(meta_entity),
-                        running_sum,
-                    )
-                    meta_entity._recent_statistics = result["statistics"]
-                    await _persist_source_resolution(self, statistic_id, result["statistics"])
-                    await _persist_import_checkpoint(
-                        self, statistic_id, meta_entity, result["statistics"]
-                    )
-                except Exception as e:
-                    _LOGGER.error(f"Failed to import statistics chunk for {key}: {e}")
-            else:
-                _cache_sum_offsets(
-                    self, statistic_id, [], get_import_start(meta_entity), running_sum
-                )
-                await _persist_import_checkpoint(self, statistic_id, meta_entity, [])
 
             # Adjust polling interval based on catch-up status
             today = datetime.now(tz=ZRH).date()
@@ -748,12 +813,14 @@ class EkzCoordinator(DataUpdateCoordinator):
                 if isinstance(contract_start, str)
                 else datetime.combine(contract_start, datetime.min.time())
             )
-            result = await importer.import_statistics(
-                self.hass,
+            result = await _async_import_chunk(
+                self,
+                importer,
                 key,
                 contract_start_dt,
                 prod_meta,
-                running_sum_offset=production_offset,
+                statistic_id,
+                production_offset,
             )
 
             if result.get("statistics"):
@@ -761,34 +828,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                 _LOGGER.info(
                     f"Importing {len(result['statistics'])} production statistics for {key}"
                 )
-                try:
-                    async_import_statistics(
-                        self.hass,
-                        _make_stat_meta(statistic_id),
-                        [
-                            StatisticData(start=s["start"], sum=s["sum"], state=s["state"])
-                            for s in result["statistics"]
-                        ],
-                    )
-                    _cache_sum_offsets(
-                        self,
-                        statistic_id,
-                        result["statistics"],
-                        get_import_start(prod_meta),
-                        production_offset,
-                    )
-                    prod_meta._recent_statistics = result["statistics"]
-                    await _persist_source_resolution(self, statistic_id, result["statistics"])
-                    await _persist_import_checkpoint(
-                        self, statistic_id, prod_meta, result["statistics"]
-                    )
-                except Exception as e:
-                    _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
-            else:
-                _cache_sum_offsets(
-                    self, statistic_id, [], get_import_start(prod_meta), production_offset
-                )
-                await _persist_import_checkpoint(self, statistic_id, prod_meta, [])
 
         # Track when the next update is scheduled so the next-sync sensor can display it
         self.next_update_time = datetime.now(tz=UTC) + self.update_interval
