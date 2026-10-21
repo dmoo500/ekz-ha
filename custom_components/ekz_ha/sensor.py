@@ -1,8 +1,11 @@
 """Entities for EKZ installations."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -10,14 +13,32 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 
+
+def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> None:
+    registry = er.async_get(hass)
+    for installation_id in getattr(coordinator, "production_installations", {}):
+        if installation_id in coordinator.installations:
+            continue
+        old_unique_id = f"ekz_electricity_consumption_{installation_id}_meta"
+        new_unique_id = f"ekz_electricity_production_{installation_id}_meta"
+        old_entity_id = registry.async_get_entity_id("sensor", DOMAIN, old_unique_id)
+        new_entity_id = registry.async_get_entity_id("sensor", DOMAIN, new_unique_id)
+        if old_entity_id is not None and new_entity_id is None:
+            registry.async_update_entity(old_entity_id, new_unique_id=new_unique_id)
+
+
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EKZ sensors from a config entry."""
     coordinator = hass.data[DOMAIN]["coordinator"]
+    _migrate_production_meta_entities(hass, coordinator)
     meta_entities = {}
-    sensors = (
-        [EkzEntity(coordinator, installationId) for installationId in coordinator.installations]
-        + [EkzPredictionEntity(coordinator, installationId) for installationId in coordinator.installations]
-    )
+    sensors = [
+        EkzEntity(coordinator, installationId) for installationId in coordinator.installations
+    ] + [
+        EkzPredictionEntity(coordinator, installationId)
+        for installationId in coordinator.installations
+    ]
+
     # Create meta entities and contract-start entities per consumption installation
     for installationId in coordinator.installations:
         meta = EkzMetaEntity(coordinator, installationId)
@@ -39,11 +60,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     async_add_entities(sensors, True)
 
+
 class EkzEntity(CoordinatorEntity, SensorEntity):
     """Represents the electricity consumption of an EKZ installation."""
-    def __init__(
-        self, coordinator: DataUpdateCoordinator[str], installationId: str
-    ) -> None:
+
+    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._attr_device_class = SensorDeviceClass.ENERGY
@@ -73,18 +94,13 @@ class EkzEntity(CoordinatorEntity, SensorEntity):
 
 
 class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
-
-    def __init__(
-        self, coordinator: DataUpdateCoordinator[str], installationId: str
-    ) -> None:
+    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_native_unit_of_measurement = "kWh"
-        self._attr_unique_id = (
-            f"ekz_electricity_consumption_{installationId}_prediction"
-        )
+        self._attr_unique_id = f"ekz_electricity_consumption_{installationId}_prediction"
         self._attr_name = f"Electricity consumption EKZ {installationId} prediction"
 
     @property
@@ -107,21 +123,33 @@ class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
         return "mdi:lightning-bolt"
 
 
-
 # Tracks import progress and shows the last successfully imported timestamp as sensor state
 class EkzMetaEntity(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str, model: str = "Electricity Meter") -> None:
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator[str],
+        installationId: str,
+        model: str = "Electricity Meter",
+    ) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._model = model
-        self._attr_unique_id = f"ekz_electricity_consumption_{installationId}_meta"
-        self._attr_name = f"EKZ {installationId} Last Import"
+        is_production = model == "Solar Meter"
+        entity_type = "production" if is_production else "consumption"
+        label = "Production" if is_production else "Consumption"
+        self._attr_unique_id = f"ekz_electricity_{entity_type}_{installationId}_meta"
+        self._attr_name = f"EKZ {installationId} Last Import {label}"
         self._attr_device_class = SensorDeviceClass.TIMESTAMP
         self._last_running_sum = None
         self._last_full_day = None
         self._last_get_all = None
         self._contract_start: date | None = None
         self._last_import: date | None = None
+        self._history_cursor: date | None = None
+        self._recent_statistics: list[dict[str, Any]] = []
+        self._daily_statistics: set[str] = set()
+        self._hourly_slots: dict[str, dict[str, float]] = {}
+        self._checkpoint_restored = False
         self._last_run_date: datetime | None = None
         self._pending_from: date | None = None
         self._pending_sum_offset: float = 0.0
@@ -132,7 +160,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
             "name": f"EKZ {self.installation_id}",
             "manufacturer": "EKZ",
-            "model": "Electricity Meter",
+            "model": self._model,
         }
 
     @property
@@ -140,17 +168,17 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         """Return the last successfully imported statistic timestamp."""
         if self._last_import is None:
             return None
-        from datetime import timezone
+
         if isinstance(self._last_import, datetime):
             if self._last_import.tzinfo is None:
-                return self._last_import.replace(tzinfo=timezone.utc)
+                return self._last_import.replace(tzinfo=UTC)
             return self._last_import
         # date → datetime at midnight UTC
         return datetime(
             self._last_import.year,
             self._last_import.month,
             self._last_import.day,
-            tzinfo=timezone.utc,
+            tzinfo=UTC,
         )
 
     @property
@@ -165,6 +193,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "last_get_all": self._last_get_all,
             "contract_start": self._contract_start.isoformat() if self._contract_start else None,
             "last_import_date": self._last_import.isoformat() if self._last_import else None,
+            "history_cursor": self._history_cursor.isoformat() if self._history_cursor else None,
             "last_run_datetime": self._last_run_date.isoformat() if self._last_run_date else None,
             "pending_from": self._pending_from.isoformat() if self._pending_from else None,
         }
@@ -187,9 +216,13 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     def set_last_import(self, value: date):
         self._last_import = value
 
+    def set_history_cursor(self, value: date | None) -> None:
+        self._history_cursor = value
+
     def set_pending(self, pending_from: "date | None", sum_offset: float = 0.0):
         self._pending_from = pending_from
         self._pending_sum_offset = sum_offset
+
 
 class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
     """Shows the EKZ contract start date for an installation."""
@@ -223,9 +256,7 @@ class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
 class EkzProductionEntity(CoordinatorEntity, SensorEntity):
     """Represents the solar/feed-in production of an EKZ installation."""
 
-    def __init__(
-        self, coordinator: DataUpdateCoordinator, installationId: str
-    ) -> None:
+    def __init__(self, coordinator: DataUpdateCoordinator, installationId: str) -> None:
         super().__init__(coordinator)
         self.installation_id = installationId
         self._attr_device_class = SensorDeviceClass.ENERGY
