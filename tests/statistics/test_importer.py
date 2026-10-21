@@ -205,15 +205,16 @@ async def test_issue20_real_daily_fixture_preserves_api_timestamp(monkeypatch):
 
 @pytest.mark.parametrize("entity_type", ["consumption", "production"])
 @pytest.mark.parametrize("recorder_flushed", [False, True])
+@pytest.mark.parametrize("history_gap", [False, True])
 async def test_issue20_consecutive_updates_do_not_read_stale_offset(
-    monkeypatch, freezer, entity_type, recorder_flushed
+    monkeypatch, freezer, entity_type, recorder_flushed, history_gap
 ):
     freezer.move_to("2026-10-18 12:00:00+00:00")
     installation_id = "825821"
     statistic_id = f"sensor.electricity_{entity_type}_ekz_{installation_id}"
-    first_day = date(2026, 10, 15)
+    first_day = date(2026, 8, 1) if history_gap else date(2026, 10, 15)
     meta = SimpleNamespace(_last_import=first_day, _contract_start=first_day)
-    info = {installation_id: {"contract_start": "2026-10-15"}}
+    info = {installation_id: {"contract_start": first_day.isoformat()}}
     coordinator = SimpleNamespace(
         hass=Mock(),
         api_client=Mock(
@@ -234,7 +235,8 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
     coordinator._get_running_sum_before = MethodType(
         EkzCoordinator._get_running_sum_before, coordinator
     )
-    persisted_start = datetime(2026, 10, 14, 23, tzinfo=ZRH).astimezone(UTC)
+    first_start = datetime.combine(first_day, datetime.min.time(), tzinfo=ZRH).astimezone(UTC)
+    persisted_start = first_start - timedelta(hours=1)
     persisted_rows = [{"start": persisted_start, "sum": 1000.0}]
 
     async def recorder_query(function, hass, *args):
@@ -269,6 +271,24 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
 
     async def import_chunk(self, hass, key, contract_start, metadata, running_sum_offset):
         nonlocal call_count
+        if history_gap:
+            reading_day = first_day if call_count == 0 else date(2026, 9, 15)
+            metadata._last_import = reading_day
+            metadata._history_cursor = date(2026, 8, 30) if call_count == 0 else date(2026, 9, 20)
+            reading = float(call_count + 1)
+            call_count += 1
+            return {
+                "statistics": [
+                    {
+                        "start": datetime.combine(
+                            reading_day, datetime.min.time(), tzinfo=ZRH
+                        ).astimezone(UTC),
+                        "state": reading,
+                        "sum": running_sum_offset + reading,
+                    }
+                ],
+                "to_date": date(2026, 10, 18),
+            }
         starts = (
             [second_day_start - timedelta(hours=1), second_day_start]
             if call_count == 0
@@ -291,8 +311,12 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
     await EkzCoordinator._do_update_data(coordinator)
 
     assert len(queued_imports) == 2
-    assert queued_imports[0][-1]["sum"] == pytest.approx(1020.0)
-    assert queued_imports[1][0]["sum"] == pytest.approx(queued_imports[0][-1]["sum"])
+    if history_gap:
+        assert queued_imports[0][-1]["sum"] == pytest.approx(1001.0)
+        assert queued_imports[1][0]["sum"] == pytest.approx(1003.0)
+    else:
+        assert queued_imports[0][-1]["sum"] == pytest.approx(1020.0)
+        assert queued_imports[1][0]["sum"] == pytest.approx(queued_imports[0][-1]["sum"])
 
 
 @pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
@@ -415,7 +439,10 @@ async def test_inclusive_end_date_does_not_hide_missing_day():
 
 @pytest.mark.parametrize("mixed", [False, True])
 @pytest.mark.parametrize("recorder_flushed", [False, True])
-async def test_daily_fallback_preserves_existing_hourly_rows(monkeypatch, mixed, recorder_flushed):
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+async def test_daily_fallback_preserves_existing_hourly_rows(
+    monkeypatch, mixed, recorder_flushed, importer_type
+):
     from custom_components.ekz_ha.sensor import EkzMetaEntity
 
     start = datetime(2026, 10, 15, tzinfo=ZRH).astimezone(UTC)
@@ -423,7 +450,8 @@ async def test_daily_fallback_preserves_existing_hourly_rows(monkeypatch, mixed,
         {"start": start, "state": 1.0, "sum": 101.0},
         {"start": start + timedelta(hours=1), "state": 2.0, "sum": 103.0},
     ]
-    statistic_id = "sensor.electricity_consumption_ekz_825821"
+    importer = importer_type(Mock())
+    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
     recorder = Mock(
         async_add_executor_job=AsyncMock(
             return_value={statistic_id: existing} if recorder_flushed else {}
@@ -445,13 +473,15 @@ async def test_daily_fallback_preserves_existing_hourly_rows(monkeypatch, mixed,
         )
     level = "QUARTER_HOUR" if mixed else "DAY"
     data = ConsumptionData(series_total=SeriesData(values=values, level=level), level=level)
-    importer = ConsumptionImporter(Mock())
     monkeypatch.setattr(importer, "fetch_data", AsyncMock(return_value=data))
 
     result = await importer.import_statistics(Mock(), "825821", datetime(2026, 10, 15), meta, 100.0)
 
     assert [row["sum"] for row in result["statistics"][:2]] == [101.0, 103.0]
-    assert result["statistics"][-1]["sum"] == (103.25 if mixed else 103.0)
+    assert result["statistics"][-1]["sum"] == pytest.approx(106.25 if mixed else 106.0)
+    covered = [row for row in result["statistics"] if row["start"] < start + timedelta(days=1)]
+    assert sum(row["state"] for row in covered) == pytest.approx(6.0)
+    assert all(row["source_resolution"] == "day" for row in covered)
     assert len(result["raw_values"]) == (1 if mixed else 0)
 
 
@@ -500,3 +530,94 @@ async def test_single_midnight_row_preserves_known_hourly_resolution(monkeypatch
 
     assert result["statistics"][0]["state"] == (1.0 if known_hourly else 6.0)
     assert result["statistics"][0]["end"] == end
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+async def test_persisted_daily_source_survives_recorder_round_trip(
+    monkeypatch, hass, importer_type
+):
+    from homeassistant.helpers.storage import Store
+
+    from custom_components.ekz_ha import _persist_source_resolution
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    importer = importer_type(Mock())
+    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    local_start = datetime(2026, 10, 15, tzinfo=ZRH)
+    start = local_start.astimezone(UTC)
+    daily = api_series("DAY", [(start.isoformat(), 6.0, "VALID")])
+    monkeypatch.setattr(importer, "fetch_data", AsyncMock(return_value=daily))
+    first = await importer.import_statistics(None, "825821", local_start)
+    key = f"ekz_ha.test.{importer.get_data_type_name()}.source_resolution"
+    before_restart = SimpleNamespace(_source_resolution_store=Store(hass, 1, key))
+    await _persist_source_resolution(before_restart, statistic_id, first["statistics"])
+
+    after_restart = SimpleNamespace(
+        _source_resolution_store=Store(hass, 1, key),
+        api_client=Mock(
+            get_consumption_installations=AsyncMock(
+                return_value=SimpleNamespace(
+                    contracts=[SimpleNamespace(anlage="825821", einzdat="2026-10-15", auszdat=None)]
+                )
+            ),
+            get_production_installations=AsyncMock(return_value=SimpleNamespace(contracts=[])),
+            get_production_15min=AsyncMock(return_value=ConsumptionData()),
+        ),
+    )
+    await EkzCoordinator._async_setup(after_restart)
+    meta = EkzMetaEntity(Mock(), "825821")
+    meta.set_last_import(local_start.date())
+    meta._daily_statistics = set(after_restart._daily_statistics[statistic_id])
+    recorded = {
+        "start": start.timestamp(),
+        "end": (start + timedelta(hours=1)).timestamp(),
+        "state": 4.0,
+        "sum": 104.0,
+    }
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={statistic_id: [recorded]}))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+
+    corrected = await importer.import_statistics(hass, "825821", local_start, meta, 100.0)
+
+    assert meta._recent_statistics == []
+    assert corrected["statistics"][0]["state"] == 6.0
+    assert corrected["statistics"][0]["sum"] == 106.0
+    assert corrected["statistics"][0]["end"] == (local_start + timedelta(days=1)).astimezone(UTC)
+    assert corrected["statistics"][0]["source_resolution"] == "day"
+
+
+@pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
+@pytest.mark.parametrize("daily_total", [0.0, 2.0, 6.0])
+async def test_daily_reconciliation_conserves_energy_on_dst_days(
+    monkeypatch, local_day, daily_total
+):
+    local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH)
+    start = local_start.astimezone(UTC)
+    end = (local_start + timedelta(days=1)).astimezone(UTC)
+    existing = [
+        {"start": start, "state": 1.0, "sum": 101.0},
+        {"start": start + timedelta(hours=1), "state": 2.0, "sum": 103.0},
+    ]
+    statistic_id = "sensor.electricity_consumption_ekz_825821"
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={statistic_id: existing}))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+    importer = ConsumptionImporter(Mock())
+    daily = api_series("DAY", [(start.isoformat(), daily_total, "VALID")])
+    monkeypatch.setattr(importer, "fetch_data", AsyncMock(return_value=daily))
+
+    result = await importer.import_statistics(
+        Mock(), "825821", local_start, running_sum_offset=100.0
+    )
+
+    rows = result["statistics"]
+    assert len(rows) == int((end - start).total_seconds() / 3600)
+    assert rows[0]["start"] == start
+    assert rows[-1]["end"] == end
+    assert rows[-1]["sum"] == pytest.approx(100.0 + daily_total)
+    assert sum(row["state"] for row in rows) == pytest.approx(daily_total)
+    assert all(row["state"] >= 0 for row in rows)
+    assert result["raw_values"] == []

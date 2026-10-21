@@ -2,7 +2,7 @@
 
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 
 import aiohttp
 import pyotp
@@ -194,10 +194,9 @@ class Session:
                     totp_code = totp.now()
 
                     _LOGGER.info(
-                        "[EKZ TOTP] Generated code at %s (UTC: %s). Code: %s",
+                        "[EKZ TOTP] Generated code at %s (UTC: %s)",
                         current_time.strftime("%Y-%m-%d %H:%M:%S"),
-                        datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                        totp_code[:3] + "***",  # Log first 3 digits only for privacy
+                        datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S"),
                     )
 
                     # The OTP form may also contain a device selector (selectedCredentialId).

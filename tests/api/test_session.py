@@ -1,5 +1,7 @@
 """Tests for EKZ session retry behavior."""
 
+import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import aiohttp
@@ -24,6 +26,9 @@ class FakeResponse:
     async def json(self):
         if self.content_type_error:
             raise aiohttp.ContentTypeError(None, (), message="unexpected text/html response")
+        return self.data
+
+    async def text(self):
         return self.data
 
 
@@ -143,3 +148,35 @@ async def test_installation_lookup_propagates_failed_retry(monkeypatch, method_n
     assert first_http.get.call_count == 1
     assert retry_http.get.call_count == 1
     reset.assert_awaited_once()
+
+
+async def test_login_never_logs_authentication_code(monkeypatch, caplog):
+    session = Session.__new__(Session)
+    session._logged_in = False
+    session._username = "test"
+    session._password = "test"
+    session._totp_secret = "test-secret"
+    session._device_name = None
+    session._session = Mock()
+    session._session.get.return_value = FakeResponse(
+        data='<form id="kc-form-login" action="https://example.test/login"></form>'
+    )
+    session._session.post.side_effect = [
+        FakeResponse(data='<form id="otp" action="https://example.test/otp"></form>'),
+        FakeResponse(data="<html>Logged in</html>"),
+    ]
+    code = "739184"
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.api.session.pyotp.TOTP",
+        lambda secret: SimpleNamespace(now=lambda: code),
+    )
+    caplog.set_level(logging.DEBUG, logger="custom_components.ekz_ha.api.session")
+
+    await session._ensure_logged_in()
+
+    assert session._logged_in is True
+    assert session._session.post.call_args.kwargs["data"] == {"otp": code}
+    assert "Generated code at" in caplog.text
+    assert code not in caplog.text
+    assert code[:3] + "***" not in caplog.text
+    assert "Code:" not in caplog.text

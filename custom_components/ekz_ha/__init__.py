@@ -29,6 +29,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EkzApiClient
@@ -93,12 +94,20 @@ def _prediction_statistic_id(hass: HomeAssistant, installation_id: str) -> str |
 
 
 def _cache_sum_offsets(
-    coordinator: "EkzCoordinator", statistic_id: str, statistics: list[dict[str, Any]]
+    coordinator: "EkzCoordinator",
+    statistic_id: str,
+    statistics: list[dict[str, Any]],
+    next_import_date: date | None = None,
+    running_sum_offset: float = 0.0,
 ) -> None:
     offsets: dict[date, float] = {}
     for statistic in statistics:
         local_day = statistic["start"].astimezone(ZRH).date()
         offsets.setdefault(local_day, statistic["sum"] - statistic["state"])
+    if next_import_date is not None:
+        boundary = datetime.combine(next_import_date, datetime.min.time(), tzinfo=ZRH)
+        preceding = [statistic for statistic in statistics if statistic["start"] < boundary]
+        offsets[next_import_date] = float(preceding[-1]["sum"]) if preceding else running_sum_offset
     if not hasattr(coordinator, "_sum_offsets"):
         coordinator._sum_offsets = {}
     coordinator._sum_offsets[statistic_id] = offsets
@@ -129,6 +138,35 @@ async def _async_clear_statistics(hass: HomeAssistant, statistic_ids: list[str])
         _LOGGER.debug("Recorder instance async_clear_statistics failed: %s", err)
 
     return False
+
+
+async def _persist_source_resolution(
+    coordinator: "EkzCoordinator", statistic_id: str, statistics: list[dict[str, Any]]
+) -> None:
+    sources = dict(getattr(coordinator, "_daily_statistics", {}))
+    daily_dates = set(sources.get(statistic_id, []))
+    by_day: dict[str, list[dict[str, Any]]] = {}
+    for statistic in statistics:
+        day = statistic["start"].astimezone(ZRH).date().isoformat()
+        by_day.setdefault(day, []).append(statistic)
+    for day, rows in by_day.items():
+        if any(row.get("source_resolution") == "day" for row in rows):
+            daily_dates.add(day)
+        else:
+            start = datetime.combine(date.fromisoformat(day), datetime.min.time(), tzinfo=ZRH)
+            end = start + timedelta(days=1)
+            expected_hours = int(
+                (end.astimezone(UTC) - start.astimezone(UTC)).total_seconds() / 3600
+            )
+            if len({row["start"] for row in rows}) == expected_hours:
+                daily_dates.discard(day)
+    if sorted(daily_dates) == sources.get(statistic_id, []):
+        return
+    sources[statistic_id] = sorted(daily_dates)
+    store = getattr(coordinator, "_source_resolution_store", None)
+    if store is not None:
+        await store.async_save(sources)
+    coordinator._daily_statistics = sources
 
 
 class EkzCoordinator(DataUpdateCoordinator):
@@ -162,6 +200,10 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.last_sums: dict[str, float] = {}
         self.last_production_sums: dict[str, float] = {}
         self._sum_offsets: dict[str, dict[date, float]] = {}
+        self._daily_statistics: dict[str, list[str]] = {}
+        self._source_resolution_store = Store[dict[str, list[str]]](
+            hass, 1, f"{DOMAIN}.{config.entry_id}.source_resolution"
+        )
         self.last_prediction_sums: dict[str, float] = {}
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
@@ -175,6 +217,9 @@ class EkzCoordinator(DataUpdateCoordinator):
 
     async def _async_setup(self):
         """Load installations on first start."""
+        store = getattr(self, "_source_resolution_store", None)
+        if store is not None:
+            self._daily_statistics = await store.async_load() or {}
         installations_data = await self.api_client.get_consumption_installations()
 
         # Filter for active contracts only
@@ -413,6 +458,9 @@ class EkzCoordinator(DataUpdateCoordinator):
                 running_sum = 0.0
 
             # Import using new architecture
+            meta_entity._daily_statistics = set(
+                getattr(self, "_daily_statistics", {}).get(statistic_id, [])
+            )
             importer = ConsumptionImporter(self.api_client)
             contract_start_dt = (
                 datetime.strptime(contract_start, "%Y-%m-%d")
@@ -447,10 +495,21 @@ class EkzCoordinator(DataUpdateCoordinator):
                             for s in result["statistics"]
                         ],
                     )
-                    _cache_sum_offsets(self, statistic_id, result["statistics"])
+                    _cache_sum_offsets(
+                        self,
+                        statistic_id,
+                        result["statistics"],
+                        get_import_start(meta_entity),
+                        running_sum,
+                    )
                     meta_entity._recent_statistics = result["statistics"]
+                    await _persist_source_resolution(self, statistic_id, result["statistics"])
                 except Exception as e:
                     _LOGGER.error(f"Failed to import statistics chunk for {key}: {e}")
+            else:
+                _cache_sum_offsets(
+                    self, statistic_id, [], get_import_start(meta_entity), running_sum
+                )
 
             # Adjust polling interval based on catch-up status
             today = datetime.now(tz=ZRH).date()
@@ -619,6 +678,9 @@ class EkzCoordinator(DataUpdateCoordinator):
             )
 
             # Import using new architecture
+            prod_meta._daily_statistics = set(
+                getattr(self, "_daily_statistics", {}).get(statistic_id, [])
+            )
             importer = ProductionImporter(self.api_client)
             contract_start_dt = (
                 datetime.strptime(contract_start, "%Y-%m-%d")
@@ -647,10 +709,21 @@ class EkzCoordinator(DataUpdateCoordinator):
                             for s in result["statistics"]
                         ],
                     )
-                    _cache_sum_offsets(self, statistic_id, result["statistics"])
+                    _cache_sum_offsets(
+                        self,
+                        statistic_id,
+                        result["statistics"],
+                        get_import_start(prod_meta),
+                        production_offset,
+                    )
                     prod_meta._recent_statistics = result["statistics"]
+                    await _persist_source_resolution(self, statistic_id, result["statistics"])
                 except Exception as e:
                     _LOGGER.error(f"Failed to import production statistics for {key}: {e}")
+            else:
+                _cache_sum_offsets(
+                    self, statistic_id, [], get_import_start(prod_meta), production_offset
+                )
 
         # Track when the next update is scheduled so the next-sync sensor can display it
         self.next_update_time = datetime.now(tz=UTC) + self.update_interval
@@ -703,6 +776,8 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator.last_production_sums = {}
             coordinator.last_prediction_sums = {}
             coordinator._sum_offsets = {}
+            coordinator._daily_statistics = {}
+            await coordinator._source_resolution_store.async_save({})
             coordinator.catching_up = {}
             coordinator.consumption_averages_raw = {}
             # Reset all prediction services
@@ -713,11 +788,13 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 meta.set_last_import(None)
                 meta.set_history_cursor(None)
                 meta._recent_statistics = []
+                meta._daily_statistics = set()
                 meta.set_pending(None)
             for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
                 meta.set_last_import(None)
                 meta.set_history_cursor(None)
                 meta._recent_statistics = []
+                meta._daily_statistics = set()
                 meta.set_pending(None)
 
         # Lock released — now it's safe to schedule the re-import

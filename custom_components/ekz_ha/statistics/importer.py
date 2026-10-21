@@ -121,18 +121,42 @@ class BaseImporter(ABC):
             if not rows:
                 preserved.append(value)
                 continue
-            if len(rows) == 1 and start in rows and rows[start].get("end", end) == end:
+            known_daily = value.date in getattr(meta_entity, "_daily_statistics", set())
+            if (
+                len(rows) == 1
+                and start in rows
+                and (known_daily or rows[start].get("end", end) == end)
+            ):
                 preserved.append(value)
                 continue
+            hourly_values: dict[datetime, float] = {}
             for timestamp, row in sorted(rows.items()):
                 if row.get("state") is None:
                     raise ValueError(f"Cannot preserve statistics without state for {statistic_id}")
+                hourly_values[timestamp] = float(row["state"])
+            hours = []
+            hour = start.astimezone(UTC)
+            while hour < end:
+                hours.append(hour)
+                hour += timedelta(hours=1)
+            missing = [hour for hour in hours if hour not in hourly_values]
+            recorded_total = sum(hourly_values.values())
+            if missing and value.value >= recorded_total:
+                remainder = (value.value - recorded_total) / len(missing)
+                hourly_values.update(dict.fromkeys(missing, remainder))
+            elif recorded_total:
+                factor = value.value / recorded_total
+                hourly_values = {hour: hourly_values.get(hour, 0.0) * factor for hour in hours}
+            else:
+                hourly_values = {hour: value.value / len(hours) for hour in hours}
+            hourly_values[hours[-1]] += value.value - sum(hourly_values.values())
+            for timestamp in hours:
                 preserved.append(
                     replace(
                         value,
                         timestamp=timestamp.strftime("%Y%m%d%H%M%S"),
-                        value=float(row["state"]),
-                        status="RECORDED_VALID",
+                        value=hourly_values[timestamp],
+                        status="DAILY_RECONCILED",
                     )
                 )
         return sorted(preserved, key=lambda value: value.timestamp)
@@ -256,7 +280,7 @@ class BaseImporter(ABC):
             [
                 value
                 for value in merged_values
-                if value.status not in ("DAILY_VALID", "RECORDED_VALID")
+                if value.status not in ("DAILY_VALID", "RECORDED_VALID", "DAILY_RECONCILED")
             ]
             if consumption_data.level == "QUARTER_HOUR"
             else []
@@ -273,15 +297,17 @@ class BaseImporter(ABC):
         # Convert to statistics
         statistics = self.transformer.values_to_statistics(values, running_sum_offset)
         for statistic, value in zip(statistics, values, strict=True):
-            if value.status == "DAILY_VALID" or (
+            daily_source = value.status in ("DAILY_VALID", "DAILY_RECONCILED") or (
                 consumption_data.level == "DAY" and value.status != "RECORDED_VALID"
-            ):
+            )
+            if daily_source and value.status != "DAILY_RECONCILED":
                 next_day = date.fromisoformat(value.date) + timedelta(days=1)
                 statistic["end"] = datetime.combine(
                     next_day, datetime.min.time(), tzinfo=ZRH
                 ).astimezone(UTC)
             else:
                 statistic["end"] = statistic["start"] + timedelta(hours=1)
+            statistic["source_resolution"] = "day" if daily_source else "hour"
 
         # Update metadata
         last_import_dt = self.transformer.get_last_import_date(statistics)
@@ -293,7 +319,7 @@ class BaseImporter(ABC):
                     value.date
                     for value in merged_values
                     if (consumption_data.level == "DAY" and value.status != "RECORDED_VALID")
-                    or value.status == "DAILY_VALID"
+                    or value.status in ("DAILY_VALID", "DAILY_RECONCILED")
                 )
                 pending_day = max(
                     from_date.date(), datetime.now(tz=ZRH).date() - timedelta(days=30)

@@ -131,6 +131,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._last_import: date | None = None
         self._history_cursor: date | None = None
         self._recent_statistics: list[dict[str, Any]] = []
+        self._daily_statistics: set[str] = set()
         self._last_run_date: datetime | None = None
         self._pending_from: date | None = None
         self._pending_sum_offset: float = 0.0
