@@ -3,13 +3,33 @@
 import logging
 import zoneinfo
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from ..api.models import ApiValue
+from .aggregator import normalize_timestamp
 
 _LOGGER = logging.getLogger(__name__)
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
+
+
+def day_bounds(date_str: str, timezone: zoneinfo.ZoneInfo = ZRH) -> tuple[datetime, datetime]:
+    start = datetime.combine(date.fromisoformat(date_str), datetime.min.time(), tzinfo=timezone)
+    return start.astimezone(UTC), (start + timedelta(days=1)).astimezone(UTC)
+
+
+def day_slots(
+    date_str: str, timezone: zoneinfo.ZoneInfo = ZRH, *, minutes: int = 15
+) -> list[datetime]:
+    if minutes <= 0:
+        raise ValueError("Slot duration must be positive")
+    start, end = day_bounds(date_str, timezone)
+    step = timedelta(minutes=minutes)
+    slots = []
+    while start < end:
+        slots.append(start)
+        start += step
+    return slots
 
 
 def is_dst(dt: datetime, timezone: zoneinfo.ZoneInfo) -> bool:
@@ -59,17 +79,7 @@ class DataValidator:
         Returns:
             Expected number of 15-minute slots
         """
-        date = datetime.strptime(date_str, "%Y-%m-%d")
-
-        if is_dst_switchover_date(date, timezone):
-            # Spring forward (March): 92 slots
-            if date.month < 6:
-                return 92
-            # Fall back (October): 100 slots
-            return 100
-
-        # Regular day: 96 slots
-        return 96
+        return len(day_slots(date_str, timezone))
 
     @staticmethod
     def find_complete_days(values: list[ApiValue], timezone: zoneinfo.ZoneInfo = ZRH) -> list[str]:
@@ -83,23 +93,25 @@ class DataValidator:
         Returns:
             List of date strings (YYYY-MM-DD) with complete data
         """
-        slot_counts = DataValidator.count_slots_per_day(values)
+        timestamps: dict[str, set[str]] = defaultdict(set)
+        for value in values:
+            timestamps[value.date].add(normalize_timestamp(value.timestamp))
         today_str = datetime.now(tz=timezone).strftime("%Y-%m-%d")
 
         complete_days = []
-        for date_str, count in slot_counts.items():
+        for date_str, actual in timestamps.items():
             # Skip today (may be partial)
             if date_str >= today_str:
                 continue
 
-            expected = DataValidator.expected_slots_for_date(date_str, timezone)
-            if count == expected:
+            expected = {slot.strftime("%Y%m%d%H%M%S") for slot in day_slots(date_str, timezone)}
+            if actual == expected:
                 complete_days.append(date_str)
 
         _LOGGER.debug(
             "[DataValidator] Found %d complete days out of %d total days",
             len(complete_days),
-            len(slot_counts),
+            len(timestamps),
         )
         return complete_days
 

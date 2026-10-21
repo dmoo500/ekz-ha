@@ -5,7 +5,7 @@ import zoneinfo
 from dataclasses import replace
 from datetime import datetime
 
-from ..api.models import ConsumptionData, SeriesData
+from ..api.models import ConsumptionData, SeriesData, ValueOrigin
 from .importer import BaseImporter
 
 _LOGGER = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ class ConsumptionImporter(BaseImporter):
         if data.is_empty():
             return daily
         fallback_values = [
-            replace(value, status="DAILY_VALID")
+            replace(value, origin=ValueOrigin.DAILY_TOTAL)
             for value in self.aggregator.merge_tariffs(daily.get_all_values())
             if date_from.date().isoformat() <= value.date < date_to.date().isoformat()
             and value.date not in available_days

@@ -11,8 +11,9 @@ from homeassistant.components.recorder.statistics import statistics_during_perio
 from homeassistant.helpers.recorder import get_instance as get_recorder_instance
 
 from ..api.client import EkzApiClient
-from ..api.models import ApiValue, ConsumptionData
-from ..data import DataAggregator, DataValidator, StatisticsTransformer
+from ..api.models import ApiValue, ConsumptionData, ValueOrigin
+from ..data import DataAggregator, DataReconciler, DataValidator, StatisticsTransformer
+from ..data.validator import day_bounds, day_slots
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class BaseImporter(ABC):
         """Initialize the importer."""
         self.api = api_client
         self.aggregator = DataAggregator()
+        self.reconciler = DataReconciler()
         self.validator = DataValidator()
         self.transformer = StatisticsTransformer()
 
@@ -75,7 +77,37 @@ class BaseImporter(ABC):
         """Get the name of this data type for logging."""
         pass
 
-    async def _preserve_existing_hourly_values(
+    async def _load_day_statistics(
+        self,
+        hass: Any,
+        statistic_id: str,
+        start: datetime,
+        end: datetime,
+        cached: list[dict[str, Any]],
+    ) -> dict[datetime, dict[str, Any]]:
+        recorded = await get_recorder_instance(hass).async_add_executor_job(
+            statistics_during_period,
+            hass,
+            start,
+            end,
+            {statistic_id},
+            "hour",
+            None,
+            {"state", "sum"},
+        )
+        rows = {}
+        for row in [*(recorded or {}).get(statistic_id, []), *cached]:
+            raw_start = row["start"]
+            timestamp = (
+                datetime.fromtimestamp(raw_start, tz=UTC)
+                if isinstance(raw_start, (int, float))
+                else raw_start.astimezone(UTC)
+            )
+            if start <= timestamp < end:
+                rows[timestamp] = row
+        return rows
+
+    async def _reconcile_day_resolution(
         self,
         hass: Any,
         installation_id: str,
@@ -90,38 +122,30 @@ class BaseImporter(ABC):
             f"sensor.electricity_{self.get_data_type_name().lower()}_ekz_{installation_id}"
         )
         cached = getattr(meta_entity, "_recent_statistics", [])
+        daily_dates: set[str] = getattr(meta_entity, "_daily_statistics", set())
+        by_day: dict[str, list[ApiValue]] = {}
         for value in values:
-            if level != "DAY" and value.status != "DAILY_VALID":
-                preserved.append(value)
+            by_day.setdefault(value.date, []).append(value)
+        for day, day_values in sorted(by_day.items()):
+            value = day_values[0]
+            incoming_daily = value.origin is ValueOrigin.DAILY_TOTAL
+            known_daily = day in daily_dates
+            if not incoming_daily and not known_daily:
+                preserved.extend(day_values)
                 continue
-            start = datetime.combine(
-                date.fromisoformat(value.date), datetime.min.time(), tzinfo=ZRH
-            )
-            end = start + timedelta(days=1)
-            recorded = await get_recorder_instance(hass).async_add_executor_job(
-                statistics_during_period,
-                hass,
-                start,
-                end,
-                {statistic_id},
-                "hour",
-                None,
-                {"state", "sum"},
-            )
-            rows = {}
-            for row in [*(recorded or {}).get(statistic_id, []), *cached]:
-                raw_start = row["start"]
-                timestamp = (
-                    datetime.fromtimestamp(raw_start, tz=UTC)
-                    if isinstance(raw_start, (int, float))
-                    else raw_start.astimezone(UTC)
-                )
-                if start <= timestamp < end:
-                    rows[timestamp] = row
+            start, end = day_bounds(day)
+            if not incoming_daily:
+                expected = {slot.strftime("%Y%m%d%H%M%S") for slot in day_slots(day)}
+                if level == "QUARTER_HOUR" and {item.timestamp for item in day_values} == expected:
+                    preserved.extend(day_values)
+                    continue
+            rows = await self._load_day_statistics(hass, statistic_id, start, end, cached)
+            if not incoming_daily:
+                preserved.extend(self.reconciler.restore_daily_values(value, rows, statistic_id))
+                continue
             if not rows:
-                preserved.append(value)
+                preserved.extend(day_values)
                 continue
-            known_daily = value.date in getattr(meta_entity, "_daily_statistics", set())
             if (
                 len(rows) == 1
                 and start in rows
@@ -129,36 +153,7 @@ class BaseImporter(ABC):
             ):
                 preserved.append(value)
                 continue
-            hourly_values: dict[datetime, float] = {}
-            for timestamp, row in sorted(rows.items()):
-                if row.get("state") is None:
-                    raise ValueError(f"Cannot preserve statistics without state for {statistic_id}")
-                hourly_values[timestamp] = float(row["state"])
-            hours = []
-            hour = start.astimezone(UTC)
-            while hour < end:
-                hours.append(hour)
-                hour += timedelta(hours=1)
-            missing = [hour for hour in hours if hour not in hourly_values]
-            recorded_total = sum(hourly_values.values())
-            if missing and value.value >= recorded_total:
-                remainder = (value.value - recorded_total) / len(missing)
-                hourly_values.update(dict.fromkeys(missing, remainder))
-            elif recorded_total:
-                factor = value.value / recorded_total
-                hourly_values = {hour: hourly_values.get(hour, 0.0) * factor for hour in hours}
-            else:
-                hourly_values = {hour: value.value / len(hours) for hour in hours}
-            hourly_values[hours[-1]] += value.value - sum(hourly_values.values())
-            for timestamp in hours:
-                preserved.append(
-                    replace(
-                        value,
-                        timestamp=timestamp.strftime("%Y%m%d%H%M%S"),
-                        value=hourly_values[timestamp],
-                        status="DAILY_RECONCILED",
-                    )
-                )
+            preserved.extend(self.reconciler.reconcile_daily_total(value, rows, statistic_id))
         return sorted(preserved, key=lambda value: value.timestamp)
 
     def calculate_date_range(
@@ -241,8 +236,11 @@ class BaseImporter(ABC):
         # Fetch data from API
         consumption_data = await self.fetch_data(installation_id, from_date, to_date)
 
-        merged_values = self.aggregator.merge_tariffs(consumption_data.get_all_values())
-        merged_values = await self._preserve_existing_hourly_values(
+        api_values = consumption_data.get_all_values()
+        if consumption_data.level == "DAY":
+            api_values = [replace(value, origin=ValueOrigin.DAILY_TOTAL) for value in api_values]
+        merged_values = self.aggregator.merge_tariffs(api_values)
+        merged_values = await self._reconcile_day_resolution(
             hass, installation_id, merged_values, consumption_data.level, meta_entity
         )
 
@@ -277,11 +275,7 @@ class BaseImporter(ABC):
 
         # Keep raw merged values for prediction accumulation
         raw_values_for_prediction = (
-            [
-                value
-                for value in merged_values
-                if value.status not in ("DAILY_VALID", "RECORDED_VALID", "DAILY_RECONCILED")
-            ]
+            [value for value in merged_values if value.origin is ValueOrigin.API]
             if consumption_data.level == "QUARTER_HOUR"
             else []
         )
@@ -297,17 +291,11 @@ class BaseImporter(ABC):
         # Convert to statistics
         statistics = self.transformer.values_to_statistics(values, running_sum_offset)
         for statistic, value in zip(statistics, values, strict=True):
-            daily_source = value.status in ("DAILY_VALID", "DAILY_RECONCILED") or (
-                consumption_data.level == "DAY" and value.status != "RECORDED_VALID"
-            )
-            if daily_source and value.status != "DAILY_RECONCILED":
-                next_day = date.fromisoformat(value.date) + timedelta(days=1)
-                statistic["end"] = datetime.combine(
-                    next_day, datetime.min.time(), tzinfo=ZRH
-                ).astimezone(UTC)
+            if value.origin is ValueOrigin.DAILY_TOTAL:
+                _, statistic["end"] = day_bounds(value.date)
             else:
                 statistic["end"] = statistic["start"] + timedelta(hours=1)
-            statistic["source_resolution"] = "day" if daily_source else "hour"
+            statistic["source_resolution"] = "day" if value.origin.is_daily else "hour"
 
         # Update metadata
         last_import_dt = self.transformer.get_last_import_date(statistics)
@@ -315,12 +303,7 @@ class BaseImporter(ABC):
             if last_import_dt:
                 meta_entity.set_last_import(last_import_dt.astimezone(ZRH).date())
                 complete_days = set(self.validator.find_complete_days(raw_values_for_prediction))
-                complete_days.update(
-                    value.date
-                    for value in merged_values
-                    if (consumption_data.level == "DAY" and value.status != "RECORDED_VALID")
-                    or value.status in ("DAILY_VALID", "DAILY_RECONCILED")
-                )
+                complete_days.update(value.date for value in merged_values if value.origin.is_daily)
                 pending_day = max(
                     from_date.date(), datetime.now(tz=ZRH).date() - timedelta(days=30)
                 )

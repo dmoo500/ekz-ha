@@ -61,6 +61,7 @@ class DataAggregator:
                         status=first.status,
                         date=first.date,
                         tariff="TOTAL",
+                        origin=first.origin,
                     )
                 )
         return merged
@@ -101,6 +102,7 @@ class DataAggregator:
                     status=first.status,
                     date=first.date,
                     tariff=first.tariff,
+                    origin=first.origin,
                 )
             )
 
@@ -141,6 +143,7 @@ class DataAggregator:
                     status=first.status,
                     date=first.date,
                     tariff=first.tariff,
+                    origin=first.origin,
                 )
             )
 

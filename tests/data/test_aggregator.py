@@ -1,6 +1,8 @@
 """Tests for data aggregation."""
 
-from custom_components.ekz_ha.api.models import ApiValue
+import pytest
+
+from custom_components.ekz_ha.api.models import ApiValue, ValueOrigin
 from custom_components.ekz_ha.data.aggregator import DataAggregator, normalize_timestamp
 
 
@@ -30,6 +32,23 @@ class TestNormalizeTimestamp:
 
 class TestDataAggregator:
     """Tests for DataAggregator."""
+
+    @pytest.mark.parametrize("origin", list(ValueOrigin))
+    def test_aggregation_preserves_origin_and_api_status(self, origin):
+        values = [
+            ApiValue("20260813120000", 1.0, "ESTIMATED", "2026-08-13", "HT", origin),
+            ApiValue("20260813120000", 0.5, "ESTIMATED", "2026-08-13", "NT", origin),
+        ]
+        merged = DataAggregator.merge_tariffs(values)
+
+        for result in (
+            merged,
+            DataAggregator.aggregate_to_hourly(merged),
+            DataAggregator.aggregate_to_daily(merged),
+        ):
+            assert result[0].origin is origin
+            assert result[0].status == "ESTIMATED"
+            assert result[0].value == 1.5
 
     def test_merge_tariffs_single_timestamp(self):
         """Test merging HT and NT values for same timestamp."""

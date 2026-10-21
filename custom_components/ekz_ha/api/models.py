@@ -2,8 +2,19 @@
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 from zoneinfo import ZoneInfo
+
+
+class ValueOrigin(StrEnum):
+    API = "api"
+    DAILY_TOTAL = "daily_total"
+    DAILY_RECONCILED = "daily_reconciled"
+
+    @property
+    def is_daily(self) -> bool:
+        return self in (ValueOrigin.DAILY_TOTAL, ValueOrigin.DAILY_RECONCILED)
 
 
 @dataclass
@@ -15,6 +26,7 @@ class ApiValue:
     status: str
     date: str = ""
     tariff: str = "TOTAL"
+    origin: ValueOrigin = ValueOrigin.API
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], tariff: str = "TOTAL") -> "ApiValue":

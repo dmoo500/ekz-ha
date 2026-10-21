@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from custom_components.ekz_ha import EkzCoordinator, statistics_during_period
-from custom_components.ekz_ha.api.models import ApiValue, ConsumptionData, SeriesData
+from custom_components.ekz_ha.api.models import ApiValue, ConsumptionData, SeriesData, ValueOrigin
 from custom_components.ekz_ha.const import NORMAL_SCAN_INTERVAL
 from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
 from custom_components.ekz_ha.statistics.importer import ZRH, BaseImporter
@@ -134,7 +134,7 @@ async def test_issue20_daily_values_do_not_feed_prediction(monkeypatch, mixed):
     ]
     if mixed:
         for daily in values:
-            daily.status = "DAILY_VALID"
+            daily.origin = ValueOrigin.DAILY_TOTAL
         values.extend(
             ApiValue.from_dict({"timestamp": f"2026071512{minute:02d}00", "value": 0.25})
             for minute in (0, 15, 30, 45)
@@ -465,7 +465,7 @@ async def test_daily_fallback_preserves_existing_hourly_rows(
     meta._recent_statistics = [] if recorder_flushed else existing
     values = [ApiValue.from_dict({"timestamp": start.strftime("%Y%m%d%H%M%S"), "value": 6.0})]
     if mixed:
-        values[0].status = "DAILY_VALID"
+        values[0].origin = ValueOrigin.DAILY_TOTAL
         values.append(
             ApiValue.from_dict(
                 {"timestamp": (start + timedelta(days=1)).strftime("%Y%m%d%H%M%S"), "value": 0.25}
@@ -621,3 +621,125 @@ async def test_daily_reconciliation_conserves_energy_on_dst_days(
     assert sum(row["state"] for row in rows) == pytest.approx(daily_total)
     assert all(row["state"] >= 0 for row in rows)
     assert result["raw_values"] == []
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+@pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
+@pytest.mark.parametrize("reconciled", [False, True])
+@pytest.mark.parametrize("queued", [False, True])
+async def test_daily_source_waits_for_complete_quarter_hour_backfill(
+    monkeypatch, freezer, importer_type, local_day, reconciled, queued
+):
+    from custom_components.ekz_ha import _persist_source_resolution
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    freezer.move_to("2026-11-01 12:00:00+00:00")
+    local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH)
+    start = local_start.astimezone(UTC)
+    end = (local_start + timedelta(days=1)).astimezone(UTC)
+    hours = int((end - start).total_seconds() / 3600)
+    existing = [
+        {
+            "start": start + timedelta(hours=index),
+            "state": 24.0 / hours if reconciled else 24.0,
+            "sum": 100.0 + (index + 1) * (24.0 / hours if reconciled else 24.0),
+            "end": start + timedelta(hours=index + 1) if reconciled else end,
+            "source_resolution": "day",
+        }
+        for index in range(hours if reconciled else 1)
+    ]
+    importer = importer_type(Mock())
+    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    persisted = [
+        {
+            "start": row["start"].timestamp(),
+            "end": (row["start"] + timedelta(hours=1)).timestamp(),
+            "state": row["state"],
+            "sum": row["sum"],
+        }
+        for row in existing
+    ]
+    recorder = Mock(
+        async_add_executor_job=AsyncMock(return_value={} if queued else {statistic_id: persisted})
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+    meta = EkzMetaEntity(Mock(), "825821")
+    meta.set_last_import(local_day)
+    meta._daily_statistics = {local_day.isoformat()}
+    meta._recent_statistics = existing if queued else []
+    partial = api_series(
+        "QUARTER_HOUR",
+        [
+            ((start + timedelta(hours=12, minutes=15 * index)).isoformat(), 0.5, "VALID")
+            for index in range(4)
+        ]
+        + [(end.isoformat(), 0.5, "VALID")],
+    )
+    fetch = AsyncMock(return_value=partial)
+    monkeypatch.setattr(importer, "fetch_data", fetch)
+
+    result = await importer.import_statistics(Mock(), "825821", local_start, meta, 100.0)
+
+    retained_day = [row for row in result["statistics"] if row["start"] < end]
+    assert sum(row["state"] for row in retained_day) == pytest.approx(24.0)
+    assert result["statistics"][0]["start"] == start
+    assert retained_day[-1]["sum"] == pytest.approx(124.0)
+    assert retained_day[-1]["end"] == end
+    assert all(row["source_resolution"] == "day" for row in retained_day)
+    assert result["statistics"][-1]["start"] == end
+    assert result["statistics"][-1]["sum"] == pytest.approx(124.5)
+    assert len(result["raw_values"]) == 1
+    assert result["raw_values"][0].timestamp == end.strftime("%Y%m%d%H%M%S")
+
+    source_metadata = SimpleNamespace(_daily_statistics={statistic_id: [local_day.isoformat()]})
+    await _persist_source_resolution(source_metadata, statistic_id, result["statistics"])
+    meta._daily_statistics = set(source_metadata._daily_statistics[statistic_id])
+    meta._recent_statistics = result["statistics"] if queued else []
+    meta.set_last_import(local_day)
+    fetch.return_value = api_series(
+        "QUARTER_HOUR",
+        [
+            ((start + timedelta(minutes=15 * index)).isoformat(), 0.5, "VALID")
+            for index in range(hours * 4)
+        ],
+    )
+
+    complete = await importer.import_statistics(Mock(), "825821", local_start, meta, 100.0)
+
+    assert len(complete["statistics"]) == hours
+    assert complete["statistics"][0]["start"] == start
+    assert complete["statistics"][-1]["end"] == end
+    assert complete["statistics"][-1]["sum"] == pytest.approx(100.0 + hours * 2.0)
+    assert all(row["source_resolution"] == "hour" for row in complete["statistics"])
+    assert len(complete["raw_values"]) == hours * 4
+    await _persist_source_resolution(source_metadata, statistic_id, complete["statistics"])
+    assert source_metadata._daily_statistics[statistic_id] == []
+
+
+@pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
+@pytest.mark.parametrize("shifted", [False, True])
+async def test_source_resolution_requires_exact_hourly_grid(local_day, shifted):
+    from custom_components.ekz_ha import _persist_source_resolution
+
+    start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH).astimezone(UTC)
+    end = datetime.combine(
+        local_day + timedelta(days=1), datetime.min.time(), tzinfo=ZRH
+    ).astimezone(UTC)
+    hours = int((end - start).total_seconds() / 3600)
+    rows = [
+        {
+            "start": start + timedelta(hours=index, minutes=1 if shifted else 0),
+            "source_resolution": "hour",
+        }
+        for index in range(hours)
+    ]
+    statistic_id = "sensor.electricity_consumption_ekz_test"
+    coordinator = SimpleNamespace(_daily_statistics={statistic_id: [local_day.isoformat()]})
+
+    await _persist_source_resolution(coordinator, statistic_id, rows)
+
+    assert coordinator._daily_statistics[statistic_id] == (
+        [local_day.isoformat()] if shifted else []
+    )

@@ -34,6 +34,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api.client import EkzApiClient
 from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
+from .data.validator import day_slots
 from .statistics.consumption import ConsumptionImporter
 from .statistics.importer import get_import_start
 from .statistics.prediction import PredictionService
@@ -153,12 +154,7 @@ async def _persist_source_resolution(
         if any(row.get("source_resolution") == "day" for row in rows):
             daily_dates.add(day)
         else:
-            start = datetime.combine(date.fromisoformat(day), datetime.min.time(), tzinfo=ZRH)
-            end = start + timedelta(days=1)
-            expected_hours = int(
-                (end.astimezone(UTC) - start.astimezone(UTC)).total_seconds() / 3600
-            )
-            if len({row["start"] for row in rows}) == expected_hours:
+            if {row["start"] for row in rows} == set(day_slots(day, minutes=60)):
                 daily_dates.discard(day)
     if sorted(daily_dates) == sources.get(statistic_id, []):
         return

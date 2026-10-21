@@ -6,6 +6,7 @@ from custom_components.ekz_ha.api.models import (
     ApiValue,
     ConsumptionData,
     SeriesData,
+    ValueOrigin,
 )
 
 
@@ -27,6 +28,7 @@ class TestApiValue:
         assert value.status == "VALID"
         assert value.date == "2026-08-13"
         assert value.tariff == "HT"
+        assert value.origin is ValueOrigin.API
 
     def test_from_dict_iso_format(self):
         """Test creating ApiValue from ISO timestamp."""
