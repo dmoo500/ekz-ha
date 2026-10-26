@@ -34,17 +34,60 @@ def test_calculate_date_range_rechecks_last_imported_day():
     assert from_date.date() == last_import
 
 
-def test_calculate_date_range_limits_history_to_ten_years():
+def test_calculate_date_range_preserves_contract_start_before_ten_years():
     importer = StubImporter(None)
-    today = datetime.now(tz=ZRH).date()
-    try:
-        expected_start = today.replace(year=today.year - 10)
-    except ValueError:
-        expected_start = today.replace(year=today.year - 10, day=28)
+    contract_start = date(2000, 1, 1)
 
-    from_date, _ = importer.calculate_date_range(date(2000, 1, 1), date(2000, 1, 1))
+    from_date, to_date = importer.calculate_date_range(contract_start, contract_start)
 
-    assert from_date.date() == expected_start
+    assert from_date.date() == contract_start
+    assert to_date.date() == contract_start + timedelta(days=30)
+
+
+async def test_empty_initial_windows_expand_and_import_first_available_chunk(freezer, monkeypatch):
+    freezer.move_to("2026-10-26 12:00:00+00:00")
+    contract_start = date(2000, 1, 1)
+    first_available = date(2007, 1, 1)
+    importer = StubImporter(None)
+    metadata = SimpleNamespace(
+        _last_import=contract_start,
+        _history_cursor=None,
+        _empty_search_days=None,
+        _pending_from=None,
+        _pending_sum_offset=0.0,
+        set_last_import=lambda value: setattr(metadata, "_last_import", value),
+        set_history_cursor=lambda value: setattr(metadata, "_history_cursor", value),
+        set_last_run_date=lambda value: None,
+        set_pending=lambda pending, offset=0.0: setattr(metadata, "_pending_from", pending),
+    )
+    requests = []
+
+    async def fetch_data(_installation_id, date_from, date_to):
+        requests.append((date_from.date(), date_to.date()))
+        if date_from.date() == contract_start and date_to.date() <= first_available:
+            return ConsumptionData()
+        timestamp = datetime.combine(first_available, datetime.min.time(), tzinfo=ZRH)
+        return api_series("DAY", [(timestamp.strftime("%Y%m%d%H%M%S"), 8.0, "VALID")])
+
+    monkeypatch.setattr(importer, "fetch_data", fetch_data)
+
+    result = None
+    while metadata._empty_search_days is None or metadata._last_import == contract_start:
+        result = await importer.import_statistics(
+            None, "825821", datetime.combine(contract_start, datetime.min.time()), metadata
+        )
+        if result["statistics"]:
+            break
+
+    assert result is not None
+    assert result["statistics"]
+    assert result["from_date"] == first_available
+    assert result["to_date"] == first_available + timedelta(days=30)
+    assert requests[0] == (contract_start, contract_start + timedelta(days=30))
+    assert requests[1][0] == contract_start
+    assert requests[1][1] == contract_start + timedelta(days=60)
+    assert requests[-1] == (first_available, first_available + timedelta(days=30))
+    assert metadata._empty_search_days is None
 
 
 def api_series(level, entries):
@@ -1011,6 +1054,8 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
     statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
     key = f"ekz_ha.test.{importer.get_data_type_name()}.checkpoint"
     old_meta = EkzMetaEntity(Mock(), "825821")
+    old_meta.set_history_cursor(date(2000, 1, 31))
+    old_meta._empty_search_days = 120
     old_meta.set_pending(date(2026, 10, 15), 100.0)
     old = SimpleNamespace(_import_checkpoint_store=Store(hass, 1, key))
     rows = [{"start": start, "state": 0.5, "sum": 100.5, "slots": {hour: 0.5}}]
@@ -1034,6 +1079,9 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
     assert meta._pending_from == date(2026, 10, 15)
     assert meta._pending_sum_offset == 100.0
     assert meta._hourly_slots == {hour: {hour: 0.5}}
+    assert meta._history_cursor == date(2000, 1, 31)
+    assert meta._empty_search_days == 120
+    meta._empty_search_days = None
     assert (
         await EkzCoordinator._get_running_sum_before(fresh, statistic_id, meta._pending_from)
         == 100.0

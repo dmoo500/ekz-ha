@@ -103,6 +103,7 @@ class PredictionService:
         self,
         last_real_datetime: datetime,
         target_datetime: datetime,
+        initial_total: float = 0.0,
     ) -> list[dict]:
         """Generate prediction statistics from last real data to target time.
 
@@ -112,6 +113,7 @@ class PredictionService:
         Args:
             last_real_datetime: Datetime of last real data point (timezone-aware)
             target_datetime: Target datetime to predict up to (timezone-aware)
+            initial_total: Predicted consumption already accumulated in the last real hour.
 
         Returns:
             List of statistics entries with 'start', 'sum', and 'state' keys.
@@ -129,7 +131,7 @@ class PredictionService:
             return []
 
         predictions = []
-        running_total = 0.0
+        running_total = initial_total
 
         while pred_start < target_datetime:
             # Calculate bucket key for this hour
@@ -150,6 +152,14 @@ class PredictionService:
             pred_start = pred_start + timedelta(hours=1)
 
         return predictions
+
+    def estimate_missing_slots(self, hour_start: datetime, delivered_slots: int) -> float:
+        """Estimate the missing quarter-hour consumption for a partially delivered hour."""
+        missing_slots = 4 - delivered_slots
+        if not 0 < missing_slots < 4:
+            return 0.0
+        bucket_key = hour_start.month * 100 + hour_start.hour
+        return self._hourly_averages.get(bucket_key, 0.0) * missing_slots / 4
 
     def reset(self) -> None:
         """Reset all accumulated data and averages."""

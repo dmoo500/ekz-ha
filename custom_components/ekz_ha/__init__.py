@@ -179,6 +179,9 @@ def _restore_import_checkpoint(coordinator: "EkzCoordinator", statistic_id: str,
         }
         for row in state.get("statistics", [])
     ]
+    history_cursor = state.get("history_cursor")
+    meta._history_cursor = date.fromisoformat(history_cursor) if history_cursor else None
+    meta._empty_search_days = state.get("empty_search_days")
     if state.get("pending_from"):
         pending_date = date.fromisoformat(state["pending_from"])
         pending_offset = float(state["pending_offset"])
@@ -213,6 +216,8 @@ async def _persist_import_checkpoint(
     pending = getattr(meta, "_pending_from", None)
     state = {
         "slots": slots,
+        "history_cursor": meta._history_cursor.isoformat() if meta._history_cursor else None,
+        "empty_search_days": getattr(meta, "_empty_search_days", None),
         "pending_from": pending.isoformat() if pending else None,
         "pending_offset": float(getattr(meta, "_pending_sum_offset", 0.0)),
         "statistics": [
@@ -246,6 +251,7 @@ async def _async_import_chunk(
     tracked_fields = (
         "_last_import",
         "_history_cursor",
+        "_empty_search_days",
         "_pending_from",
         "_pending_sum_offset",
         "_last_run_date",
@@ -716,8 +722,40 @@ class EkzCoordinator(DataUpdateCoordinator):
                     statistic.get("end", statistic["start"] + timedelta(hours=1))
                     for statistic in result["statistics"]
                 ) - timedelta(hours=1)
+                last_actual_statistic = next(
+                    (
+                        statistic
+                        for statistic in result["statistics"]
+                        if statistic["start"] == last_actual_start
+                        and statistic.get("source_resolution") == "hour"
+                    ),
+                    None,
+                )
+                delivered_slots = (
+                    len(last_actual_statistic.get("slots", {}))
+                    if last_actual_statistic is not None
+                    else 4
+                )
+                partial_hour_prediction = prediction_service.estimate_missing_slots(
+                    last_actual_start, delivered_slots
+                )
+                if partial_hour_prediction > 0:
+                    predictions = [
+                        prediction
+                        for prediction in predictions
+                        if prediction["start"] != last_actual_start
+                    ]
+                    predictions.append(
+                        {
+                            "start": last_actual_start,
+                            "sum": partial_hour_prediction,
+                            "state": partial_hour_prediction,
+                        }
+                    )
                 forward_predictions = prediction_service.generate_predictions(
-                    last_actual_start, datetime.now(tz=UTC)
+                    last_actual_start,
+                    datetime.now(tz=UTC),
+                    initial_total=partial_hour_prediction,
                 )
                 predictions.extend(forward_predictions)
 
@@ -893,6 +931,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
                 meta.set_last_import(None)
                 meta.set_history_cursor(None)
+                meta._empty_search_days = None
                 meta._recent_statistics = []
                 meta._daily_statistics = set()
                 meta._hourly_slots = {}
@@ -901,6 +940,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
                 meta.set_last_import(None)
                 meta.set_history_cursor(None)
+                meta._empty_search_days = None
                 meta._recent_statistics = []
                 meta._daily_statistics = set()
                 meta._hourly_slots = {}

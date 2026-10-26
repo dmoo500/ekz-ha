@@ -19,7 +19,7 @@ _LOGGER = logging.getLogger(__name__)
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
-MAX_HISTORY_YEARS = 10
+DEFAULT_IMPORT_CHUNK_DAYS = 30
 
 
 def get_import_start(meta_entity: Any) -> date | None:
@@ -201,7 +201,10 @@ class BaseImporter(ABC):
         return sorted(preserved, key=lambda value: value.timestamp)
 
     def calculate_date_range(
-        self, last_import: date | None, contract_start: date, max_days: int = 30
+        self,
+        last_import: date | None,
+        contract_start: date,
+        max_days: int = DEFAULT_IMPORT_CHUNK_DAYS,
     ) -> tuple[datetime, datetime]:
         """
         Calculate the date range to fetch.
@@ -227,20 +230,17 @@ class BaseImporter(ABC):
         elif from_date.tzinfo is None:
             from_date = from_date.replace(tzinfo=ZRH)
 
-        today = datetime.now(tz=ZRH).date()
-        try:
-            history_start_date = today.replace(year=today.year - MAX_HISTORY_YEARS)
-        except ValueError:
-            history_start_date = today.replace(year=today.year - MAX_HISTORY_YEARS, day=28)
-        history_start = datetime.combine(history_start_date, datetime.min.time(), tzinfo=ZRH)
-        from_date = max(from_date, history_start)
-
         # Fetch up to max_days or tomorrow, whichever is sooner
         tomorrow = datetime.now(tz=ZRH).date() + timedelta(days=1)
         tomorrow_dt = datetime.combine(tomorrow, datetime.min.time(), tzinfo=ZRH)
         to_date = min(from_date + timedelta(days=max_days), tomorrow_dt)
 
         return from_date, to_date
+
+    @staticmethod
+    def _as_local_date(value: ApiValue) -> date:
+        timestamp = datetime.strptime(value.timestamp, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
+        return timestamp.astimezone(ZRH).date()
 
     async def import_statistics(
         self,
@@ -271,9 +271,32 @@ class BaseImporter(ABC):
             contract_start,
         )
 
-        # Determine date range
+        # Search progressively farther from the contract start until the first
+        # available data is found, then resume normal 30-day imports.
         last_import = get_import_start(meta_entity)
-        from_date, to_date = self.calculate_date_range(last_import, contract_start, max_days=30)
+        contract_start_date = (
+            contract_start.date() if isinstance(contract_start, datetime) else contract_start
+        )
+        stored_search_days = getattr(meta_entity, "_empty_search_days", None)
+        search_days: int | None = (
+            stored_search_days if isinstance(stored_search_days, int) else None
+        )
+        if (
+            search_days is None
+            and meta_entity is not None
+            and getattr(meta_entity, "_history_cursor", None) is None
+            and last_import == contract_start_date
+        ):
+            search_days = DEFAULT_IMPORT_CHUNK_DAYS
+        searching_history = search_days is not None
+        if search_days is not None:
+            from_date, to_date = self.calculate_date_range(
+                None, contract_start_date, max_days=search_days
+            )
+        else:
+            from_date, to_date = self.calculate_date_range(
+                last_import, contract_start_date, max_days=DEFAULT_IMPORT_CHUNK_DAYS
+            )
 
         _LOGGER.debug("[%s] Fetching data: period %s to %s", data_type, from_date, to_date)
 
@@ -281,6 +304,42 @@ class BaseImporter(ABC):
         consumption_data = await self.fetch_data(installation_id, from_date, to_date)
 
         api_values = consumption_data.get_all_values()
+        if search_days is not None and search_days <= DEFAULT_IMPORT_CHUNK_DAYS and api_values:
+            search_days = None
+            searching_history = False
+            if meta_entity is not None:
+                meta_entity._empty_search_days = None
+        if search_days is not None and search_days > DEFAULT_IMPORT_CHUNK_DAYS and api_values:
+            earliest_data_date = min(self._as_local_date(value) for value in api_values)
+            bounded_from, bounded_to = self.calculate_date_range(
+                earliest_data_date, earliest_data_date, max_days=DEFAULT_IMPORT_CHUNK_DAYS
+            )
+            bounded_data = await self.fetch_data(installation_id, bounded_from, bounded_to)
+            if not bounded_data.is_empty():
+                consumption_data = bounded_data
+                from_date, to_date = bounded_from, bounded_to
+                api_values = consumption_data.get_all_values()
+                search_days = None
+                searching_history = False
+                if meta_entity is not None:
+                    meta_entity._empty_search_days = None
+            else:
+                consumption_data = bounded_data
+                api_values = []
+
+        if (
+            searching_history
+            and search_days is not None
+            and not api_values
+            and meta_entity is not None
+        ):
+            tomorrow = datetime.now(tz=ZRH).date() + timedelta(days=1)
+            days_remaining = (tomorrow - contract_start_date).days
+            if to_date.date() >= tomorrow:
+                meta_entity._empty_search_days = None
+            else:
+                meta_entity._empty_search_days = min(search_days * 2, days_remaining)
+
         if consumption_data.level == "DAY":
             api_values = [replace(value, origin=ValueOrigin.DAILY_TOTAL) for value in api_values]
         merged_values = self.aggregator.merge_tariffs(api_values)
@@ -294,7 +353,7 @@ class BaseImporter(ABC):
             to_date,
         )
 
-        if meta_entity:
+        if meta_entity and not (searching_history and meta_entity._empty_search_days is not None):
             recent_boundary = datetime.now(tz=ZRH).date() - timedelta(days=30)
             history_cursor = min(to_date.date() - timedelta(days=1), recent_boundary)
             if history_cursor > from_date.date():

@@ -267,11 +267,14 @@ async def test_empty_session_retry_preserves_historical_import(
         assert meta._last_import == date(2026, 8, 1)
     else:
         result = await importer.import_statistics(None, "825821", datetime(2026, 8, 1), meta)
-        assert meta._history_cursor == date(2026, 8, 30)
         if retry_result == "readings":
+            assert meta._history_cursor == date(2026, 8, 30)
+            assert meta._empty_search_days is None
             assert result["statistics"][0]["state"] == 0.5
             assert meta._last_import == date(2026, 8, 15)
         else:
+            assert meta._history_cursor is None
+            assert meta._empty_search_days == 60
             assert result["statistics"] == []
     assert first_http.get.call_args == retry_http.get.call_args
     reset.assert_awaited_once()

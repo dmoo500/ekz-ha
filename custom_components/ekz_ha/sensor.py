@@ -146,6 +146,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._contract_start: date | None = None
         self._last_import: date | None = None
         self._history_cursor: date | None = None
+        self._empty_search_days: int | None = None
         self._recent_statistics: list[dict[str, Any]] = []
         self._daily_statistics: set[str] = set()
         self._hourly_slots: dict[str, dict[str, float]] = {}

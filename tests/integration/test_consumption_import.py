@@ -365,6 +365,84 @@ async def test_daily_import_clears_whole_day_before_predicting(
         assert future[-1]["sum"] == 3.0
 
 
+@pytest.mark.parametrize(
+    ("delivered_slots", "expected_partial"),
+    [(1, 1.5), (2, 1.0), (3, 0.5), (4, 0.0)],
+)
+async def test_partial_last_hour_is_completed_by_prediction(
+    monkeypatch, freezer, delivered_slots, expected_partial
+):
+    now = datetime(2026, 10, 26, 13, tzinfo=UTC)
+    freezer.move_to(now)
+    hour_start = datetime(2026, 10, 26, 10, tzinfo=UTC)
+    service = PredictionService()
+    service.merge_raw_accumulator({1010: (2.0, 4), 1011: (1.0, 4), 1012: (3.0, 4)})
+    service.calculate_averages()
+    key = "825821"
+    prediction_id = f"sensor.electricity_consumption_ekz_{key}_prediction"
+    local_day = date(2026, 10, 26)
+    metadata = SimpleNamespace(_last_import=local_day, _contract_start=local_day)
+    coordinator = SimpleNamespace(
+        hass=Mock(),
+        api_client=Mock(
+            get_production_installations=AsyncMock(return_value=InstallationSelectionData()),
+            get_production_15min=AsyncMock(return_value=ConsumptionData()),
+        ),
+        installations={key: {"contract_start": local_day.isoformat()}},
+        production_installations={},
+        meta_entities={key: metadata},
+        production_meta_entities={},
+        last_sums={},
+        last_production_sums={},
+        catching_up={},
+        prediction_services={key: service},
+        migrated_prediction_statistics=set(),
+        update_interval=timedelta(minutes=20),
+    )
+    coordinator._get_running_sum_before = MethodType(
+        EkzCoordinator._get_running_sum_before, coordinator
+    )
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha._prediction_statistic_id", lambda hass, key: prediction_id
+    )
+    result = {
+        "statistics": [
+            {
+                "start": hour_start,
+                "end": hour_start + timedelta(hours=1),
+                "state": 1.0,
+                "sum": 1.0,
+                "slots": {
+                    f"2026102610{index * 15:02d}00": 0.25 for index in range(delivered_slots)
+                },
+                "source_resolution": "hour",
+            }
+        ],
+        "to_date": local_day,
+    }
+    monkeypatch.setattr(ConsumptionImporter, "import_statistics", AsyncMock(return_value=result))
+    imported = {}
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.async_import_statistics",
+        lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
+    )
+
+    await EkzCoordinator._do_update_data(coordinator)
+
+    predictions = imported[prediction_id]
+    assert [row["start"] for row in predictions] == sorted(row["start"] for row in predictions)
+    assert len({row["start"] for row in predictions}) == len(predictions)
+    partial = next(row for row in predictions if row["start"] == hour_start)
+    assert partial["state"] == pytest.approx(expected_partial)
+    assert partial["sum"] == pytest.approx(expected_partial)
+    forward = [row for row in predictions if row["start"] > hour_start]
+    assert [row["sum"] for row in forward] == pytest.approx(
+        [expected_partial + 1.0, expected_partial + 4.0]
+    )
+
+
 @pytest.mark.parametrize("entity_type", ["consumption", "production"])
 @pytest.mark.parametrize("failure", ["recorder", "source_store", "checkpoint_store"])
 async def test_failed_write_does_not_advance_import_state(monkeypatch, entity_type, failure):

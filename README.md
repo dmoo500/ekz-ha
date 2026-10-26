@@ -60,7 +60,7 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 
 ### Historical data backfill & chunk imports
 
-On first setup (or after a re-installation), the integration needs to import all historical consumption data starting from your contract start date. Because the EKZ API returns data in limited windows, the integration fetches **one 30-day chunk per update cycle** and writes it directly into the Home Assistant statistics database.
+On first setup (or after a re-installation), the integration starts looking for historical data at your contract start date. If the initial 30-day window has no readings, it progressively extends the search window until data is found or the present is reached. Once data is available, it imports **30-day chunks** directly into the Home Assistant statistics database. There is no fixed ten-year history cutoff.
 
 The import progress is exposed by each installation's **Last Import** meta sensor, which stores the date of the last successfully imported data. After a Home Assistant restart, the import automatically resumes from where it left off.
 
