@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ..data.aggregator import normalize_timestamp
+
+_LOGGER = logging.getLogger(__name__)
+# Cover the 30-day import lookback plus local/UTC day boundaries.
+SLOT_CORRECTION_WINDOW = timedelta(days=32)
 
 if TYPE_CHECKING:
     from custom_components.ekz_ha.api.models import ApiValue
@@ -27,18 +32,27 @@ class PredictionService:
         self._hourly_raw: dict[int, tuple[float, int]] = {}
         self._hourly_averages: dict[int, float] = {}
         self._slot_values: dict[str, float] = {}
+        self._slot_cutoff: str | None = None
 
     def accumulate_values(self, values: list[ApiValue]) -> None:
         """Accumulate 15-minute slot data for average calculation.
 
         Args:
             values: List of ApiValue objects with timestamp and value (kWh)
+
+        Older contributions stay in the aggregate buckets. Only the latest
+        32 days of individual slots are retained for deduplication/corrections;
+        replays before that window are ignored.
         """
-        for value in values:
+        frozen_slots = 0
+        for value in sorted(values, key=lambda value: normalize_timestamp(value.timestamp)):
             # Extract month and UTC hour from timestamp (YYYYMMDDHHmmss)
             if len(str(value.timestamp)) < 10:
                 continue
             ts_str = normalize_timestamp(value.timestamp)
+            if self._slot_cutoff is not None and ts_str < self._slot_cutoff:
+                frozen_slots += 1
+                continue
 
             month = int(ts_str[4:6])  # MM
             hour_utc = int(ts_str[8:10])  # HH
@@ -55,6 +69,21 @@ class PredictionService:
                 current_count + (previous_value is None),
             )
             self._slot_values[ts_str] = value.value
+        if self._slot_values:
+            latest = datetime.strptime(max(self._slot_values), "%Y%m%d%H%M%S")
+            self._slot_cutoff = (latest - SLOT_CORRECTION_WINDOW).strftime("%Y%m%d%H%M%S")
+            # Older contributions remain in the buckets, but cannot be counted again.
+            self._slot_values = {
+                timestamp: value
+                for timestamp, value in self._slot_values.items()
+                if timestamp >= self._slot_cutoff
+            }
+        if frozen_slots:
+            _LOGGER.debug(
+                "Ignored %d prediction slots before frozen-history cutoff %s",
+                frozen_slots,
+                self._slot_cutoff,
+            )
 
     def calculate_averages(self) -> dict[int, float]:
         """Calculate hourly averages from accumulated raw data.
@@ -166,3 +195,4 @@ class PredictionService:
         self._hourly_raw.clear()
         self._hourly_averages.clear()
         self._slot_values.clear()
+        self._slot_cutoff = None

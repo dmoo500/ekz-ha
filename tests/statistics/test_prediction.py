@@ -1,6 +1,6 @@
 """Tests for prediction service."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -102,6 +102,71 @@ class TestPredictionService:
         prediction_service.reset()
         prediction_service.accumulate_values(sample_values)
         assert prediction_service.get_raw_accumulator()[310] == pytest.approx((2.6, 4))
+
+    def test_multiyear_backfill_bounds_slots_without_losing_historical_averages(
+        self, prediction_service
+    ):
+        start = datetime(2000, 1, 1, tzinfo=UTC)
+        expected = {}
+        for day in range(366 * 3):
+            values = []
+            for index in range(96):
+                timestamp = start + timedelta(days=day, minutes=15 * index)
+                bucket = timestamp.month * 100 + timestamp.hour
+                total, count = expected.get(bucket, (0.0, 0))
+                expected[bucket] = (total + 0.25, count + 1)
+                values.append(
+                    ApiValue.from_dict({"timestamp": timestamp.isoformat(), "value": 0.25})
+                )
+            prediction_service.accumulate_values(values)
+            assert len(prediction_service._slot_values) <= 32 * 96 + 1
+
+        assert prediction_service.get_raw_accumulator() == expected
+        assert all(
+            value == pytest.approx(1.0)
+            for value in prediction_service.calculate_averages().values()
+        )
+        prediction_service.accumulate_values(values)
+        assert prediction_service.get_raw_accumulator() == expected
+        corrected = ApiValue.from_dict({"timestamp": timestamp.isoformat(), "value": 1.25})
+        prediction_service.accumulate_values([corrected])
+        assert prediction_service.get_raw_accumulator()[bucket] == (total + 1.25, count + 1)
+
+        # A replay outside the correction window must not count frozen history twice.
+        prediction_service.accumulate_values(
+            [ApiValue.from_dict({"timestamp": start.isoformat(), "value": 5.0})]
+        )
+        assert prediction_service.get_raw_accumulator()[100] == expected[100]
+
+    def test_correction_window_boundary_and_reset(self, prediction_service):
+        earliest = datetime(2026, 3, 1, tzinfo=UTC)
+        latest = earliest + timedelta(days=32)
+        values = [
+            ApiValue.from_dict({"timestamp": timestamp.isoformat(), "value": 0.25})
+            for timestamp in (latest, earliest)
+        ]
+        prediction_service.accumulate_values(values)
+        assert prediction_service.get_raw_accumulator() == {300: (0.25, 1), 400: (0.25, 1)}
+        prediction_service.accumulate_values(
+            [ApiValue.from_dict({"timestamp": earliest.isoformat(), "value": 1.25})]
+        )
+        assert prediction_service.get_raw_accumulator()[300] == (1.25, 1)
+
+        prediction_service.accumulate_values(
+            [
+                ApiValue.from_dict(
+                    {"timestamp": (latest + timedelta(minutes=15)).isoformat(), "value": 0.5}
+                )
+            ]
+        )
+        assert earliest.strftime("%Y%m%d%H%M%S") not in prediction_service._slot_values
+        prediction_service.accumulate_values(
+            [ApiValue.from_dict({"timestamp": earliest.isoformat(), "value": 9.0})]
+        )
+        assert prediction_service.get_raw_accumulator()[300] == (1.25, 1)
+        prediction_service.reset()
+        prediction_service.accumulate_values(values)
+        assert prediction_service.get_raw_accumulator() == {300: (0.25, 1), 400: (0.25, 1)}
 
     def test_merge_raw_accumulator(self, prediction_service):
         """Test merging new raw data into existing accumulator."""

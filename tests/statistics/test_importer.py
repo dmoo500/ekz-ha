@@ -384,7 +384,10 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
                 return {statistic_id: matching}
         return {}
 
-    recorder = Mock(async_add_executor_job=AsyncMock(side_effect=recorder_query))
+    recorder = Mock(
+        async_add_executor_job=AsyncMock(side_effect=recorder_query),
+        async_block_till_done=AsyncMock(),
+    )
     monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
     monkeypatch.setattr(
         "custom_components.ekz_ha._prediction_statistic_id",
@@ -1222,6 +1225,35 @@ async def test_fuller_partial_hour_adds_backfilled_slots(monkeypatch, importer_t
 
         assert result["statistics"][0]["state"] == expected
         assert result["statistics"][0]["sum"] == 100.0 + expected
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+async def test_checkpoint_restores_sum_across_history_gap_longer_than_recorder_lookback(
+    importer_type,
+):
+    from custom_components.ekz_ha import _persist_import_checkpoint, _restore_import_checkpoint
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    statistic_id = (
+        f"sensor.electricity_{importer_type(Mock()).get_data_type_name().lower()}_ekz_825821"
+    )
+    old_meta = EkzMetaEntity(Mock(), "825821")
+    old_meta.set_history_cursor(date(2026, 8, 30))
+    old = SimpleNamespace()
+    await _persist_import_checkpoint(
+        old,
+        statistic_id,
+        old_meta,
+        [{"start": datetime(2000, 1, 1, tzinfo=UTC), "state": 2.0, "sum": 102.0}],
+    )
+    fresh = SimpleNamespace(_import_checkpoints=old._import_checkpoints)
+    meta = EkzMetaEntity(Mock(), "825821")
+    _restore_import_checkpoint(fresh, statistic_id, meta)
+
+    assert (
+        await EkzCoordinator._get_running_sum_before(fresh, statistic_id, date(2026, 8, 30))
+        == 102.0
+    )
 
 
 @pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])

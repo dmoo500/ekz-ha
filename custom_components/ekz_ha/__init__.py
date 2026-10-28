@@ -182,6 +182,15 @@ def _restore_import_checkpoint(coordinator: "EkzCoordinator", statistic_id: str,
     history_cursor = state.get("history_cursor")
     meta._history_cursor = date.fromisoformat(history_cursor) if history_cursor else None
     meta._empty_search_days = state.get("empty_search_days")
+    if meta._recent_statistics:
+        first = meta._recent_statistics[0]
+        _cache_sum_offsets(
+            coordinator,
+            statistic_id,
+            meta._recent_statistics,
+            get_import_start(meta),
+            float(first["sum"] - first["state"]),
+        )
     if state.get("pending_from"):
         pending_date = date.fromisoformat(state["pending_from"])
         pending_offset = float(state["pending_offset"])
@@ -190,6 +199,27 @@ def _restore_import_checkpoint(coordinator: "EkzCoordinator", statistic_id: str,
             coordinator._sum_offsets = {}
         coordinator._sum_offsets.setdefault(statistic_id, {})[pending_date] = pending_offset
     meta._checkpoint_restored = True
+    meta._checkpoint_needs_replay = bool(meta._recent_statistics)
+
+
+async def _async_replay_import_checkpoint(
+    coordinator: "EkzCoordinator", statistic_id: str, meta: Any
+) -> None:
+    if not getattr(meta, "_checkpoint_needs_replay", False):
+        return
+    try:
+        async_import_statistics(
+            coordinator.hass,
+            _make_stat_meta(statistic_id),
+            [
+                StatisticData(start=row["start"], sum=row["sum"], state=row["state"])
+                for row in meta._recent_statistics
+            ],
+        )
+        await get_recorder_instance(coordinator.hass).async_block_till_done()
+    except Exception as err:
+        raise UpdateFailed(f"Checkpoint replay failed for {statistic_id}: {err}") from err
+    meta._checkpoint_needs_replay = False
 
 
 async def _persist_import_checkpoint(
@@ -272,6 +302,8 @@ async def _async_import_chunk(
             running_sum_offset=running_sum_offset,
         )
         statistics = result.get("statistics", [])
+        # The previous checkpoint must reach the recorder before it is replaced.
+        await get_recorder_instance(coordinator.hass).async_block_till_done()
         if statistics:
             await _persist_source_resolution(coordinator, statistic_id, statistics)
         await _persist_import_checkpoint(coordinator, statistic_id, meta, statistics)
@@ -528,6 +560,7 @@ class EkzCoordinator(DataUpdateCoordinator):
 
             statistic_id = f"sensor.electricity_consumption_ekz_{key}"
             _restore_import_checkpoint(self, statistic_id, meta_entity)
+            await _async_replay_import_checkpoint(self, statistic_id, meta_entity)
 
             # Query DB only on first cycle after (re)start to restore last import date
             if meta_entity._last_import is None:
@@ -797,6 +830,7 @@ class EkzCoordinator(DataUpdateCoordinator):
 
             statistic_id = f"sensor.electricity_production_ekz_{key}"
             _restore_import_checkpoint(self, statistic_id, prod_meta)
+            await _async_replay_import_checkpoint(self, statistic_id, prod_meta)
             if prod_meta._last_import is None:
                 try:
                     last_stats = await get_recorder_instance(self.hass).async_add_executor_job(

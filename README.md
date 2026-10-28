@@ -62,7 +62,7 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 
 On first setup (or after a re-installation), the integration starts looking for historical data at your contract start date. If the initial 30-day window has no readings, it progressively extends the search window until data is found or the present is reached. Once data is available, it imports **30-day chunks** directly into the Home Assistant statistics database. There is no fixed ten-year history cutoff.
 
-The import progress is exposed by each installation's **Last Import** meta sensor, which stores the date of the last successfully imported data. After a Home Assistant restart, the import automatically resumes from where it left off.
+The import progress is exposed by each installation's **Last Import** meta sensor, which stores the date of the last successfully imported data. After a Home Assistant restart, the import automatically resumes from where it left off. The last checkpoint's statistics are replayed into the recorder before either consumption or production imports resume, so queued readings are recovered even if Home Assistant stopped before writing them to its database.
 
 Consumption is fetched at 15-minute resolution where available. If a day has no quarter-hour readings, the integration uses EKZ's daily total for that day instead. Within the most recent 30 days, daily-fallback and incomplete days are revisited so corrected daily totals can be imported. For consumption days already represented by a daily fallback, the latest daily total is fetched even when some quarter-hour readings are available. Only a complete set of quarter-hour readings replaces a daily fallback; partial readings retain the latest available daily total. This reconciliation also applies to production imports.
 
@@ -98,6 +98,7 @@ EKZ delivers consumption data with a delay of approximately 7–10 days. To fill
 
 **How it works:**
 - While importing historical data, the integration accumulates **hourly consumption averages** per UTC month+hour bucket from the raw 15-minute slots.
+- Historical contributions remain in these aggregate buckets. Individual slots are retained only for the latest 32 days of imported data to handle repeated readings and corrections within the 30-day import lookback. Older slots are frozen in the aggregates and ignored if returned again, keeping prediction memory bounded.
 - Once the historical import is complete (catch-up mode ends), each update cycle generates predicted hourly values from the last real data point up to the current time.
 - The predictions are written as HA statistics — the Energy Dashboard will show them as an estimate for the recent gap.
 
