@@ -158,6 +158,11 @@ does not request another review when Copilot has already reviewed that revision
 or a review is still pending. The separate `Copilot PR Review` workflow produces
 Ruff suggestions; it is not the GitHub Copilot code reviewer.
 
+The requesting workflow lives in `.github/workflows/request-copilot-review.yml`.
+Do not name it `copilot-code-review.yml`: GitHub reserves that filename for
+Copilot's environment setup and expects a `copilot-code-review` or
+`copilot-setup-steps` job there, not a workflow that requests reviews.
+
 Maintainer activation: merge the requesting workflow into the default branch
 first (`workflow_run` uses workflows from that branch). Then disable automatic
 Copilot review requests in the repository ruleset **Copilot review for default
