@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+import math
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 from ..data.aggregator import normalize_timestamp
 
@@ -33,6 +34,7 @@ class PredictionService:
         self._hourly_averages: dict[int, float] = {}
         self._slot_values: dict[str, float] = {}
         self._slot_cutoff: str | None = None
+        self._seeded_hours: dict[str, float] = {}
 
     def accumulate_values(self, values: list[ApiValue]) -> None:
         """Accumulate 15-minute slot data for average calculation.
@@ -63,6 +65,10 @@ class PredictionService:
 
             # Accumulate sum and count
             current_sum, current_count = self._hourly_raw.get(bucket_key, (0.0, 0))
+            seeded = self._seeded_hours.pop(ts_str[:10] + "0000", None)
+            if seeded is not None:
+                current_sum -= seeded
+                current_count -= 4
             previous_value = self._slot_values.get(ts_str)
             self._hourly_raw[bucket_key] = (
                 current_sum + value.value - (previous_value or 0.0),
@@ -71,11 +77,17 @@ class PredictionService:
             self._slot_values[ts_str] = value.value
         if self._slot_values:
             latest = datetime.strptime(max(self._slot_values), "%Y%m%d%H%M%S")
-            self._slot_cutoff = (latest - SLOT_CORRECTION_WINDOW).strftime("%Y%m%d%H%M%S")
+            cutoff = (latest - SLOT_CORRECTION_WINDOW).strftime("%Y%m%d%H%M%S")
+            self._slot_cutoff = max(self._slot_cutoff or cutoff, cutoff)
             # Older contributions remain in the buckets, but cannot be counted again.
             self._slot_values = {
                 timestamp: value
                 for timestamp, value in self._slot_values.items()
+                if timestamp >= self._slot_cutoff
+            }
+            self._seeded_hours = {
+                timestamp: value
+                for timestamp, value in self._seeded_hours.items()
                 if timestamp >= self._slot_cutoff
             }
         if frozen_slots:
@@ -190,9 +202,81 @@ class PredictionService:
         bucket_key = hour_start.month * 100 + hour_start.hour
         return self._hourly_averages.get(bucket_key, 0.0) * missing_slots / 4
 
+    def seed_hourly_values(self, values: list[tuple[datetime, float]]) -> None:
+        """Rebuild missing history without double-counting later quarter-hour imports."""
+        actual_hours = {slot[:10] for slot in self._slot_values}
+        for start, energy in sorted(values):
+            if not math.isfinite(energy) or energy < 0:
+                continue
+            timestamp = start.astimezone(UTC).strftime("%Y%m%d%H0000")
+            if self._slot_cutoff is not None and timestamp < self._slot_cutoff:
+                continue
+            if timestamp in self._seeded_hours or timestamp[:10] in actual_hours:
+                continue
+            bucket = int(timestamp[4:6]) * 100 + int(timestamp[8:10])
+            total, count = self._hourly_raw.get(bucket, (0.0, 0))
+            self._hourly_raw[bucket] = (total + energy, count + 4)
+            self._seeded_hours[timestamp] = energy
+        if self._seeded_hours:
+            latest = datetime.strptime(max(self._seeded_hours), "%Y%m%d%H%M%S")
+            cutoff = (latest - SLOT_CORRECTION_WINDOW).strftime("%Y%m%d%H%M%S")
+            self._slot_cutoff = max(self._slot_cutoff or cutoff, cutoff)
+            self._seeded_hours = {
+                timestamp: energy
+                for timestamp, energy in self._seeded_hours.items()
+                if timestamp >= self._slot_cutoff
+            }
+            self._slot_values = {
+                timestamp: energy
+                for timestamp, energy in self._slot_values.items()
+                if timestamp >= self._slot_cutoff
+            }
+        self.calculate_averages()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize both aggregate history and recent correction bookkeeping."""
+        return {
+            "hourly_raw": {str(key): list(value) for key, value in self._hourly_raw.items()},
+            "slot_values": dict(self._slot_values),
+            "slot_cutoff": self._slot_cutoff,
+            "seeded_hours": dict(self._seeded_hours),
+        }
+
+    def load_dict(self, data: dict[str, Any]) -> None:
+        """Restore persisted learning state, rejecting invalid values."""
+        for field in ("hourly_raw", "slot_values", "seeded_hours"):
+            if not isinstance(data.get(field), dict):
+                raise ValueError(f"Invalid prediction field: {field}")
+        raw = {
+            int(key): (float(total), int(count))
+            for key, (total, count) in data["hourly_raw"].items()
+        }
+        slots = {str(key): float(value) for key, value in data["slot_values"].items()}
+        seeded = {str(key): float(value) for key, value in data["seeded_hours"].items()}
+        cutoff = data["slot_cutoff"]
+        if any(
+            not (1 <= key // 100 <= 12 and 0 <= key % 100 <= 23)
+            or not math.isfinite(total)
+            or count < 0
+            for key, (total, count) in raw.items()
+        ):
+            raise ValueError("Invalid prediction accumulator")
+        for timestamp, value in {**slots, **seeded}.items():
+            datetime.strptime(timestamp, "%Y%m%d%H%M%S")
+            if not math.isfinite(value):
+                raise ValueError("Invalid prediction reading")
+        if cutoff is not None:
+            datetime.strptime(cutoff, "%Y%m%d%H%M%S")
+        self._hourly_raw = raw
+        self._slot_values = slots
+        self._seeded_hours = seeded
+        self._slot_cutoff = cutoff
+        self.calculate_averages()
+
     def reset(self) -> None:
         """Reset all accumulated data and averages."""
         self._hourly_raw.clear()
         self._hourly_averages.clear()
         self._slot_values.clear()
         self._slot_cutoff = None
+        self._seeded_hours.clear()

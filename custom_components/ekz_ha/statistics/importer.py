@@ -30,6 +30,10 @@ def get_import_start(meta_entity: Any) -> date | None:
     pending: date | None = getattr(meta_entity, "_pending_from", None)
     if pending is not None:
         return pending
+    if getattr(meta_entity, "_empty_search_days", None) is not None:
+        search_from = getattr(meta_entity, "_empty_search_from", None)
+        if search_from is not None:
+            return search_from
     candidates: list[date] = [
         value.date() if isinstance(value, datetime) else value
         for value in (
@@ -323,7 +327,11 @@ class BaseImporter(ABC):
             search_days = DEFAULT_IMPORT_CHUNK_DAYS
         searching_history = search_days is not None
         if search_days is not None:
-            search_from = getattr(meta_entity, "_empty_search_from", None) or contract_start_date
+            search_from = (
+                getattr(meta_entity, "_pending_from", None)
+                or getattr(meta_entity, "_empty_search_from", None)
+                or contract_start_date
+            )
             from_date, to_date = self.calculate_date_range(None, search_from, max_days=search_days)
         else:
             from_date, to_date = self.calculate_date_range(
@@ -406,6 +414,11 @@ class BaseImporter(ABC):
         if meta_entity and not (searching_history and meta_entity._empty_search_days is not None):
             recent_boundary = datetime.now(tz=ZRH).date() - timedelta(days=30)
             history_cursor = min(to_date.date() - timedelta(days=1), recent_boundary)
+            if searching_history:
+                history_cursor = max(
+                    contract_start_date,
+                    min(to_date.date() - timedelta(days=1), recent_boundary + timedelta(days=1)),
+                )
             if history_cursor > from_date.date() or searching_history:
                 meta_entity.set_history_cursor(history_cursor)
             pending = getattr(meta_entity, "_pending_from", None)

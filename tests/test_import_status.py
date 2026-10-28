@@ -26,6 +26,13 @@ from custom_components.ekz_ha.statistics.importer import ZRH
 from custom_components.ekz_ha.statistics.production import ProductionImporter
 
 
+@pytest.fixture
+def prediction_timer(monkeypatch):
+    timer = Mock(return_value=Mock())
+    monkeypatch.setattr("custom_components.ekz_ha.async_track_time_change", timer)
+    return timer
+
+
 @pytest.fixture(params=["consumption", "production"])
 def installation(request, monkeypatch):
     kind = request.param
@@ -525,7 +532,7 @@ def test_status_round_trip_and_translation_states(installation):
 
 
 async def test_setup_returns_with_registered_sensors_while_initial_import_is_blocked(
-    hass, monkeypatch
+    hass, monkeypatch, prediction_timer
 ):
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -576,7 +583,7 @@ async def test_setup_returns_with_registered_sensors_while_initial_import_is_blo
 
 
 async def test_statistics_reset_clears_empty_history_cursor_for_both_import_types(
-    hass, monkeypatch
+    hass, monkeypatch, prediction_timer
 ):
     from custom_components.ekz_ha import async_setup_entry
     from custom_components.ekz_ha.const import DOMAIN
@@ -613,6 +620,9 @@ async def test_statistics_reset_clears_empty_history_cursor_for_both_import_type
     for meta in metas:
         meta._empty_search_from = date(2015, 1, 1)
         meta._empty_search_days = 1920
+    coordinator._prediction_states = {"test": {"old": True}}
+    coordinator._prediction_initialized.add("test")
+    await coordinator._prediction_store.async_save(coordinator._prediction_states)
     await hass.services.async_call(DOMAIN, "reset_statistics", {}, blocking=True)
     for meta in metas:
         assert meta._empty_search_from is None
@@ -620,13 +630,16 @@ async def test_statistics_reset_clears_empty_history_cursor_for_both_import_type
         assert meta._history_cursor is None
         assert meta._last_import is None
     assert coordinator._import_checkpoints == {}
+    assert coordinator._prediction_states == {}
+    assert coordinator._prediction_initialized == set()
+    assert await coordinator._prediction_store.async_load() == {}
     refresh.assert_awaited_once()
 
 
 @pytest.mark.parametrize("kind", ["consumption", "production", "both"])
 @pytest.mark.parametrize("changed", [False, True])
 async def test_offline_restart_registers_saved_diagnostics_and_retries_discovery(
-    hass, monkeypatch, kind, changed
+    hass, monkeypatch, kind, changed, prediction_timer
 ):
     from custom_components.ekz_ha import async_setup_entry
     from custom_components.ekz_ha.const import DOMAIN
@@ -884,7 +897,7 @@ async def test_empty_history_reaches_present_then_rechecks_recent_window(
     assert installation.sensor.native_value == "current"
     assert installation.meta.native_value is None
     await import_chunk(installation, start)
-    assert fetch.await_args.args[1].date() == date(2026, 9, 28)
+    assert fetch.await_args.args[1].date() == date(2026, 9, 29)
 
 
 async def test_empty_bounded_refetch_does_not_skip_discovered_history(

@@ -31,6 +31,7 @@ from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -47,6 +48,109 @@ from .statistics.production import ProductionImporter
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
 _LOGGER = logging.getLogger(__name__)
+PREDICTION_MAX_GAP = timedelta(days=14)
+PREDICTION_LOOKBACK = timedelta(days=400)
+
+
+def _statistics_datetime(value: datetime | float) -> datetime:
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+async def _async_save_prediction_state(coordinator: "EkzCoordinator") -> None:
+    store = getattr(coordinator, "_prediction_store", None)
+    if store is None:
+        return
+    if coordinator._prediction_states is None:
+        try:
+            coordinator._prediction_states = await store.async_load() or {}
+        except Exception as err:
+            _LOGGER.warning("Could not load prediction learning state before saving: %s", err)
+            return
+    states = dict(coordinator._prediction_states or {})
+    states.update(
+        {key: service.to_dict() for key, service in coordinator.prediction_services.items()}
+    )
+    try:
+        await store.async_save(states)
+    except Exception as err:
+        _LOGGER.warning("Could not save prediction learning state: %s", err)
+    else:
+        coordinator._prediction_states = states
+
+
+async def _async_get_prediction_service(
+    coordinator: "EkzCoordinator", key: str
+) -> PredictionService:
+    service = coordinator.prediction_services.setdefault(key, PredictionService())
+    store = getattr(coordinator, "_prediction_store", None)
+    if store is None or key in coordinator._prediction_initialized:
+        return service
+    if coordinator._prediction_states is None:
+        try:
+            coordinator._prediction_states = await store.async_load() or {}
+        except Exception as err:
+            _LOGGER.warning("Could not load prediction learning state: %s", err)
+            return service
+    states = coordinator._prediction_states
+    assert states is not None
+    stored = states.get(key)
+    if stored:
+        try:
+            service.load_dict(stored)
+        except (KeyError, TypeError, ValueError, OverflowError) as err:
+            _LOGGER.warning("Invalid prediction learning state for %s: %s", key, err)
+        else:
+            coordinator._prediction_initialized.add(key)
+            return service
+
+    statistic_id = f"sensor.electricity_consumption_ekz_{key}"
+    now = datetime.now(tz=UTC)
+    try:
+        rows_by_id = await get_recorder_instance(coordinator.hass).async_add_executor_job(
+            statistics_during_period,
+            coordinator.hass,
+            now - PREDICTION_LOOKBACK,
+            now,
+            {statistic_id},
+            "hour",
+            None,
+            {"sum"},
+        )
+    except Exception as err:
+        _LOGGER.warning("Could not rebuild prediction learning state for %s: %s", key, err)
+        return service
+    daily_days = set(getattr(coordinator, "_daily_statistics", {}).get(statistic_id, []))
+    rows: list[tuple[datetime, float | None]] = []
+    for row in (rows_by_id or {}).get(statistic_id, []):
+        raw_start = row.get("start")
+        if raw_start is None:
+            _LOGGER.warning("Prediction history for %s contains a row without a start", key)
+            continue
+        rows.append((_statistics_datetime(raw_start), row.get("sum")))
+    rows.sort(key=lambda row: row[0])
+    values = []
+    for (previous_start, previous_sum), (start, total) in zip(rows, rows[1:], strict=False):
+        if (
+            start - previous_start == timedelta(hours=1)
+            and previous_sum is not None
+            and total is not None
+            and start.astimezone(ZRH).date().isoformat() not in daily_days
+            and previous_start.astimezone(ZRH).date().isoformat() not in daily_days
+        ):
+            values.append((start, total - previous_sum))
+    service.seed_hourly_values(values)
+    coordinator._prediction_initialized.add(key)
+    _LOGGER.info(
+        "Rebuilt prediction learning state for %s: %d month-hour buckets",
+        key,
+        len(service.get_averages()),
+    )
+    await _async_save_prediction_state(coordinator)
+    return service
 
 
 def _is_contract_active(contract) -> bool:
@@ -468,6 +572,64 @@ class EkzCoordinator(DataUpdateCoordinator):
         ] = {}  # prediction service per installation
         self.migrated_prediction_statistics: set[str] = set()
         self.next_update_time: datetime | None = None
+        self._prediction_store = Store[dict[str, dict[str, Any]]](
+            hass, 1, f"{DOMAIN}.{config.entry_id}.prediction"
+        )
+        self._prediction_states: dict[str, dict[str, Any]] | None = None
+        self._prediction_initialized: set[str] = set()
+
+    async def async_extend_predictions(self, now: datetime) -> None:
+        """Advance estimates locally, serialized with imports and statistics reset."""
+        if self._reset_lock.locked():
+            return
+        async with self._reset_lock:
+            now = now.astimezone(UTC)
+            for key in self.installations or {}:
+                if self.catching_up.get(key, True):
+                    continue
+                meta = (getattr(self, "meta_entities", None) or {}).get(key)
+                last_real = getattr(meta, "_last_successful_import", None)
+                if last_real is None or now - last_real > PREDICTION_MAX_GAP or last_real > now:
+                    continue
+                statistic_id = _prediction_statistic_id(self.hass, key)
+                if statistic_id is None:
+                    continue
+                try:
+                    service = await _async_get_prediction_service(self, key)
+                    if not service.get_averages():
+                        continue
+                    recorder = get_recorder_instance(self.hass)
+                    await recorder.async_block_till_done()
+                    last = await recorder.async_add_executor_job(
+                        get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
+                    )
+                    rows = (last or {}).get(statistic_id, [])
+                    if not rows:
+                        continue
+                    raw_start = rows[0].get("start")
+                    last_sum = rows[0].get("sum")
+                    if raw_start is None or last_sum is None:
+                        _LOGGER.warning(
+                            "Prediction tail for %s has no start or cumulative sum", key
+                        )
+                        continue
+                    last_start = _statistics_datetime(raw_start)
+                    if last_start < last_real:
+                        continue
+                    predictions = service.generate_predictions(
+                        last_start, now, initial_total=last_sum
+                    )
+                    if predictions:
+                        async_import_statistics(
+                            self.hass,
+                            _make_stat_meta(statistic_id),
+                            [
+                                StatisticData(start=p["start"], state=p["state"], sum=p["sum"])
+                                for p in predictions
+                            ],
+                        )
+                except Exception as err:
+                    _LOGGER.warning("Could not extend predictions for %s: %s", key, err)
 
     async def _async_setup(self):
         """Load installations on first start."""
@@ -646,7 +808,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 for contract in production_data.contracts
                 if contract.anlage and _is_contract_active(contract)
             ]
-            self.production_installations = {
+            discovered_production = {
                 contract.anlage: {"contract_start": contract.einzdat}
                 for contract in production_contracts
             }
@@ -662,7 +824,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                     if contract.anlage and _is_contract_active(contract)
                 }
             for inst_id, info in self.installations.items():
-                if inst_id in self.production_installations:
+                if inst_id in discovered_production:
                     continue
                 vstelle = consumption_vstellen.get(inst_id)
                 if vstelle and vstelle in production_vstellen:
@@ -672,12 +834,13 @@ class EkzCoordinator(DataUpdateCoordinator):
                         inst_id, datetime.now(tz=ZRH) - timedelta(days=7), datetime.now(tz=ZRH)
                     )
                     if not test_data.is_empty():
-                        self.production_installations[inst_id] = info.copy()
+                        discovered_production[inst_id] = info.copy()
                         _LOGGER.info(f"Production data available for installation {inst_id}")
                 except EkzAuthenticationError:
                     raise
                 except Exception as e:
                     _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
+            self.production_installations = discovered_production
 
         meta_entities = getattr(self, "meta_entities", None)
         if not meta_entities and not getattr(self, "production_meta_entities", None):
@@ -828,16 +991,13 @@ class EkzCoordinator(DataUpdateCoordinator):
                     self.update_interval = NORMAL_SCAN_INTERVAL
 
             # --- Prediction: Accumulate and generate predictions ---
-            # Initialize prediction service if needed
-            if key not in self.prediction_services:
-                self.prediction_services[key] = PredictionService()
-
-            prediction_service = self.prediction_services[key]
+            prediction_service = await _async_get_prediction_service(self, key)
 
             # Accumulate raw values from this import chunk
             if result.get("raw_values"):
                 prediction_service.accumulate_values(result["raw_values"])
                 prediction_service.calculate_averages()
+                await _async_save_prediction_state(self)
                 averages = prediction_service.get_averages()
                 _LOGGER.debug(
                     f"Updated prediction averages for {key}: {len(averages)} month-hour buckets"
@@ -921,10 +1081,13 @@ class EkzCoordinator(DataUpdateCoordinator):
                             "state": partial_hour_prediction,
                         }
                     )
-                forward_predictions = prediction_service.generate_predictions(
-                    last_actual_start,
-                    datetime.now(tz=UTC),
-                    initial_total=partial_hour_prediction,
+                now = datetime.now(tz=UTC)
+                forward_predictions = (
+                    prediction_service.generate_predictions(
+                        last_actual_start, now, initial_total=partial_hour_prediction
+                    )
+                    if now - last_actual_start <= PREDICTION_MAX_GAP
+                    else []
                 )
                 predictions.extend(forward_predictions)
 
@@ -1145,6 +1308,9 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             for prediction_service in coordinator.prediction_services.values():
                 prediction_service.reset()
             coordinator.prediction_services = {}
+            coordinator._prediction_states = {}
+            coordinator._prediction_initialized.clear()
+            await coordinator._prediction_store.async_save({})
             for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
                 meta.set_last_import(None)
                 meta._last_successful_import = None
@@ -1175,6 +1341,10 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         await coordinator.async_request_refresh()
 
     hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)
+
+    entry.async_on_unload(
+        async_track_time_change(hass, coordinator.async_extend_predictions, minute=1, second=0)
+    )
     entry.async_create_background_task(
         hass,
         coordinator.async_request_refresh(),

@@ -165,7 +165,10 @@ EKZ delivers consumption data with a delay of approximately 7–10 days. To fill
 **How it works:**
 - While importing historical data, the integration accumulates **hourly consumption averages** per UTC month+hour bucket from the raw 15-minute slots.
 - Historical contributions remain in these aggregate buckets. Individual slots are retained only for the latest 32 days of imported data to handle repeated readings and corrections within the 30-day import lookback. Older slots are frozen in the aggregates and ignored if returned again, keeping prediction memory bounded.
+- The learned profile and recent correction bookkeeping are saved across Home Assistant restarts. On upgrade, if no saved profile exists, the integration rebuilds it from up to 400 days of real hourly consumption statistics. Daily-total days, gaps and negative consumption differences are excluded. Later raw imports replace overlapping seeded hours rather than counting them twice.
 - Once the historical import is complete (catch-up mode ends), each update cycle generates predicted hourly values from the last real data point up to the current time.
+- Between EKZ updates, predictions extend locally at one minute past each hour, without additional EKZ API calls. Extensions pause during imports, catch-up and statistics resets, and stop if the latest real measurement is more than **14 days** old. Fresh predictions do not extend that limit.
+- Resetting statistics also clears the saved learning profile. Existing historical measurements do not need to be deleted to recover predictions after a normal restart.
 - The predictions are written as HA statistics — the Energy Dashboard will show them as an estimate for the recent gap.
 
 **Adding the prediction sensor to the Energy Dashboard:**
