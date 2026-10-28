@@ -865,6 +865,9 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
             get_production_15min=AsyncMock(return_value=ConsumptionData()),
         ),
     )
+    after_restart._async_discover_installations = MethodType(
+        EkzCoordinator._async_discover_installations, after_restart
+    )
     await EkzCoordinator._async_setup(after_restart)
     meta = EkzMetaEntity(Mock(), "825821")
     meta.set_last_import(local_start.date())
@@ -1358,6 +1361,9 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
             get_production_installations=AsyncMock(return_value=SimpleNamespace(contracts=[])),
             get_production_15min=AsyncMock(return_value=ConsumptionData()),
         ),
+    )
+    fresh._async_discover_installations = MethodType(
+        EkzCoordinator._async_discover_installations, fresh
     )
     await EkzCoordinator._async_setup(fresh)
     meta = EkzMetaEntity(Mock(), "825821")

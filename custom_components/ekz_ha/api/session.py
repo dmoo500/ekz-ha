@@ -14,6 +14,14 @@ HTML_HEADERS = {"Accept": "text/html,application/xhtml+xml,application/xml"}
 JSON_HEADERS = {"Accept": "application/json, text/plain, */*"}
 
 
+class EkzAuthenticationError(ValueError):
+    """Credentials or the configured second factor were rejected."""
+
+
+class EkzConnectionError(ValueError):
+    """The login service is unavailable or returned an unexpected page."""
+
+
 class Session:
     """Represents a session with the EKZ API."""
 
@@ -25,8 +33,6 @@ class Session:
         device_name: str | None = None,
     ) -> None:
         """Construct an instance of the EKZ session."""
-        self._session = aiohttp.ClientSession()
-        self._session.headers.add("User-Agent", "ekz-ha")
         self._username = username
         self._password = password
 
@@ -35,7 +41,7 @@ class Session:
             cleaned_secret = totp_secret.strip().replace(" ", "").replace("-", "").upper()
             # Validate Base32 format (only A-Z, 2-7)
             if not re.match(r"^[A-Z2-7]+=*$", cleaned_secret):
-                raise ValueError(
+                raise EkzAuthenticationError(
                     "Invalid TOTP secret format. Secret must be Base32 encoded (only A-Z and 2-7). "
                     "Received secret contains invalid characters. "
                     "Please check your authenticator app and re-enter the secret."
@@ -49,6 +55,8 @@ class Session:
 
         self._device_name = device_name.strip() if device_name else None
         self._logged_in = False
+        self._session = aiohttp.ClientSession()
+        self._session.headers.add("User-Agent", "ekz-ha")
 
     def _init_session(self):
         if self._session is None:
@@ -117,7 +125,7 @@ class Session:
 
         async with self._session.get("https://my.ekz.ch/verbrauch/", headers=HTML_HEADERS) as r:
             if not r.ok:
-                raise ValueError("EKZ seems unreachable")
+                raise EkzConnectionError("EKZ seems unreachable")
             html = await r.text()
 
             # Find the login form and get the action URL, so we can submit credentials.
@@ -125,8 +133,8 @@ class Session:
             loginform = soup.select("form[id=kc-form-login]")
             if not loginform:
                 if "Es tut uns leid" in html:
-                    raise ValueError("myEKZ appears to be offline for maintenance")
-                raise ValueError("Login form not found on page")
+                    raise EkzConnectionError("myEKZ appears to be offline for maintenance")
+                raise EkzConnectionError("Login form not found on page")
             authurl = loginform[0]["action"]
 
             async with self._session.post(
@@ -136,18 +144,22 @@ class Session:
             ) as r:
                 html = await r.text()
                 if not r.ok:
-                    raise ValueError("Login failed. Bad user/password?")
+                    if r.status in (400, 401, 403):
+                        raise EkzAuthenticationError("Login failed. Bad user/password?")
+                    raise EkzConnectionError("EKZ login service is unavailable")
 
                 soup = BeautifulSoup(html, "html.parser")
                 all_form_ids = [f.get("id", "<no-id>") for f in soup.select("form")]
                 _LOGGER.debug("[EKZ login] Step: after password. Forms on page: %s", all_form_ids)
+                if soup.select("form[id=kc-form-login]"):
+                    raise EkzAuthenticationError("Login failed. Bad user/password?")
 
                 otpform = soup.select("form[id=otp], form[id=kc-otp-login-form]")
                 smscode_form = soup.select("form[id=kc-sms-code-login-form]")
 
                 if otpform:
                     if not self._totp_secret:
-                        raise ValueError(
+                        raise EkzAuthenticationError(
                             "EKZ requires a TOTP code (authenticator app) but no TOTP secret was configured. "
                             "Please reconfigure the integration and enter the TOTP secret key from your authenticator app."
                         )
@@ -227,7 +239,13 @@ class Session:
                     ) as r:
                         html = await r.text()
                         if not r.ok:
-                            raise ValueError("TOTP submission failed. Check your TOTP secret key.")
+                            if r.status in (400, 401, 403):
+                                raise EkzAuthenticationError(
+                                    "TOTP submission failed. Check your TOTP secret key."
+                                )
+                            raise EkzConnectionError("EKZ TOTP service is unavailable")
+                        if "Es tut uns leid" in html:
+                            raise EkzConnectionError("myEKZ appears to be offline for maintenance")
                         soup = BeautifulSoup(html, "html.parser")
                         all_form_ids = [f.get("id", "<no-id>") for f in soup.select("form")]
                         _LOGGER.debug(
@@ -238,9 +256,9 @@ class Session:
                                 "[EKZ TOTP] Code was rejected. Current system time: %s (UTC: %s). "
                                 "Please verify: 1) TOTP secret is correct, 2) System clock is synchronized.",
                                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                                datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S"),
                             )
-                            raise ValueError(
+                            raise EkzAuthenticationError(
                                 "TOTP code was rejected by EKZ. "
                                 "Possible causes:\n"
                                 "1. TOTP secret key is incorrect - please check your authenticator app\n"
@@ -249,14 +267,14 @@ class Session:
                                 "To fix: Remove and re-add the integration with the correct TOTP secret."
                             )
                 elif smscode_form:
-                    raise ValueError(
+                    raise EkzAuthenticationError(
                         "EKZ requires an SMS 2FA code, which is not supported. "
                         "You must disable SMS 2FA and switch to an authenticator app instead. "
                         "Go to: https://login.ekz.ch/auth/realms/myEKZ/account/?referrer=cos-myekz-webapp"
                         "&referrer_uri=https://my.ekz.ch/nutzerdaten/#/account-security/signing-in"
                     )
                 elif "Es tut uns leid" in html:
-                    raise ValueError("myEKZ appears to be offline for maintenance")
+                    raise EkzConnectionError("myEKZ appears to be offline for maintenance")
                 else:
                     _LOGGER.info(
                         "[EKZ login] No known form found after password submit. "

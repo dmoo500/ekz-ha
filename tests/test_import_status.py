@@ -423,8 +423,9 @@ def test_status_round_trip_and_translation_states(installation):
 
 
 @pytest.mark.parametrize("kind", ["consumption", "production", "both"])
+@pytest.mark.parametrize("changed", [False, True])
 async def test_offline_restart_registers_saved_diagnostics_and_retries_discovery(
-    hass, monkeypatch, kind
+    hass, monkeypatch, kind, changed
 ):
     from custom_components.ekz_ha import async_setup_entry
     from custom_components.ekz_ha.const import DOMAIN
@@ -514,10 +515,87 @@ async def test_offline_restart_registers_saved_diagnostics_and_retries_discovery
         )
     )
     api.get_production_15min = AsyncMock(return_value=ConsumptionData())
-    await coordinator._async_update_data()
+    expected = known
+    if changed:
+        expected = {
+            data_type: {f"{key}-new": info for key, info in installations.items()}
+            for data_type, installations in known.items()
+        }
+        for data_type in ("consumption", "production"):
+            method = getattr(api, f"get_{data_type}_installations")
+            method.return_value = InstallationSelectionData(
+                contracts=[
+                    InstallationContract.from_dict(
+                        {"anlage": key, "einzdat": info["contract_start"]}
+                    )
+                    for key, info in expected[data_type].items()
+                ]
+            )
+        api.get_production_installations.side_effect = TimeoutError("rediscovery interrupted")
+        with pytest.raises(TimeoutError):
+            await coordinator._async_update_data()
+        imports.assert_not_awaited()
+        assert coordinator._retry_setup
+        api.get_production_installations.side_effect = None
+    with patch.object(hass.config_entries, "async_reload", new_callable=AsyncMock) as reload:
+        await coordinator._async_update_data()
+        await hass.async_block_till_done()
+        if changed:
+            imports.assert_not_awaited()
+            reload.assert_awaited_once_with(entry.entry_id)
+        else:
+            imports.assert_awaited_once()
+            reload.assert_not_awaited()
     assert not coordinator._retry_setup
-    imports.assert_awaited_once()
-    assert await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.installations").async_load() == known
+    assert await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.installations").async_load() == expected
+
+
+async def test_empty_historical_search_remains_searching_with_recorded_rows(
+    installation, monkeypatch, freezer
+):
+    freezer.move_to("2026-10-28 12:00:00+00:00")
+    start = datetime(2000, 1, 1, tzinfo=ZRH)
+    installation.meta._empty_search_days = 30
+    installation.meta._recent_statistics = [
+        {"start": start.astimezone(UTC), "state": 1.0, "sum": 1.0}
+    ]
+    monkeypatch.setattr(
+        installation.importer, "fetch_data", AsyncMock(return_value=ConsumptionData())
+    )
+    result = await import_chunk(installation, start)
+    assert result["statistics"]
+    assert not result["fetched_data"]
+    assert installation.meta._empty_search_days == 60
+    assert installation.sensor.native_value == "searching"
+    assert installation.sensor.extra_state_attributes["last_result"] == "no_data"
+
+
+@pytest.mark.parametrize("recorded_daily", [False, True])
+@pytest.mark.parametrize("accepted_next_hour", [False, True])
+async def test_only_accepted_readings_report_imported(
+    installation, monkeypatch, freezer, recorded_daily, accepted_next_hour
+):
+    freezer.move_to("2026-10-28 12:00:00+00:00")
+    start = datetime(2026, 10, 25, tzinfo=ZRH)
+    installation.meta.set_last_import(start.date())
+    installation.meta.set_history_cursor(start.date())
+    installation.meta._recent_statistics = [
+        {"start": start.astimezone(UTC), "state": 24.0, "sum": 24.0}
+    ]
+    if recorded_daily:
+        installation.meta._daily_statistics = {start.date().isoformat()}
+    values = [{"timestamp": start.isoformat(), "value": 0.1}]
+    if accepted_next_hour:
+        next_time = start + (timedelta(days=1) if recorded_daily else timedelta(hours=1))
+        values.append({"timestamp": next_time.isoformat(), "value": 0.2})
+    data = ConsumptionData.from_dict({"level": "QUARTER_HOUR", "series": {"values": values}})
+    monkeypatch.setattr(installation.importer, "fetch_data", AsyncMock(return_value=data))
+    result = await import_chunk(installation, start)
+    assert result["statistics"][0]["state"] == 24.0
+    assert result["fetched_data"] is accepted_next_hour
+    assert installation.sensor.extra_state_attributes["last_result"] == (
+        "imported" if accepted_next_hour else "no_data"
+    )
 
 
 @pytest.mark.parametrize("failure", ["offline", "auth"])
@@ -528,7 +606,9 @@ async def test_startup_without_usable_cache_does_not_hide_setup_errors(hass, mon
     from custom_components.ekz_ha.const import DOMAIN
 
     entry = Mock(entry_id=f"no-fallback-{failure}", data={"user": "test", "password": "test"})
-    monkeypatch.setattr("custom_components.ekz_ha.EkzApiClient", Mock())
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.EkzApiClient", Mock(return_value=Mock(close=AsyncMock()))
+    )
     error = ConfigEntryAuthFailed("reauth required") if failure == "auth" else ConfigEntryNotReady()
     if failure == "auth":
         await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.installations").async_save(

@@ -117,10 +117,11 @@ class BaseImporter(ABC):
         meta_entity: Any,
         date_from: datetime,
         date_to: datetime,
-    ) -> list[ApiValue]:
+    ) -> tuple[list[ApiValue], bool]:
         if hass is None:
-            return values
+            return values, bool(values)
         preserved = []
+        accepted_data = False
         statistic_id = (
             f"sensor.electricity_{self.get_data_type_name().lower()}_ekz_{installation_id}"
         )
@@ -173,23 +174,29 @@ class BaseImporter(ABC):
             value = day_values[0]
             incoming_daily = value.origin is ValueOrigin.DAILY_TOTAL
             if not incoming_daily and not known_daily:
-                preserved.extend(
-                    self.reconciler.reconcile_hourly_values(
-                        day_values, rows, statistic_id, getattr(meta_entity, "_hourly_slots", {})
-                    )
+                reconciled = self.reconciler.reconcile_hourly_values(
+                    day_values, rows, statistic_id, getattr(meta_entity, "_hourly_slots", {})
                 )
+                incoming_timestamps = {item.timestamp for item in day_values}
+                accepted_data |= any(
+                    item.origin is ValueOrigin.API and item.timestamp in incoming_timestamps
+                    for item in reconciled
+                )
+                preserved.extend(reconciled)
                 continue
             start, end = day_bounds(day)
             if not incoming_daily:
                 expected = {slot.strftime("%Y%m%d%H%M%S") for slot in day_slots(day)}
                 if level == "QUARTER_HOUR" and {item.timestamp for item in day_values} == expected:
                     preserved.extend(day_values)
+                    accepted_data = True
                     continue
             if not incoming_daily:
                 preserved.extend(self.reconciler.restore_daily_values(value, rows, statistic_id))
                 continue
             if not rows:
                 preserved.extend(day_values)
+                accepted_data = True
                 continue
             if (
                 len(rows) == 1
@@ -197,9 +204,11 @@ class BaseImporter(ABC):
                 and (known_daily or rows[start].get("end", end) == end)
             ):
                 preserved.append(value)
+                accepted_data = True
                 continue
             preserved.extend(self.reconciler.reconcile_daily_total(value, rows, statistic_id))
-        return sorted(preserved, key=lambda value: value.timestamp)
+            accepted_data = True
+        return sorted(preserved, key=lambda value: value.timestamp), accepted_data
 
     def calculate_date_range(
         self,
@@ -348,9 +357,8 @@ class BaseImporter(ABC):
 
         if consumption_data.level == "DAY":
             api_values = [replace(value, origin=ValueOrigin.DAILY_TOTAL) for value in api_values]
-        fetched_data = bool(api_values)
         merged_values = self.aggregator.merge_tariffs(api_values)
-        merged_values = await self._reconcile_day_resolution(
+        merged_values, fetched_data = await self._reconcile_day_resolution(
             hass,
             installation_id,
             merged_values,

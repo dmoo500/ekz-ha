@@ -210,6 +210,9 @@ async def test_empty_discovery_is_retryable_and_production_only_is_supported():
             ),
         )
     )
+    coordinator._async_discover_installations = MethodType(
+        EkzCoordinator._async_discover_installations, coordinator
+    )
     with pytest.raises(UpdateFailed):
         await EkzCoordinator._async_setup(coordinator)
     await EkzCoordinator._async_setup(coordinator)
@@ -236,6 +239,7 @@ async def test_config_flow_checks_production_before_rejecting_account(
     )
     monkeypatch.setattr("custom_components.ekz_ha.config_flow.EkzApiClient", lambda *args: client)
     flow = SimpleNamespace(
+        _reauth=False,
         _credentials={"user": "test", "password": "test", "totp_secret": "JBSWY3DPEHPK3PXP"},
         async_create_entry=Mock(return_value="created"),
         async_show_form=Mock(return_value="form"),

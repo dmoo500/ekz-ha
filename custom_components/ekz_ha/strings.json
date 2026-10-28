@@ -57,7 +57,8 @@
       "cannot_connect": "Could not connect to myEKZ. Please check your network connection and try again."
     },
     "abort": {
-      "already_configured": "EKZ is already configured."
+      "already_configured": "EKZ is already configured.",
+      "reauth_successful": "Authentication was updated successfully."
     }
   }
 }

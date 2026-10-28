@@ -104,6 +104,15 @@ discovery before importing again. This requires at least one successful startup
 with 0.2.1; a first setup without cached installations still waits for EKZ.
 Authentication failures continue to use Home Assistant's normal reauthentication
 flow rather than the offline fallback.
+Rejected credentials or TOTP codes prompt for replacement credentials and TOTP
+confirmation in Home Assistant, then reload the existing integration without
+resetting its statistics. Maintenance pages and server outages do not start
+reauthentication. If offline recovery discovers new or replaced installations,
+the entry reloads automatically to register their sensors before imports resume.
+`imported` means at least one returned reading was accepted by reconciliation;
+partial readings discarded in favor of stored daily/hourly statistics remain
+`no_data`. An expanding historical search stays `searching` even when stored
+rows are replayed.
 
 If the result is `no_data` while searching, allow the next update to search a
 larger period. For `failed`, enable debug logging, reload the integration once,

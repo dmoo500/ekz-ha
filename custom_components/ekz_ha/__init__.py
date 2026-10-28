@@ -29,12 +29,13 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EkzApiClient
+from .api.session import EkzAuthenticationError
 from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
 from .data.validator import day_slots
 from .import_status import ImportStatus, get_import_status
@@ -327,7 +328,7 @@ async def _async_import_chunk(
         requested_to = status.requested_to
         status.state = (
             "searching"
-            if not statistics and getattr(meta, "_empty_search_days", None) is not None
+            if getattr(meta, "_empty_search_days", None) is not None
             else (
                 "importing"
                 if requested_to is None or requested_to <= datetime.now(tz=ZRH).date()
@@ -399,6 +400,8 @@ async def _async_import_chunk(
             _LOGGER.error(
                 "Could not persist failure diagnostics for %s: %s", statistic_id, save_err
             )
+        if isinstance(err, EkzAuthenticationError):
+            raise ConfigEntryAuthFailed("EKZ authentication failed") from err
         raise UpdateFailed(f"Import failed for {statistic_id}: {err}") from err
 
 
@@ -464,6 +467,13 @@ class EkzCoordinator(DataUpdateCoordinator):
         checkpoint_store = getattr(self, "_import_checkpoint_store", None)
         if checkpoint_store is not None:
             self._import_checkpoints = await checkpoint_store.async_load() or {}
+        try:
+            await self._async_discover_installations()
+        except EkzAuthenticationError as err:
+            raise ConfigEntryAuthFailed("EKZ authentication failed") from err
+
+    async def _async_discover_installations(self):
+        """Discover and persist the currently active installations."""
         installations_data = await self.api_client.get_consumption_installations()
 
         # Filter for active contracts only
@@ -511,6 +521,8 @@ class EkzCoordinator(DataUpdateCoordinator):
                 if not test_data.is_empty():
                     self.production_installations[inst_id] = info.copy()
                     _LOGGER.info(f"Production data available for installation {inst_id}")
+            except EkzAuthenticationError:
+                raise
             except Exception as e:
                 _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
 
@@ -532,9 +544,22 @@ class EkzCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         """Acquire reset lock then delegate to _do_update_data."""
         async with self._reset_lock:
-            if self._retry_setup:
-                await self._async_setup()
-            await self._do_update_data()
+            try:
+                if self._retry_setup:
+                    await self._async_setup()
+                    registered_ids = (
+                        set(getattr(self, "meta_entities", None) or {}),
+                        set(getattr(self, "production_meta_entities", None) or {}),
+                    )
+                    current_ids = (set(self.installations), set(self.production_installations))
+                    if registered_ids != current_ids:
+                        self.hass.async_create_task(
+                            self.hass.config_entries.async_reload(self.config.entry_id)
+                        )
+                        return
+                await self._do_update_data()
+            except EkzAuthenticationError as err:
+                raise ConfigEntryAuthFailed("EKZ authentication failed") from err
 
     async def _get_running_sum_before(
         self, statistic_id: str, import_date: date, fallback: float = 0.0
@@ -611,6 +636,8 @@ class EkzCoordinator(DataUpdateCoordinator):
                     if not test_data.is_empty():
                         self.production_installations[inst_id] = info.copy()
                         _LOGGER.info(f"Production data available for installation {inst_id}")
+                except EkzAuthenticationError:
+                    raise
                 except Exception as e:
                     _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
 
@@ -975,12 +1002,15 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
     scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
     # Create API client using new architecture
-    api_client = EkzApiClient(
-        entry.data["user"],
-        entry.data["password"],
-        entry.data.get("totp_secret"),
-        entry.data.get("device_name"),
-    )
+    try:
+        api_client = EkzApiClient(
+            entry.data["user"],
+            entry.data["password"],
+            entry.data.get("totp_secret"),
+            entry.data.get("device_name"),
+        )
+    except EkzAuthenticationError as err:
+        raise ConfigEntryAuthFailed("Invalid EKZ authentication configuration") from err
 
     coordinator = EkzCoordinator(hass, api_client, scan_interval, entry)
 
@@ -993,6 +1023,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         await coordinator.async_config_entry_first_refresh()
     except ConfigEntryNotReady:
         if not known_installations or not any(known_installations.values()):
+            await api_client.close()
             raise
         coordinator.installations = known_installations["consumption"]
         coordinator.production_installations = known_installations["production"]
@@ -1001,6 +1032,9 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             "EKZ startup refresh failed; restoring known installations for diagnostics. "
             "Installation discovery will be retried before imports resume."
         )
+    except ConfigEntryAuthFailed:
+        await api_client.close()
+        raise
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
 
     async def handle_reset_statistics(call):
@@ -1074,6 +1108,8 @@ async def async_unload_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bo
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unload_ok:
-        hass.data.pop(DOMAIN, None)
+        data = hass.data.pop(DOMAIN, None)
+        if data is not None:
+            await data["coordinator"].api_client.close()
         hass.services.async_remove(DOMAIN, "reset_statistics")
     return unload_ok

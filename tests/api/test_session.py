@@ -7,7 +7,12 @@ from unittest.mock import AsyncMock, Mock
 import aiohttp
 import pytest
 
-from custom_components.ekz_ha.api.session import JSON_HEADERS, Session
+from custom_components.ekz_ha.api.session import (
+    JSON_HEADERS,
+    EkzAuthenticationError,
+    EkzConnectionError,
+    Session,
+)
 
 
 class FakeResponse:
@@ -30,6 +35,50 @@ class FakeResponse:
 
     async def text(self):
         return self.data
+
+
+@pytest.mark.parametrize(
+    ("stage", "status", "html", "expected_error"),
+    [
+        ("initial", 503, "", EkzConnectionError),
+        ("initial", 200, "Es tut uns leid", EkzConnectionError),
+        ("password", 503, "", EkzConnectionError),
+        ("password", 429, "", EkzConnectionError),
+        ("password", 404, "", EkzConnectionError),
+        ("password", 401, "", EkzAuthenticationError),
+        ("password", 200, '<form id="kc-form-login"></form>', EkzAuthenticationError),
+        ("password", 200, '<form id="kc-sms-code-login-form"></form>', EkzAuthenticationError),
+        ("password", 200, "Es tut uns leid", EkzConnectionError),
+        ("otp", 503, "", EkzConnectionError),
+        ("otp", 200, "Es tut uns leid", EkzConnectionError),
+        ("otp", 401, "", EkzAuthenticationError),
+        ("otp", 200, '<form id="otp"></form>', EkzAuthenticationError),
+    ],
+)
+async def test_real_login_distinguishes_authentication_from_outages(
+    monkeypatch, stage, status, html, expected_error
+):
+    session = Session.__new__(Session)
+    session._logged_in = False
+    session._username = "test"
+    session._password = "test"
+    session._totp_secret = "JBSWY3DPEHPK3PXP"
+    session._device_name = None
+    session._session = Mock()
+    session._session.get.return_value = FakeResponse(
+        status=status if stage == "initial" else 200,
+        data=html if stage == "initial" else '<form id="kc-form-login" action="/login"></form>',
+    )
+    session._session.post.side_effect = [
+        FakeResponse(
+            status=status if stage == "password" else 200,
+            data=html if stage == "password" else '<form id="otp" action="/otp"></form>',
+        ),
+        FakeResponse(status=status, data=html),
+    ]
+    with pytest.raises(expected_error):
+        await session._ensure_logged_in()
+    assert not session._logged_in
 
 
 def make_session(monkeypatch, responses):
