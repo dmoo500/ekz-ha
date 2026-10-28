@@ -614,7 +614,9 @@ class EkzCoordinator(DataUpdateCoordinator):
             meta_entity._daily_statistics = set(
                 getattr(self, "_daily_statistics", {}).get(statistic_id, [])
             )
-            importer = ConsumptionImporter(self.api_client)
+            importer = ConsumptionImporter(
+                self.api_client, daily_fallback_days=meta_entity._daily_statistics
+            )
             contract_start_dt = (
                 datetime.strptime(contract_start, "%Y-%m-%d")
                 if isinstance(contract_start, str)

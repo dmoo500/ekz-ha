@@ -150,6 +150,96 @@ async def test_issue20_recent_daily_only_response_is_imported(freezer):
     api.get_consumption_daily.assert_awaited_once()
 
 
+@pytest.mark.parametrize("missing_day", [False, True])
+@pytest.mark.parametrize("flushed", [False, True])
+@pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
+async def test_corrected_daily_fallback_with_partial_quarter_hours(
+    monkeypatch, freezer, missing_day, flushed, local_day
+):
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH)
+    end = start + timedelta(days=1)
+    freezer.move_to(end + timedelta(days=2))
+    existing = [{"start": start.astimezone(UTC), "state": 6.0, "sum": 106.0}]
+    meta = EkzMetaEntity(Mock(), "825821")
+    meta.set_last_import(local_day)
+    meta._daily_statistics = {local_day.isoformat()}
+    meta._recent_statistics = [] if flushed else existing
+    statistic_id = "sensor.electricity_consumption_ekz_825821"
+    recorder = Mock(
+        async_add_executor_job=AsyncMock(return_value={statistic_id: existing} if flushed else {})
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+    api = Mock(
+        get_consumption_15min=AsyncMock(
+            return_value=api_series(
+                "QUARTER_HOUR",
+                [((start + timedelta(hours=12)).isoformat(), 0.25, "VALID")]
+                + [
+                    ((start + timedelta(days=index)).isoformat(), 0.25, "VALID")
+                    for index in range(1, 4)
+                    if not missing_day or index != 1
+                ],
+            )
+        ),
+        get_consumption_daily=AsyncMock(
+            return_value=api_series("DAY", [(start.isoformat(), 10.0, "VALID")])
+        ),
+    )
+    importer = ConsumptionImporter(api, daily_fallback_days=meta._daily_statistics)
+    result = await importer.import_statistics(Mock(), "825821", start, meta, 100.0)
+
+    daily_rows = [row for row in result["statistics"] if row["start"] < end]
+    assert daily_rows[-1]["sum"] == pytest.approx(110.0)
+    assert sum(row["state"] for row in daily_rows) == pytest.approx(10.0)
+    assert all(value.date != local_day.isoformat() for value in result["raw_values"])
+    assert meta._pending_from == local_day
+    api.get_consumption_daily.assert_awaited_once()
+
+
+@pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
+async def test_complete_quarter_hour_fallback_day_does_not_fetch_daily(freezer, local_day):
+    from custom_components.ekz_ha.data.validator import day_slots
+
+    start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH)
+    freezer.move_to(start + timedelta(days=2))
+    quarter_hour = api_series(
+        "QUARTER_HOUR",
+        [(slot.isoformat(), 0.25, "VALID") for slot in day_slots(local_day.isoformat())],
+    )
+    api = Mock(
+        get_consumption_15min=AsyncMock(return_value=quarter_hour),
+        get_consumption_daily=AsyncMock(),
+    )
+    importer = ConsumptionImporter(api, daily_fallback_days={local_day.isoformat()})
+
+    result = await importer.fetch_data("825821", start, start + timedelta(days=1))
+
+    assert result is quarter_hour
+    api.get_consumption_daily.assert_not_awaited()
+
+
+async def test_missing_daily_correction_keeps_partial_quarter_hours(freezer):
+    freezer.move_to("2026-10-18 12:00:00+00:00")
+    start = datetime(2026, 10, 15, tzinfo=ZRH)
+    quarter_hour = api_series(
+        "QUARTER_HOUR", [((start + timedelta(hours=12)).isoformat(), 0.25, "VALID")]
+    )
+    api = Mock(
+        get_consumption_15min=AsyncMock(return_value=quarter_hour),
+        get_consumption_daily=AsyncMock(return_value=ConsumptionData()),
+    )
+    importer = ConsumptionImporter(api, daily_fallback_days={start.date().isoformat()})
+
+    result = await importer.fetch_data("825821", start, start + timedelta(days=1))
+
+    api.get_consumption_daily.assert_awaited_once()
+    assert result.get_all_values() == quarter_hour.get_all_values()
+
+
 @pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
 @pytest.mark.parametrize(
     "local_day", [date(2026, 1, 15), date(2026, 7, 15), date(2026, 3, 29), date(2026, 10, 25)]
@@ -274,6 +364,7 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         prediction_services={},
         migrated_prediction_statistics=set(),
         update_interval=NORMAL_SCAN_INTERVAL,
+        _daily_statistics={statistic_id: [first_day.isoformat()]},
     )
     coordinator._get_running_sum_before = MethodType(
         EkzCoordinator._get_running_sum_before, coordinator
@@ -314,6 +405,8 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
 
     async def import_chunk(self, hass, key, contract_start, metadata, running_sum_offset):
         nonlocal call_count
+        if entity_type == "consumption":
+            assert self.daily_fallback_days == metadata._daily_statistics
         if history_gap:
             reading_day = first_day if call_count == 0 else date(2026, 9, 15)
             metadata._last_import = reading_day
