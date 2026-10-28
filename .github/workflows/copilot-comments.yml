@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: Identify the current pull request
         id: pr
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const run = context.payload.workflow_run;
@@ -37,7 +37,7 @@ jobs:
 
       - name: Download lint suggestions
         if: steps.pr.outputs.number != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: copilot-lint-suggestions
           path: lint-report
@@ -46,7 +46,7 @@ jobs:
 
       - name: Publish summary and suggestions
         if: steps.pr.outputs.number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         with:
