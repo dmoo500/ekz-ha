@@ -348,6 +348,7 @@ class BaseImporter(ABC):
 
         if consumption_data.level == "DAY":
             api_values = [replace(value, origin=ValueOrigin.DAILY_TOTAL) for value in api_values]
+        fetched_data = bool(api_values)
         merged_values = self.aggregator.merge_tariffs(api_values)
         merged_values = await self._reconcile_day_resolution(
             hass,
@@ -380,6 +381,7 @@ class BaseImporter(ABC):
                 meta_entity.set_last_run_date(datetime.now(tz=ZRH))
             return {
                 "statistics": [],
+                "fetched_data": fetched_data,
                 "last_import": None,
                 "from_date": from_date.date(),
                 "to_date": to_date.date(),
@@ -440,6 +442,7 @@ class BaseImporter(ABC):
 
         return {
             "statistics": statistics,
+            "fetched_data": fetched_data,
             "last_import": last_import_dt.astimezone(ZRH).date() if last_import_dt else None,
             "from_date": from_date.date(),
             "to_date": to_date.date(),

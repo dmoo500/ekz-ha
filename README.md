@@ -74,13 +74,15 @@ with names and states translated into English and German:
 | `waiting` | No import attempt has run yet. |
 | `searching` | The initial historical search found no readings and is extending its search window. |
 | `importing` | The integration is working through historical periods. |
-| `current` | The import has reached the present; EKZ readings may still arrive with a delay. |
+| `current` | The requested window includes today (exclusive end is after today); EKZ readings may still arrive with a delay. |
 | `failed` | An import or coordinator update failed. Inspect the diagnostic attributes and logs. |
 
 The attributes `requested_from` and `requested_to` show the most recently attempted
 API window (start included, end excluded), including a narrower follow-up request
 after a successful historical search. `last_attempt` records when that request
-started. `last_result` distinguishes `imported`, `no_data`, and `failed`;
+started. `last_result` distinguishes `imported`, `no_data`, and `failed`.
+`no_data` means EKZ returned no importable readings, even if previously imported
+statistics were preserved during reconciliation.
 `error_type` identifies the exception class for an import failure without exposing
 account details. A coordinator-level failure also exposes `coordinator_error_type`.
 `next_update` shows the planned update after a successful coordinator cycle.
@@ -91,6 +93,17 @@ successful import and retains its previous value when an update fails. Both it
 and the status sensor remain available for troubleshooting during failed updates.
 Existing checkpoints and recorder history are used to recover the timestamp on
 upgrade; no statistics reset is needed for these sensors.
+Saved diagnostics for all installations are restored before imports begin, even
+if an earlier installation subsequently fails. Failed attempts also save their
+diagnostic details without advancing the last safe import checkpoint. If storage
+itself fails, the integration logs the error and retains the diagnostics in memory.
+After a successful installation discovery, the integration caches the known
+installations locally. On a later restart with EKZ unreachable, it restores their
+diagnostic sensors and saved checkpoints, shows the startup failure, and retries
+discovery before importing again. This requires at least one successful startup
+with 0.2.1; a first setup without cached installations still waits for EKZ.
+Authentication failures continue to use Home Assistant's normal reauthentication
+flow rather than the offline fallback.
 
 If the result is `no_data` while searching, allow the next update to search a
 larger period. For `failed`, enable debug logging, reload the integration once,

@@ -4,13 +4,15 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.ekz_ha import (
+    EkzCoordinator,
     _async_import_chunk,
     _persist_import_checkpoint,
     _restore_import_checkpoint,
@@ -122,10 +124,150 @@ async def test_success_and_empty_updates_keep_latest_success(
     assert installation.meta.native_value == expected
 
     fetch.return_value = ConsumptionData()
-    installation.meta._recent_statistics = []
-    await import_chunk(installation, start)
+    result = await import_chunk(installation, start)
+    assert bool(result["statistics"]) is not historical
     assert installation.sensor.extra_state_attributes["last_result"] == "no_data"
     assert installation.meta.native_value == expected
+
+
+@pytest.mark.parametrize("end_day", [27, 28, 29])
+async def test_current_requires_window_including_local_today(
+    installation, monkeypatch, freezer, end_day
+):
+    freezer.move_to("2026-10-27 23:30:00+00:00")
+    start = date(2026, 10, end_day) - timedelta(days=30)
+    installation.meta.set_last_import(start)
+    installation.meta.set_history_cursor(start)
+    monkeypatch.setattr(
+        installation.importer, "fetch_data", AsyncMock(return_value=ConsumptionData())
+    )
+    await import_chunk(installation, datetime(2026, 1, 1, tzinfo=ZRH))
+    assert installation.sensor.extra_state_attributes["requested_to"] == f"2026-10-{end_day}"
+    assert installation.sensor.native_value == ("current" if end_day == 29 else "importing")
+
+
+async def test_failure_diagnostics_survive_restart_without_changing_safe_checkpoint(
+    installation, monkeypatch, freezer, hass
+):
+    freezer.move_to("2026-10-28 12:00:00+00:00")
+    timestamp = datetime(2026, 8, 2, tzinfo=UTC)
+    installation.meta._last_successful_import = timestamp
+    installation.meta.set_history_cursor(date(2026, 8, 30))
+    installation.meta.set_pending(date(2026, 8, 2), 100.0)
+    storage_key = f"ekz_ha.test.failed_status.{installation.statistic_id}"
+    installation.coordinator._import_checkpoint_store = Store(hass, 1, storage_key)
+    await _persist_import_checkpoint(
+        installation.coordinator,
+        installation.statistic_id,
+        installation.meta,
+        [{"start": timestamp, "sum": 101.0, "state": 1.0}],
+    )
+    before = await Store(hass, 1, storage_key).async_load()
+    monkeypatch.setattr(
+        installation.importer, "fetch_data", AsyncMock(side_effect=TimeoutError("private"))
+    )
+    with pytest.raises(UpdateFailed):
+        await import_chunk(installation, datetime(2026, 1, 1, tzinfo=ZRH))
+    saved = await Store(hass, 1, storage_key).async_load()
+    state = saved[installation.statistic_id]
+    assert state["import_status"]["state"] == "failed"
+    assert state["import_status"]["requested_from"] == "2026-08-02"
+    assert state["import_status"]["last_attempt"] == "2026-10-28T12:00:00+00:00"
+    assert state["import_status"]["error_type"] == "TimeoutError"
+    assert "private" not in str(state)
+    assert {key: value for key, value in state.items() if key != "import_status"} == {
+        key: value
+        for key, value in before[installation.statistic_id].items()
+        if key != "import_status"
+    }
+    restored = EkzMetaEntity(Mock(), "825821")
+    _restore_import_checkpoint(
+        SimpleNamespace(_import_checkpoints=saved), installation.statistic_id, restored
+    )
+    assert restored._import_status == installation.meta._import_status
+    assert restored.native_value == timestamp
+    assert restored._pending_from == date(2026, 8, 2)
+    assert restored._checkpoint_needs_replay
+
+
+async def test_failure_metadata_write_error_preserves_original_error_and_retry(
+    installation, monkeypatch, caplog
+):
+    installation.coordinator._import_checkpoint_store.async_save.side_effect = OSError("disk full")
+    fetch = AsyncMock(side_effect=TimeoutError("API timeout"))
+    monkeypatch.setattr(installation.importer, "fetch_data", fetch)
+    with pytest.raises(UpdateFailed) as raised:
+        await import_chunk(installation, datetime(2026, 1, 1, tzinfo=ZRH))
+    assert isinstance(raised.value.__cause__, TimeoutError)
+    assert "Could not persist failure diagnostics" in caplog.text
+    assert installation.sensor.extra_state_attributes["error_type"] == "TimeoutError"
+    installation.coordinator._import_checkpoint_store.async_save.side_effect = None
+    fetch.side_effect = None
+    fetch.return_value = ConsumptionData()
+    await import_chunk(installation, datetime(2026, 1, 1, tzinfo=ZRH))
+    assert installation.sensor.extra_state_attributes["last_result"] == "no_data"
+    assert installation.sensor.extra_state_attributes["error_type"] is None
+
+
+@pytest.mark.parametrize("first_kind", ["consumption", "production"])
+async def test_all_checkpoints_restored_before_first_installation_fails(monkeypatch, first_kind):
+    timestamp = datetime(2026, 8, 2, tzinfo=UTC)
+    coordinator = SimpleNamespace(
+        hass=Mock(),
+        api_client=Mock(),
+        installations={"first": {"contract_start": "2026-01-01"}}
+        if first_kind == "consumption"
+        else {},
+        production_installations={
+            "first" if first_kind == "production" else "later": {"contract_start": "2026-01-01"},
+            "last": {"contract_start": "2026-01-01"},
+        },
+        meta_entities={},
+        production_meta_entities={},
+        _import_checkpoints={},
+        _get_running_sum_before=AsyncMock(return_value=0.0),
+        last_sums={},
+        last_production_sums={},
+        catching_up={},
+    )
+    for kind, installations, entities in (
+        ("consumption", coordinator.installations, coordinator.meta_entities),
+        ("production", coordinator.production_installations, coordinator.production_meta_entities),
+    ):
+        for key in installations:
+            meta = EkzMetaEntity(Mock(), key)
+            meta._last_successful_import = timestamp
+            meta._import_status.begin(timestamp, timestamp + timedelta(days=30), False)
+            meta._import_status.last_result = "imported"
+            statistic_id = f"sensor.electricity_{kind}_ekz_{key}"
+            await _persist_import_checkpoint(
+                coordinator, statistic_id, meta, [{"start": timestamp, "sum": 2.0, "state": 1.0}]
+            )
+            entities[key] = EkzMetaEntity(Mock(), key)
+    recorder = Mock(
+        async_block_till_done=AsyncMock(), async_add_executor_job=AsyncMock(return_value={})
+    )
+    replay = Mock()
+    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
+    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", replay)
+
+    async def fail(*args):
+        assert replay.call_count == 1
+        recorder.async_block_till_done.assert_awaited_once()
+        raise UpdateFailed("first installation failed")
+
+    monkeypatch.setattr("custom_components.ekz_ha._async_import_chunk", fail)
+    with pytest.raises(UpdateFailed):
+        await EkzCoordinator._do_update_data(coordinator)
+    all_metas = [
+        *coordinator.meta_entities.values(),
+        *coordinator.production_meta_entities.values(),
+    ]
+    for meta in all_metas:
+        assert meta.native_value == timestamp
+        assert meta._import_status.last_result == "imported"
+        assert meta._import_status.requested_from == timestamp.date()
+    assert coordinator.production_meta_entities["last"]._checkpoint_needs_replay
 
 
 async def test_failed_attempt_retains_range_and_last_success(installation, monkeypatch, freezer):
@@ -242,6 +384,7 @@ async def test_sensor_setup_creates_separate_import_statuses(hass, consumption):
     coordinator = Mock(
         installations={"825821": {}} if consumption else {},
         production_installations={"825821": {}},
+        _import_checkpoints={},
     )
     hass.data[DOMAIN] = {"coordinator": coordinator}
     add = Mock()
@@ -277,3 +420,126 @@ def test_status_round_trip_and_translation_states(installation):
             assert set(translations[f"import_status_{kind}"]["state"]) == set(
                 installation.sensor.options
             )
+
+
+@pytest.mark.parametrize("kind", ["consumption", "production", "both"])
+async def test_offline_restart_registers_saved_diagnostics_and_retries_discovery(
+    hass, monkeypatch, kind
+):
+    from custom_components.ekz_ha import async_setup_entry
+    from custom_components.ekz_ha.const import DOMAIN
+    from custom_components.ekz_ha.sensor import async_setup_entry as setup_sensors
+
+    entry = Mock(entry_id=f"offline-{kind}", data={"user": "test", "password": "test"})
+    known = {
+        "consumption": {"825821": {"contract_start": "2026-01-01"}} if kind != "production" else {},
+        "production": {"solar": {"contract_start": "2026-02-01"}} if kind != "consumption" else {},
+    }
+    await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.installations").async_save(known)
+    timestamp = datetime(2026, 8, 2, tzinfo=UTC)
+    checkpoint = {
+        f"sensor.electricity_{data_type}_ekz_{key}": {
+            "last_successful_import": timestamp.isoformat(),
+            "import_status": {
+                "state": "failed",
+                "last_result": "failed",
+                "requested_from": "2026-08-01",
+                "requested_to": "2026-08-31",
+                "error_type": "TimeoutError",
+            },
+        }
+        for data_type, installations in known.items()
+        for key in installations
+    }
+    await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.import_checkpoint").async_save(checkpoint)
+    api = Mock(
+        get_consumption_installations=AsyncMock(side_effect=TimeoutError("offline")),
+    )
+    monkeypatch.setattr("custom_components.ekz_ha.EkzApiClient", Mock(return_value=api))
+
+    async def first_refresh(coordinator):
+        try:
+            await coordinator._async_setup()
+        except TimeoutError as err:
+            coordinator.last_exception = err
+            coordinator.last_update_success = False
+            raise ConfigEntryNotReady from err
+
+    monkeypatch.setattr(EkzCoordinator, "async_config_entry_first_refresh", first_refresh)
+    add = Mock()
+
+    async def forward(_entry, platforms):
+        assert platforms == ["sensor"]
+        await setup_sensors(hass, entry, add)
+
+    with patch.object(hass.config_entries, "async_forward_entry_setups", side_effect=forward):
+        assert await async_setup_entry(hass, entry)
+    coordinator = hass.data[DOMAIN]["coordinator"]
+    assert coordinator.installations == known["consumption"]
+    assert coordinator.production_installations == known["production"]
+    sensors = add.call_args.args[0]
+    metas = [entity for entity in sensors if isinstance(entity, EkzMetaEntity)]
+    statuses = [entity for entity in sensors if isinstance(entity, EkzImportStatusEntity)]
+    assert len(metas) == len(checkpoint)
+    for meta in metas:
+        assert meta.available
+        assert meta.native_value == timestamp
+    for status in statuses:
+        assert status.available
+        assert status.native_value == "failed"
+        assert status.extra_state_attributes["requested_from"] == "2026-08-01"
+        assert status.extra_state_attributes["coordinator_error_type"] == "TimeoutError"
+    assert coordinator._retry_setup
+
+    # No cached installation may import until discovery succeeds again.
+    imports = AsyncMock()
+    monkeypatch.setattr(coordinator, "_do_update_data", imports)
+    with pytest.raises(TimeoutError):
+        await coordinator._async_update_data()
+    imports.assert_not_awaited()
+
+    from custom_components.ekz_ha.api.models import InstallationContract, InstallationSelectionData
+
+    api.get_consumption_installations.side_effect = None
+    api.get_consumption_installations.return_value = InstallationSelectionData(
+        contracts=[InstallationContract.from_dict({"anlage": "825821", "einzdat": "2026-01-01"})]
+        if known["consumption"]
+        else []
+    )
+    api.get_production_installations = AsyncMock(
+        return_value=InstallationSelectionData(
+            contracts=[InstallationContract.from_dict({"anlage": "solar", "einzdat": "2026-02-01"})]
+            if known["production"]
+            else []
+        )
+    )
+    api.get_production_15min = AsyncMock(return_value=ConsumptionData())
+    await coordinator._async_update_data()
+    assert not coordinator._retry_setup
+    imports.assert_awaited_once()
+    assert await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.installations").async_load() == known
+
+
+@pytest.mark.parametrize("failure", ["offline", "auth"])
+async def test_startup_without_usable_cache_does_not_hide_setup_errors(hass, monkeypatch, failure):
+    from homeassistant.exceptions import ConfigEntryAuthFailed
+
+    from custom_components.ekz_ha import async_setup_entry
+    from custom_components.ekz_ha.const import DOMAIN
+
+    entry = Mock(entry_id=f"no-fallback-{failure}", data={"user": "test", "password": "test"})
+    monkeypatch.setattr("custom_components.ekz_ha.EkzApiClient", Mock())
+    error = ConfigEntryAuthFailed("reauth required") if failure == "auth" else ConfigEntryNotReady()
+    if failure == "auth":
+        await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.installations").async_save(
+            {"consumption": {"825821": {"contract_start": "2026-01-01"}}, "production": {}}
+        )
+    monkeypatch.setattr(
+        EkzCoordinator, "async_config_entry_first_refresh", AsyncMock(side_effect=error)
+    )
+    with patch.object(
+        hass.config_entries, "async_forward_entry_setups", new_callable=AsyncMock
+    ) as forward:
+        with pytest.raises(type(error)):
+            await async_setup_entry(hass, entry)
+        forward.assert_not_awaited()

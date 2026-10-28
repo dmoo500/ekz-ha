@@ -278,7 +278,8 @@ async def test_production_only_update_imports_without_consumption_metadata(monke
     monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", import_statistics)
     fetch = AsyncMock(
         return_value={
-            "statistics": [{"start": datetime(2026, 10, 15, tzinfo=UTC), "state": 1.0, "sum": 1.0}]
+            "fetched_data": True,
+            "statistics": [{"start": datetime(2026, 10, 15, tzinfo=UTC), "state": 1.0, "sum": 1.0}],
         }
     )
     monkeypatch.setattr(ProductionImporter, "import_statistics", fetch)
@@ -348,6 +349,7 @@ async def test_daily_import_clears_whole_day_before_predicting(
         "custom_components.ekz_ha._prediction_statistic_id", lambda hass, key: prediction_id
     )
     result = {
+        "fetched_data": True,
         "statistics": [{"start": start, "end": end, "state": 24.0, "sum": 24.0}],
         "to_date": local_day + timedelta(days=1),
     }
@@ -417,6 +419,7 @@ async def test_partial_last_hour_is_completed_by_prediction(
         "custom_components.ekz_ha._prediction_statistic_id", lambda hass, key: prediction_id
     )
     result = {
+        "fetched_data": True,
         "statistics": [
             {
                 "start": hour_start,
@@ -521,6 +524,7 @@ async def test_failed_write_does_not_advance_import_state(monkeypatch, entity_ty
         metadata.set_history_cursor(date(2026, 8, 30))
         metadata.set_pending(date(2026, 8, 15), 105.0)
         return {
+            "fetched_data": True,
             "statistics": [
                 {
                     "start": datetime(2026, 8, 20, tzinfo=UTC),
@@ -544,7 +548,14 @@ async def test_failed_write_does_not_advance_import_state(monkeypatch, entity_ty
     assert meta._recent_statistics == []
     assert coordinator._sum_offsets == {}
     assert coordinator._daily_statistics == {}
-    assert statistic_id not in coordinator._import_checkpoints
+    if failure == "checkpoint_store":
+        assert statistic_id not in coordinator._import_checkpoints
+    else:
+        checkpoint = coordinator._import_checkpoints[statistic_id]
+        assert checkpoint["import_status"]["state"] == "failed"
+        assert not checkpoint.get("statistics")
+        assert not checkpoint.get("history_cursor")
+        assert not checkpoint.get("pending_from")
     assert coordinator.last_sums[key] == coordinator.last_production_sums[key] == 100.0
 
 
@@ -639,6 +650,7 @@ async def test_restart_replays_unflushed_historical_checkpoint(
         assert running_sum_offset == 105.0
         metadata.set_history_cursor(date(2026, 9, 28))
         return {
+            "fetched_data": True,
             "statistics": [
                 {
                     "start": datetime(2026, 9, 1, tzinfo=UTC),
@@ -765,7 +777,9 @@ async def test_previous_chunk_is_committed_before_checkpoint_replacement(monkeyp
     for index in range(2):
         row = {"start": start + timedelta(days=index), "state": 1.0, "sum": float(index + 1)}
         monkeypatch.setattr(
-            importer, "import_statistics", AsyncMock(return_value={"statistics": [row]})
+            importer,
+            "import_statistics",
+            AsyncMock(return_value={"statistics": [row], "fetched_data": True}),
         )
         await _async_import_chunk(coordinator, importer, "825821", start, meta, statistic_id, 0.0)
     assert len(persisted) == 1

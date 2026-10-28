@@ -484,6 +484,7 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
             reading = float(call_count + 1)
             call_count += 1
             return {
+                "fetched_data": True,
                 "statistics": [
                     {
                         "start": datetime.combine(
@@ -503,6 +504,7 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         call_count += 1
         metadata._last_import = date(2026, 10, 16)
         return {
+            "fetched_data": True,
             "statistics": [
                 {"start": start, "state": 10.0, "sum": running_sum_offset + 10.0 * index}
                 for index, start in enumerate(starts, start=1)

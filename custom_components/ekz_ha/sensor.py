@@ -30,6 +30,8 @@ def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EKZ sensors from a config entry."""
+    from . import _restore_import_checkpoint
+
     coordinator = hass.data[DOMAIN]["coordinator"]
     _migrate_production_meta_entities(hass, coordinator)
     meta_entities = {}
@@ -60,6 +62,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
         sensors.append(prod_meta)
         sensors.append(EkzImportStatusEntity(coordinator, prod_meta, "production"))
     coordinator.production_meta_entities = production_meta_entities
+
+    for kind, entities in (
+        ("consumption", meta_entities),
+        ("production", production_meta_entities),
+    ):
+        for key, meta in entities.items():
+            _restore_import_checkpoint(coordinator, f"sensor.electricity_{kind}_ekz_{key}", meta)
 
     async_add_entities(sensors, True)
 
