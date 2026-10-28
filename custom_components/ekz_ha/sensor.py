@@ -70,7 +70,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         for key, meta in entities.items():
             _restore_import_checkpoint(coordinator, f"sensor.electricity_{kind}_ekz_{key}", meta)
 
-    async_add_entities(sensors, True)
+    async_add_entities(sensors, False)
 
 
 class EkzEntity(CoordinatorEntity, SensorEntity):

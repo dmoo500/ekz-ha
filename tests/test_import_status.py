@@ -1,5 +1,6 @@
 """Import diagnostics for consumption and production."""
 
+import asyncio
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -389,6 +390,7 @@ async def test_sensor_setup_creates_separate_import_statuses(hass, consumption):
     hass.data[DOMAIN] = {"coordinator": coordinator}
     add = Mock()
     await async_setup_entry(hass, Mock(), add)
+    assert add.call_args.args[1] is False
     sensors = [
         entity for entity in add.call_args.args[0] if isinstance(entity, EkzImportStatusEntity)
     ]
@@ -422,6 +424,57 @@ def test_status_round_trip_and_translation_states(installation):
             )
 
 
+async def test_setup_returns_with_registered_sensors_while_initial_import_is_blocked(
+    hass, monkeypatch
+):
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.ekz_ha import async_setup_entry
+    from custom_components.ekz_ha.const import DOMAIN
+    from custom_components.ekz_ha.sensor import async_setup_entry as setup_sensors
+
+    entry = MockConfigEntry(domain=DOMAIN, data={"user": "test", "password": "test"})
+    started = asyncio.Event()
+    release = asyncio.Event()
+    registrations = []
+
+    async def discover(coordinator):
+        coordinator.installations = {"test": {"contract_start": "2026-01-01"}}
+
+    async def blocked_import(coordinator):
+        assert coordinator.meta_entities["test"] in registrations
+        assert hass.services.has_service(DOMAIN, "reset_statistics")
+        started.set()
+        await release.wait()
+
+    async def forward(_entry, _platforms):
+        def add(entities, update_before_add):
+            assert update_before_add is False
+            registrations.extend(entities)
+
+        await setup_sensors(hass, entry, add)
+
+    monkeypatch.setattr("custom_components.ekz_ha.EkzApiClient", Mock())
+    monkeypatch.setattr(EkzCoordinator, "async_config_entry_first_refresh", discover)
+    monkeypatch.setattr(EkzCoordinator, "async_request_refresh", blocked_import)
+    with patch.object(hass.config_entries, "async_forward_entry_setups", side_effect=forward):
+        assert await async_setup_entry(hass, entry)
+    await asyncio.wait_for(started.wait(), timeout=1)
+    tasks = list(entry._background_tasks)
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert not task.done()
+    try:
+        # HA's startup barrier must not wait for the historical import.
+        await asyncio.wait_for(hass.async_block_till_done(), timeout=1)
+        assert not task.done()
+        assert registrations
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 @pytest.mark.parametrize("kind", ["consumption", "production", "both"])
 @pytest.mark.parametrize("changed", [False, True])
 async def test_offline_restart_registers_saved_diagnostics_and_retries_discovery(
@@ -432,6 +485,9 @@ async def test_offline_restart_registers_saved_diagnostics_and_retries_discovery
     from custom_components.ekz_ha.sensor import async_setup_entry as setup_sensors
 
     entry = Mock(entry_id=f"offline-{kind}", data={"user": "test", "password": "test"})
+    entry.async_create_background_task.side_effect = lambda _hass, coroutine, _name: (
+        coroutine.close()
+    )
     known = {
         "consumption": {"825821": {"contract_start": "2026-01-01"}} if kind != "production" else {},
         "production": {"solar": {"contract_start": "2026-02-01"}} if kind != "consumption" else {},

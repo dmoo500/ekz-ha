@@ -1101,6 +1101,11 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         await coordinator.async_request_refresh()
 
     hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)
+    entry.async_create_background_task(
+        hass,
+        coordinator.async_request_refresh(),
+        "EKZ initial import",
+    )
     return True
 
 

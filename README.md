@@ -114,6 +114,11 @@ partial readings discarded in favor of stored daily/hourly statistics remain
 `no_data`. An expanding historical search stays `searching` even when stored
 rows are replayed.
 
+Sensor registration does not wait for historical imports. Once the sensor
+platform is loaded, the first import runs as a background task tied to the
+integration entry; unloading the entry cancels it. Initial installation discovery
+still runs during setup (or uses the offline fallback described above).
+
 If the result is `no_data` while searching, allow the next update to search a
 larger period. For `failed`, enable debug logging, reload the integration once,
 and include the attempted dates and exception class when reporting an issue.
