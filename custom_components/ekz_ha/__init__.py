@@ -686,6 +686,9 @@ class EkzCoordinator(DataUpdateCoordinator):
             )
             return
 
+        successful_imports = 0
+        production_errors: list[UpdateFailed] = []
+
         # --- Consumption import loop ---
         for key in self.installations:
             meta_entity = meta_entities.get(key) if meta_entities else None
@@ -948,6 +951,8 @@ class EkzCoordinator(DataUpdateCoordinator):
                         except Exception as e:
                             _LOGGER.error(f"Failed to import prediction statistics for {key}: {e}")
 
+            successful_imports += 1
+
         # --- Production (solar feed-in) import loop ---
         production_meta_entities = getattr(self, "production_meta_entities", {})
         for key, info in self.production_installations.items():
@@ -960,7 +965,25 @@ class EkzCoordinator(DataUpdateCoordinator):
                 prod_meta.set_contract_start(datetime.strptime(contract_start, "%Y-%m-%d").date())
 
             statistic_id = f"sensor.electricity_production_ekz_{key}"
-            await _async_replay_import_checkpoint(self, statistic_id, prod_meta)
+            try:
+                await _async_replay_import_checkpoint(self, statistic_id, prod_meta)
+            except UpdateFailed as err:
+                status = get_import_status(prod_meta)
+                status.state = "failed"
+                status.last_result = "failed"
+                status.error_type = type(err.__cause__ or err).__name__
+                try:
+                    await _persist_import_checkpoint(self, statistic_id, prod_meta, [])
+                except Exception as save_err:
+                    _LOGGER.error(
+                        "Could not persist failure diagnostics for %s: %s",
+                        statistic_id,
+                        save_err,
+                    )
+                publish_import_status(prod_meta)
+                _LOGGER.error("Production checkpoint replay failed for %s: %s", key, err)
+                production_errors.append(err)
+                continue
             if prod_meta._last_import is None:
                 try:
                     last_stats = await get_recorder_instance(self.hass).async_add_executor_job(
@@ -1015,21 +1038,32 @@ class EkzCoordinator(DataUpdateCoordinator):
                 if isinstance(contract_start, str)
                 else datetime.combine(contract_start, datetime.min.time())
             )
-            result = await _async_import_chunk(
-                self,
-                importer,
-                key,
-                contract_start_dt,
-                prod_meta,
-                statistic_id,
-                production_offset,
-            )
+            try:
+                result = await _async_import_chunk(
+                    self,
+                    importer,
+                    key,
+                    contract_start_dt,
+                    prod_meta,
+                    statistic_id,
+                    production_offset,
+                )
+            except ConfigEntryAuthFailed:
+                raise
+            except UpdateFailed as err:
+                _LOGGER.error("Production import failed for %s: %s", key, err)
+                production_errors.append(err)
+                continue
+            successful_imports += 1
 
             if result.get("statistics"):
                 self.last_production_sums[key] = result["statistics"][-1]["sum"]
                 _LOGGER.info(
                     f"Importing {len(result['statistics'])} production statistics for {key}"
                 )
+
+        if production_errors and not successful_imports:
+            raise production_errors[0]
 
         # Track when the next update is scheduled so the next-sync sensor can display it
         self.next_update_time = datetime.now(tz=UTC) + self.update_interval

@@ -185,6 +185,8 @@ Add production data to the Energy Dashboard:
 
 Production entities are grouped under a device for the relevant EKZ installation.
 
+A failed production import or checkpoint replay is logged and marked `failed` for that installation, but does not stop imports for other production installations or make successfully updated consumption unavailable. Its safe import position is retained for the next retry. A successful request with no new readings also counts as a completed update. If every attempted import fails on a production-only account, the coordinator reports an update failure. Authentication failures still trigger Home Assistant's reauthentication flow immediately.
+
 > **Note:** As with consumption, the initial import works through your full history in 30-day chunks. Navigate back in the Energy Dashboard to verify historical production data.
 
 ---

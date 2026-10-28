@@ -323,9 +323,13 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
     monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
     monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", replay)
 
+    attempts = 0
+
     async def fail(*args):
-        assert replay.call_count == 1
-        recorder.async_block_till_done.assert_awaited_once()
+        nonlocal attempts
+        attempts += 1
+        assert replay.call_count == attempts
+        assert recorder.async_block_till_done.await_count == attempts
         raise UpdateFailed("first installation failed")
 
     monkeypatch.setattr("custom_components.ekz_ha._async_import_chunk", fail)
@@ -339,7 +343,10 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
         assert meta.native_value == timestamp
         assert meta._import_status.last_result == "imported"
         assert meta._import_status.requested_from == timestamp.date()
-    assert coordinator.production_meta_entities["last"]._checkpoint_needs_replay
+    assert coordinator.production_meta_entities["last"]._checkpoint_needs_replay == (
+        first_kind == "consumption"
+    )
+    assert attempts == (1 if first_kind == "consumption" else 2)
 
 
 async def test_failed_attempt_retains_range_and_last_success(installation, monkeypatch, freezer):
