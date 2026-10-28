@@ -9,17 +9,18 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from custom_components.ekz_ha import EkzCoordinator, _make_stat_meta
 from custom_components.ekz_ha.api.models import (
     ConsumptionData,
     InstallationContract,
     InstallationSelectionData,
 )
+from custom_components.ekz_ha.coordinator import EkzCoordinator
 from custom_components.ekz_ha.data import DataAggregator, StatisticsTransformer
 from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
 from custom_components.ekz_ha.statistics.importer import ZRH
 from custom_components.ekz_ha.statistics.prediction import PredictionService
 from custom_components.ekz_ha.statistics.production import ProductionImporter
+from custom_components.ekz_ha.statistics.recorder import _make_stat_meta
 
 
 class TestConsumptionImportWithRealData:
@@ -277,9 +278,23 @@ async def test_production_only_update_imports_without_consumption_metadata(monke
         async_add_executor_job=AsyncMock(return_value={}),
         async_block_till_done=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     import_statistics = Mock()
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", import_statistics)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", import_statistics
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
+        import_statistics,
+    )
     fetch = AsyncMock(
         return_value={
             "fetched_data": True,
@@ -341,9 +356,25 @@ async def test_production_failures_do_not_abort_other_installations(
         async_add_executor_job=AsyncMock(return_value={}),
         async_block_till_done=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", Mock())
-    monkeypatch.setattr("custom_components.ekz_ha._prediction_statistic_id", lambda *_args: None)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
+        )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", Mock()
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", Mock()
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
+        lambda *_args: None,
+    )
     result = {
         "fetched_data": False,
         "statistics": [],
@@ -438,7 +469,7 @@ async def test_production_failures_do_not_abort_other_installations(
 
 @pytest.mark.parametrize("mean_type", [None, 0])
 def test_statistic_metadata_matches_home_assistant_version(monkeypatch, mean_type):
-    monkeypatch.setattr("custom_components.ekz_ha.MEAN_TYPE_NONE", mean_type)
+    monkeypatch.setattr("custom_components.ekz_ha.statistics.recorder.MEAN_TYPE_NONE", mean_type)
     metadata = _make_stat_meta("sensor.electricity_consumption_ekz_test")
     if mean_type is None:
         assert metadata["has_mean"] is False
@@ -489,9 +520,18 @@ async def test_daily_import_clears_whole_day_before_predicting(
         async_add_executor_job=AsyncMock(return_value={}),
         async_block_till_done=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     monkeypatch.setattr(
-        "custom_components.ekz_ha._prediction_statistic_id", lambda hass, key: prediction_id
+        "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
+        lambda hass, key: prediction_id,
     )
     result = {
         "fetched_data": True,
@@ -501,7 +541,11 @@ async def test_daily_import_clears_whole_day_before_predicting(
     monkeypatch.setattr(ConsumptionImporter, "import_statistics", AsyncMock(return_value=result))
     imported = {}
     monkeypatch.setattr(
-        "custom_components.ekz_ha.async_import_statistics",
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics",
+        lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
         lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
     )
 
@@ -559,9 +603,18 @@ async def test_partial_last_hour_is_completed_by_prediction(
         async_add_executor_job=AsyncMock(return_value={}),
         async_block_till_done=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     monkeypatch.setattr(
-        "custom_components.ekz_ha._prediction_statistic_id", lambda hass, key: prediction_id
+        "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
+        lambda hass, key: prediction_id,
     )
     result = {
         "fetched_data": True,
@@ -582,7 +635,11 @@ async def test_partial_last_hour_is_completed_by_prediction(
     monkeypatch.setattr(ConsumptionImporter, "import_statistics", AsyncMock(return_value=result))
     imported = {}
     monkeypatch.setattr(
-        "custom_components.ekz_ha.async_import_statistics",
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics",
+        lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
         lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
     )
 
@@ -655,12 +712,27 @@ async def test_failed_write_does_not_advance_import_state(monkeypatch, entity_ty
             else None
         ),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.async_import_statistics",
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics",
         Mock(side_effect=ValueError("recorder failure") if failure == "recorder" else None),
     )
-    monkeypatch.setattr("custom_components.ekz_ha._prediction_statistic_id", lambda hass, key: None)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
+        Mock(side_effect=ValueError("recorder failure") if failure == "recorder" else None),
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
+        lambda hass, key: None,
+    )
 
     async def import_chunk(
         self, hass, installation_id, contract_start, metadata, running_sum_offset
@@ -710,8 +782,8 @@ async def test_restart_replays_unflushed_historical_checkpoint(
 ):
     from homeassistant.helpers.storage import Store
 
-    from custom_components.ekz_ha import _persist_import_checkpoint
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import _persist_import_checkpoint
 
     freezer.move_to("2026-10-28 12:00:00+00:00")
     key = "825821"
@@ -756,9 +828,25 @@ async def test_restart_replays_unflushed_historical_checkpoint(
         async_add_executor_job=AsyncMock(side_effect=query),
         async_block_till_done=AsyncMock(side_effect=flush),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", enqueue)
-    monkeypatch.setattr("custom_components.ekz_ha._prediction_statistic_id", lambda *_args: None)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
+        )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
+        lambda *_args: None,
+    )
     meta = EkzMetaEntity(Mock(), key)
     meta.set_contract_start(first_day)
     info = {key: {"contract_start": first_day.isoformat()}}
@@ -820,10 +908,10 @@ async def test_restart_replays_unflushed_historical_checkpoint(
 async def test_checkpoint_replay_is_idempotent_in_real_recorder(
     recorder_mock, hass, entity_type, already_flushed
 ):
+    from homeassistant.components.recorder.statistics import async_import_statistics as enqueue
     from homeassistant.components.recorder.statistics import statistics_during_period
 
-    from custom_components.ekz_ha import _async_replay_import_checkpoint
-    from custom_components.ekz_ha import async_import_statistics as enqueue
+    from custom_components.ekz_ha.statistics.checkpoint import _async_replay_import_checkpoint
 
     statistic_id = f"sensor.electricity_{entity_type}_ekz_825821"
     start = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0) - timedelta(days=5)
@@ -859,16 +947,29 @@ async def test_checkpoint_replay_is_idempotent_in_real_recorder(
 
 
 async def test_checkpoint_replay_failure_remains_retryable(monkeypatch):
-    from custom_components.ekz_ha import _async_replay_import_checkpoint
+    from custom_components.ekz_ha.statistics.checkpoint import _async_replay_import_checkpoint
 
     meta = SimpleNamespace(
         _checkpoint_needs_replay=True,
         _recent_statistics=[{"start": datetime(2026, 8, 1, tzinfo=UTC), "state": 2.0, "sum": 2.0}],
     )
     recorder = Mock(async_block_till_done=AsyncMock(side_effect=OSError("recorder unavailable")))
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
+        )
     enqueue = Mock()
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", enqueue)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+    )
     coordinator = SimpleNamespace(hass=Mock())
     with pytest.raises(UpdateFailed, match="Checkpoint replay failed"):
         await _async_replay_import_checkpoint(coordinator, "sensor.test_consumption", meta)
@@ -881,8 +982,8 @@ async def test_checkpoint_replay_failure_remains_retryable(monkeypatch):
 
 @pytest.mark.parametrize("entity_type", ["consumption", "production"])
 async def test_previous_chunk_is_committed_before_checkpoint_replacement(monkeypatch, entity_type):
-    from custom_components.ekz_ha import _async_import_chunk
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import _async_import_chunk
 
     start = datetime(2026, 8, 1, tzinfo=UTC)
     persisted = []
@@ -909,8 +1010,21 @@ async def test_previous_chunk_is_committed_before_checkpoint_replacement(monkeyp
         )
 
     recorder = Mock(async_block_till_done=AsyncMock(side_effect=flush))
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", enqueue)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
+        )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+    )
     meta = EkzMetaEntity(Mock(), "825821")
     meta.set_last_import(start.date())
     coordinator = SimpleNamespace(

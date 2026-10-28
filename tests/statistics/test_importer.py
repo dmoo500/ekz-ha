@@ -7,8 +7,8 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeassistant.components.recorder.statistics import statistics_during_period
 
-from custom_components.ekz_ha import EkzCoordinator, statistics_during_period
 from custom_components.ekz_ha.api.models import (
     ApiValue,
     ConsumptionData,
@@ -18,6 +18,7 @@ from custom_components.ekz_ha.api.models import (
     ValueOrigin,
 )
 from custom_components.ekz_ha.const import NORMAL_SCAN_INTERVAL
+from custom_components.ekz_ha.coordinator import EkzCoordinator
 from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
 from custom_components.ekz_ha.statistics.importer import ZRH, BaseImporter
 from custom_components.ekz_ha.statistics.prediction import PredictionService
@@ -482,7 +483,15 @@ async def test_issue20_running_sum_survives_long_data_gap(monkeypatch, entity_ty
         return {}
 
     recorder = Mock(async_add_executor_job=AsyncMock(side_effect=query_statistics))
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     coordinator = SimpleNamespace(hass=Mock())
 
     offset = await EkzCoordinator._get_running_sum_before(coordinator, statistic_id, import_day)
@@ -494,7 +503,15 @@ async def test_issue20_running_sum_survives_long_data_gap(monkeypatch, entity_ty
 async def test_issue20_missing_recorder_rows_do_not_discard_known_sum(monkeypatch, entity_type):
     statistic_id = f"sensor.electricity_{entity_type}_ekz_825821"
     recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     coordinator = SimpleNamespace(hass=Mock())
 
     offset = await EkzCoordinator._get_running_sum_before(
@@ -572,9 +589,17 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         async_add_executor_job=AsyncMock(side_effect=recorder_query),
         async_block_till_done=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     monkeypatch.setattr(
-        "custom_components.ekz_ha._prediction_statistic_id",
+        "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
         lambda hass, key: f"sensor.electricity_consumption_ekz_{key}_prediction",
     )
     queued_imports = []
@@ -586,7 +611,13 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         if recorder_flushed:
             persisted_rows.extend(statistics)
 
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", enqueue_statistics)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue_statistics
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
+        enqueue_statistics,
+    )
     second_day_start = datetime(2026, 10, 16, tzinfo=ZRH).astimezone(UTC)
     call_count = 0
 
@@ -956,8 +987,8 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
 ):
     from homeassistant.helpers.storage import Store
 
-    from custom_components.ekz_ha import _persist_source_resolution
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import _persist_source_resolution
 
     importer = importer_type(Mock())
     statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
@@ -1052,8 +1083,8 @@ async def test_daily_reconciliation_conserves_energy_on_dst_days(
 async def test_daily_source_waits_for_complete_quarter_hour_backfill(
     monkeypatch, freezer, importer_type, local_day, reconciled, queued
 ):
-    from custom_components.ekz_ha import _persist_source_resolution
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import _persist_source_resolution
 
     local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH)
     start = local_start.astimezone(UTC)
@@ -1158,7 +1189,7 @@ async def test_daily_source_waits_for_complete_quarter_hour_backfill(
 @pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
 @pytest.mark.parametrize("shifted", [False, True])
 async def test_source_resolution_requires_exact_hourly_grid(local_day, shifted):
-    from custom_components.ekz_ha import _persist_source_resolution
+    from custom_components.ekz_ha.statistics.checkpoint import _persist_source_resolution
 
     start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH).astimezone(UTC)
     end = datetime.combine(
@@ -1420,8 +1451,11 @@ async def test_fuller_partial_hour_adds_backfilled_slots(monkeypatch, importer_t
 async def test_checkpoint_restores_sum_across_history_gap_longer_than_recorder_lookback(
     importer_type,
 ):
-    from custom_components.ekz_ha import _persist_import_checkpoint, _restore_import_checkpoint
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import (
+        _persist_import_checkpoint,
+        _restore_import_checkpoint,
+    )
 
     statistic_id = (
         f"sensor.electricity_{importer_type(Mock()).get_data_type_name().lower()}_ekz_825821"
@@ -1451,8 +1485,11 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
 ):
     from homeassistant.helpers.storage import Store
 
-    from custom_components.ekz_ha import _persist_import_checkpoint, _restore_import_checkpoint
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import (
+        _persist_import_checkpoint,
+        _restore_import_checkpoint,
+    )
 
     freezer.move_to("2026-10-20 12:00:00+00:00")
     start = datetime(2026, 10, 16, 12, tzinfo=ZRH).astimezone(UTC)
@@ -1577,8 +1614,11 @@ async def test_own_review_checkpoint_replays_unflushed_chunk(
 ):
     from homeassistant.helpers.storage import Store
 
-    from custom_components.ekz_ha import _persist_import_checkpoint, _restore_import_checkpoint
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import (
+        _persist_import_checkpoint,
+        _restore_import_checkpoint,
+    )
 
     freezer.move_to("2026-10-20 12:00:00+00:00")
     local_start = datetime(2026, 10, 16, tzinfo=ZRH)

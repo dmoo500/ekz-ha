@@ -5,15 +5,15 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from custom_components.ekz_ha import (
-    EkzCoordinator,
-    _async_get_prediction_service,
-    _async_save_prediction_state,
-    async_setup_entry,
-)
+from custom_components.ekz_ha import async_setup_entry
 from custom_components.ekz_ha.api.models import ApiValue
+from custom_components.ekz_ha.coordinator import EkzCoordinator
 from custom_components.ekz_ha.sensor import EkzMetaEntity
 from custom_components.ekz_ha.statistics.prediction import PredictionService
+from custom_components.ekz_ha.statistics.prediction_manager import (
+    _async_get_prediction_service,
+    _async_save_prediction_state,
+)
 
 
 def slots(start, energy=0.25):
@@ -40,11 +40,25 @@ def prediction(hass, monkeypatch, freezer):
         async_add_executor_job=AsyncMock(return_value={}),
         async_block_till_done=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
+        )
     enqueue = Mock()
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", enqueue)
     monkeypatch.setattr(
-        "custom_components.ekz_ha._prediction_statistic_id", lambda *_args: "sensor.prediction"
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
+        lambda *_args: "sensor.prediction",
     )
     return coordinator, recorder, enqueue
 
@@ -173,7 +187,7 @@ async def test_successful_import_persists_learning_for_next_coordinator(
             original_query = recorder.async_add_executor_job
 
             async def fail_rebuild(function, *args):
-                from custom_components.ekz_ha import statistics_during_period
+                from homeassistant.components.recorder.statistics import statistics_during_period
 
                 if function is statistics_during_period:
                     raise OSError("temporary recorder failure")

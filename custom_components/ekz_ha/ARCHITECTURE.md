@@ -8,6 +8,8 @@ The integration is organized into four main layers:
 
 ```
 custom_components/ekz_ha/
+├── __init__.py       # Setup, service registration and teardown
+├── coordinator.py    # Discovery, import orchestration and adaptive polling
 ├── api/              # API Layer - Communication with EKZ servers
 ├── data/             # Data Layer - Processing and transformation
 ├── statistics/       # Statistics Layer - Import logic
@@ -15,6 +17,14 @@ custom_components/ekz_ha/
 ```
 
 ## Layer Responsibilities
+
+### Integration Lifecycle and Coordination
+
+- **`__init__.py`**: Config-entry setup/unload, prediction timer registration and
+  the statistics-reset service.
+- **`coordinator.py`**: Installation discovery, consumption/production import
+  orchestration, running-sum restoration and adaptive polling. Imports, local
+  prediction extension and statistics reset share the same lock.
 
 ### API Layer (`api/`)
 
@@ -70,6 +80,21 @@ Orchestrates data import workflows.
 - **`production.py`**: Production-specific importer
   - Handles solar feed-in data
   - 15-min resolution only
+
+- **`checkpoint.py`**: Durable import state and failure recovery
+  - Source-resolution tracking and cumulative-sum offset caching
+  - Checkpoint persistence/restoration and recorder replay
+  - Import transactions, rollback and failure diagnostics
+
+- **`prediction.py`**: Prediction calculations and serializable learning profiles
+- **`prediction_manager.py`**: Profile persistence and recorder-based recovery,
+  learning after imports, replacement of estimates with real readings and hourly
+  local extension within the 14-day measurement-age limit
+- **`recorder.py`**: Shared statistic metadata, registered prediction entity IDs
+  and Home Assistant statistics-clearing compatibility
+
+The extracted modules retain the existing storage keys and formats; this
+separation does not require a statistics reset or data migration.
 
 ## Usage Example
 
@@ -138,7 +163,7 @@ importer = ConsumptionImporter(mock_api)
 ```
 
 ### 5. **Maintainability**
-- Small, focused files (< 200 lines each)
+- Focused modules organized by responsibility
 - Clear naming conventions
 - Comprehensive docstrings
 - Easy to locate and fix bugs

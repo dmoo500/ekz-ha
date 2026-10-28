@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 from .import_status import ImportStatus, get_import_status
+from .statistics.checkpoint import _restore_import_checkpoint
 
 
 def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> None:
@@ -30,8 +31,6 @@ def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EKZ sensors from a config entry."""
-    from . import _restore_import_checkpoint
-
     coordinator = hass.data[DOMAIN]["coordinator"]
     _migrate_production_meta_entities(hass, coordinator)
     meta_entities = {}

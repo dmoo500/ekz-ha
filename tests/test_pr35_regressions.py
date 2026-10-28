@@ -5,13 +5,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeassistant.components.recorder.statistics import statistics_during_period
 
-from custom_components.ekz_ha import EkzCoordinator, statistics_during_period
 from custom_components.ekz_ha.api.models import (
     ConsumptionData,
     InstallationContract,
     InstallationSelectionData,
 )
+from custom_components.ekz_ha.coordinator import EkzCoordinator
 from custom_components.ekz_ha.sensor import EkzMetaEntity
 from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
 from custom_components.ekz_ha.statistics.importer import ZRH, get_import_start
@@ -126,12 +127,26 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
         async_add_executor_job=AsyncMock(side_effect=query),
         async_block_till_done=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+        "statistics.importer",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
+        )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda _hass: recorder
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", Mock()
     )
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", Mock())
-    monkeypatch.setattr("custom_components.ekz_ha._prediction_statistic_id", lambda *_args: None)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", Mock()
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
+        lambda *_args: None,
+    )
     data = ConsumptionData.from_dict(
         {
             "level": "DAY",

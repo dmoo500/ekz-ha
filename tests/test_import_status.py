@@ -12,15 +12,15 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from custom_components.ekz_ha import (
-    EkzCoordinator,
+from custom_components.ekz_ha.api.models import ConsumptionData
+from custom_components.ekz_ha.coordinator import EkzCoordinator
+from custom_components.ekz_ha.import_status import ImportStatus, get_import_status
+from custom_components.ekz_ha.sensor import EkzImportStatusEntity, EkzMetaEntity
+from custom_components.ekz_ha.statistics.checkpoint import (
     _async_import_chunk,
     _persist_import_checkpoint,
     _restore_import_checkpoint,
 )
-from custom_components.ekz_ha.api.models import ConsumptionData
-from custom_components.ekz_ha.import_status import ImportStatus, get_import_status
-from custom_components.ekz_ha.sensor import EkzImportStatusEntity, EkzMetaEntity
 from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
 from custom_components.ekz_ha.statistics.importer import ZRH
 from custom_components.ekz_ha.statistics.production import ProductionImporter
@@ -57,10 +57,20 @@ def installation(request, monkeypatch):
         async_add_executor_job=AsyncMock(return_value={}),
         async_block_till_done=AsyncMock(),
     )
-    for module in ("custom_components.ekz_ha", "custom_components.ekz_ha.statistics.importer"):
+    for module in (
+        "custom_components.ekz_ha.coordinator",
+        "custom_components.ekz_ha.statistics.checkpoint",
+        "custom_components.ekz_ha.statistics.prediction_manager",
+        "custom_components.ekz_ha.statistics.importer",
+    ):
         monkeypatch.setattr(f"{module}.get_recorder_instance", lambda _hass: recorder)
     enqueue = Mock()
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", enqueue)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+    )
     return SimpleNamespace(
         coordinator=coordinator,
         meta=meta,
@@ -327,8 +337,21 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
         async_block_till_done=AsyncMock(), async_add_executor_job=AsyncMock(return_value={})
     )
     replay = Mock()
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", replay)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
+        )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", replay
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", replay
+    )
 
     attempts = 0
 
@@ -339,7 +362,7 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
         assert recorder.async_block_till_done.await_count == attempts
         raise UpdateFailed("first installation failed")
 
-    monkeypatch.setattr("custom_components.ekz_ha._async_import_chunk", fail)
+    monkeypatch.setattr("custom_components.ekz_ha.coordinator._async_import_chunk", fail)
     with pytest.raises(UpdateFailed):
         await EkzCoordinator._do_update_data(coordinator)
     all_metas = [
