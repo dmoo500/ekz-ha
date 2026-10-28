@@ -1,6 +1,6 @@
 """Entities for EKZ installations."""
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -12,6 +12,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
+from .import_status import ImportStatus, get_import_status
 
 
 def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> None:
@@ -29,10 +30,12 @@ def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EKZ sensors from a config entry."""
+    from . import _restore_import_checkpoint
+
     coordinator = hass.data[DOMAIN]["coordinator"]
     _migrate_production_meta_entities(hass, coordinator)
     meta_entities = {}
-    sensors = [
+    sensors: list[SensorEntity] = [
         EkzEntity(coordinator, installationId) for installationId in coordinator.installations
     ] + [
         EkzPredictionEntity(coordinator, installationId)
@@ -44,6 +47,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         meta = EkzMetaEntity(coordinator, installationId)
         meta_entities[installationId] = meta
         sensors.append(meta)
+        sensors.append(EkzImportStatusEntity(coordinator, meta, "consumption"))
         sensors.append(EkzContractStartEntity(coordinator, installationId))
         sensors.append(EkzNextSyncEntity(coordinator, installationId))
     # Store mapping in coordinator so update loop can access entities by installation ID
@@ -56,9 +60,17 @@ async def async_setup_entry(hass, entry, async_add_entities):
         prod_meta = EkzMetaEntity(coordinator, installationId, model="Solar Meter")
         production_meta_entities[installationId] = prod_meta
         sensors.append(prod_meta)
+        sensors.append(EkzImportStatusEntity(coordinator, prod_meta, "production"))
     coordinator.production_meta_entities = production_meta_entities
 
-    async_add_entities(sensors, True)
+    for kind, entities in (
+        ("consumption", meta_entities),
+        ("production", production_meta_entities),
+    ):
+        for key, meta in entities.items():
+            _restore_import_checkpoint(coordinator, f"sensor.electricity_{kind}_ekz_{key}", meta)
+
+    async_add_entities(sensors, False)
 
 
 class EkzEntity(CoordinatorEntity, SensorEntity):
@@ -145,6 +157,10 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._last_get_all = None
         self._contract_start: date | None = None
         self._last_import: date | None = None
+        self._last_successful_import: datetime | None = None
+        self._import_status = ImportStatus()
+        self._diagnostic_entities: list[SensorEntity] = [self]
+        self._diagnostic_coordinator_error: object = object()
         self._history_cursor: date | None = None
         self._empty_search_days: int | None = None
         self._recent_statistics: list[dict[str, Any]] = []
@@ -154,6 +170,13 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._last_run_date: datetime | None = None
         self._pending_from: date | None = None
         self._pending_sum_offset: float = 0.0
+
+    def async_publish_import_status(self) -> None:
+        # A previous cycle's exception must not hide this attempt's local progress.
+        self._diagnostic_coordinator_error = self.coordinator.last_exception
+        for entity in self._diagnostic_entities:
+            if entity.hass is not None and entity.entity_id is not None:
+                entity.async_write_ha_state()
 
     @property
     def device_info(self):
@@ -167,20 +190,12 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         """Return the last successfully imported statistic timestamp."""
-        if self._last_import is None:
-            return None
+        return self._last_successful_import
 
-        if isinstance(self._last_import, datetime):
-            if self._last_import.tzinfo is None:
-                return self._last_import.replace(tzinfo=UTC)
-            return self._last_import
-        # date → datetime at midnight UTC
-        return datetime(
-            self._last_import.year,
-            self._last_import.month,
-            self._last_import.day,
-            tzinfo=UTC,
-        )
+    @property
+    def available(self) -> bool:
+        """Retain the last successful import date when an update fails."""
+        return True
 
     @property
     def icon(self) -> str:
@@ -214,7 +229,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     def set_contract_start(self, value: date):
         self._contract_start = value
 
-    def set_last_import(self, value: date):
+    def set_last_import(self, value: date | None):
         self._last_import = value
 
     def set_history_cursor(self, value: date | None) -> None:
@@ -223,6 +238,53 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     def set_pending(self, pending_from: "date | None", sum_offset: float = 0.0):
         self._pending_from = pending_from
         self._pending_sum_offset = sum_offset
+
+
+class EkzImportStatusEntity(CoordinatorEntity, SensorEntity):
+    """Expose import diagnostics independently of coordinator availability."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["waiting", "searching", "importing", "current", "failed"]
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:database-sync"
+
+    def __init__(self, coordinator, meta: EkzMetaEntity, import_type: str) -> None:
+        super().__init__(coordinator)
+        self._meta = meta
+        meta._diagnostic_entities.append(self)
+        self._attr_unique_id = f"ekz_electricity_{import_type}_{meta.installation_id}_import_status"
+        self._attr_translation_key = f"import_status_{import_type}"
+
+    @property
+    def device_info(self):
+        return self._meta.device_info
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def native_value(self) -> str:
+        status = get_import_status(self._meta)
+        if (
+            not self.coordinator.last_update_success
+            and self.coordinator.last_exception is not self._meta._diagnostic_coordinator_error
+        ):
+            return "failed"
+        return status.state
+
+    @property
+    def extra_state_attributes(self):
+        attributes = get_import_status(self._meta).as_attributes()
+        next_update = getattr(self.coordinator, "next_update_time", None)
+        attributes["next_update"] = (
+            next_update.isoformat()
+            if next_update and self.coordinator.last_update_success
+            else None
+        )
+        if not self.coordinator.last_update_success:
+            attributes["coordinator_error_type"] = type(self.coordinator.last_exception).__name__
+        return attributes
 
 
 class EkzContractStartEntity(CoordinatorEntity, SensorEntity):

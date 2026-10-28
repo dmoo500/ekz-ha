@@ -1,4 +1,28 @@
 {
+  "entity": {
+    "sensor": {
+      "import_status_consumption": {
+        "name": "Importstatus Verbrauch",
+        "state": {
+          "waiting": "Warten auf erste Aktualisierung",
+          "searching": "Historische Daten werden gesucht",
+          "importing": "Historischer Import läuft",
+          "current": "Aktuell",
+          "failed": "Aktualisierung fehlgeschlagen"
+        }
+      },
+      "import_status_production": {
+        "name": "Importstatus Erzeugung",
+        "state": {
+          "waiting": "Warten auf erste Aktualisierung",
+          "searching": "Historische Daten werden gesucht",
+          "importing": "Historischer Import läuft",
+          "current": "Aktuell",
+          "failed": "Aktualisierung fehlgeschlagen"
+        }
+      }
+    }
+  },
   "config": {
     "step": {
       "user": {
@@ -33,7 +57,8 @@
       "cannot_connect": "Verbindung zu myEKZ fehlgeschlagen. Bitte überprüfe deine Netzwerkverbindung und versuche es erneut."
     },
     "abort": {
-      "already_configured": "EKZ ist bereits konfiguriert."
+      "already_configured": "EKZ ist bereits konfiguriert.",
+      "reauth_successful": "Die Anmeldung wurde erfolgreich aktualisiert."
     }
   }
 }

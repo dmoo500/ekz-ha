@@ -484,6 +484,7 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
             reading = float(call_count + 1)
             call_count += 1
             return {
+                "fetched_data": True,
                 "statistics": [
                     {
                         "start": datetime.combine(
@@ -503,6 +504,7 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         call_count += 1
         metadata._last_import = date(2026, 10, 16)
         return {
+            "fetched_data": True,
             "statistics": [
                 {"start": start, "state": 10.0, "sum": running_sum_offset + 10.0 * index}
                 for index, start in enumerate(starts, start=1)
@@ -862,6 +864,9 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
             get_production_installations=AsyncMock(return_value=SimpleNamespace(contracts=[])),
             get_production_15min=AsyncMock(return_value=ConsumptionData()),
         ),
+    )
+    after_restart._async_discover_installations = MethodType(
+        EkzCoordinator._async_discover_installations, after_restart
     )
     await EkzCoordinator._async_setup(after_restart)
     meta = EkzMetaEntity(Mock(), "825821")
@@ -1356,6 +1361,9 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
             get_production_installations=AsyncMock(return_value=SimpleNamespace(contracts=[])),
             get_production_15min=AsyncMock(return_value=ConsumptionData()),
         ),
+    )
+    fresh._async_discover_installations = MethodType(
+        EkzCoordinator._async_discover_installations, fresh
     )
     await EkzCoordinator._async_setup(fresh)
     meta = EkzMetaEntity(Mock(), "825821")

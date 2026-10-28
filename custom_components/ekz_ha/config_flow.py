@@ -7,6 +7,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 
 from .api.client import EkzApiClient
+from .api.session import EkzAuthenticationError, EkzConnectionError
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,11 +21,18 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self):
         self._credentials = {}
+        self._reauth = False
+
+    async def async_step_reauth(self, entry_data):
+        """Collect replacement credentials for the existing entry."""
+        self._reauth = True
+        return await self.async_step_user()
 
     async def async_step_user(self, user_input=None):
         """Step 1: collect credentials and TOTP secret, then show generated OTP."""
-        await self.async_set_unique_id(DOMAIN)
-        self._abort_if_unique_id_configured()
+        if not self._reauth:
+            await self.async_set_unique_id(DOMAIN)
+            self._abort_if_unique_id_configured()
 
         errors = {}
 
@@ -83,18 +91,28 @@ class EkzConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                     errors["base"] = "no_contracts"
                 else:
+                    if self._reauth:
+                        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+                        assert entry is not None
+                        return self.async_update_reload_and_abort(
+                            entry,
+                            data={**entry.data, **self._credentials},
+                        )
                     return self.async_create_entry(title="EKZ", data=self._credentials)
-            except ValueError as e:
+            except EkzAuthenticationError as e:
                 msg = str(e)
                 _LOGGER.warning("[config_flow] Login failed: %s", msg)
                 if "SMS" in msg:
                     errors["base"] = "sms_2fa_not_supported"
                 elif "TOTP code was rejected" in msg or "TOTP" in msg:
                     errors["base"] = "invalid_totp"
-                elif "maintenance" in msg.lower():
-                    errors["base"] = "ekz_maintenance"
                 else:
                     errors["base"] = "invalid_auth"
+            except EkzConnectionError as e:
+                _LOGGER.warning("[config_flow] Login service unavailable: %s", e)
+                errors["base"] = (
+                    "ekz_maintenance" if "maintenance" in str(e).lower() else "cannot_connect"
+                )
             except Exception as e:  # noqa: BLE001
                 _LOGGER.exception("[config_flow] Unexpected error during login: %s", e)
                 errors["base"] = "cannot_connect"

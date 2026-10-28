@@ -29,13 +29,16 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EkzApiClient
+from .api.session import EkzAuthenticationError
 from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
 from .data.validator import day_slots
+from .import_status import ImportStatus, get_import_status, publish_import_status
 from .statistics.consumption import ConsumptionImporter
 from .statistics.importer import get_import_start
 from .statistics.prediction import PredictionService
@@ -191,6 +194,12 @@ def _restore_import_checkpoint(coordinator: "EkzCoordinator", statistic_id: str,
             get_import_start(meta),
             float(first["sum"] - first["state"]),
         )
+    if state.get("import_status"):
+        meta._import_status = ImportStatus.restore(state["import_status"])
+    if state.get("last_successful_import"):
+        meta._last_successful_import = datetime.fromisoformat(state["last_successful_import"])
+    elif meta._recent_statistics:
+        meta._last_successful_import = max(row["start"] for row in meta._recent_statistics)
     if state.get("pending_from"):
         pending_date = date.fromisoformat(state["pending_from"])
         pending_offset = float(state["pending_offset"])
@@ -246,6 +255,15 @@ async def _persist_import_checkpoint(
     pending = getattr(meta, "_pending_from", None)
     state = {
         "slots": slots,
+        "import_status": {
+            "state": get_import_status(meta).state,
+            **get_import_status(meta).as_attributes(),
+        },
+        "last_successful_import": (
+            meta._last_successful_import.isoformat()
+            if getattr(meta, "_last_successful_import", None) is not None
+            else None
+        ),
         "history_cursor": meta._history_cursor.isoformat() if meta._history_cursor else None,
         "empty_search_days": getattr(meta, "_empty_search_days", None),
         "pending_from": pending.isoformat() if pending else None,
@@ -280,6 +298,7 @@ async def _async_import_chunk(
 ) -> dict[str, Any]:
     tracked_fields = (
         "_last_import",
+        "_last_successful_import",
         "_history_cursor",
         "_empty_search_days",
         "_pending_from",
@@ -304,6 +323,24 @@ async def _async_import_chunk(
         statistics = result.get("statistics", [])
         # The previous checkpoint must reach the recorder before it is replaced.
         await get_recorder_instance(coordinator.hass).async_block_till_done()
+        status = get_import_status(meta)
+        status.last_result = "imported" if result["fetched_data"] else "no_data"
+        requested_to = status.requested_to
+        status.state = (
+            "searching"
+            if getattr(meta, "_empty_search_days", None) is not None
+            else (
+                "importing"
+                if requested_to is None or requested_to <= datetime.now(tz=ZRH).date()
+                else "current"
+            )
+        )
+        if statistics:
+            timestamps = [row["start"] for row in statistics]
+            previous_success = getattr(meta, "_last_successful_import", None)
+            if previous_success is not None:
+                timestamps.append(previous_success)
+            meta._last_successful_import = max(timestamps)
         if statistics:
             await _persist_source_resolution(coordinator, statistic_id, statistics)
         await _persist_import_checkpoint(coordinator, statistic_id, meta, statistics)
@@ -343,7 +380,31 @@ async def _async_import_chunk(
                 setattr(meta, field, previous_meta[field])
             elif hasattr(meta, field):
                 delattr(meta, field)
+        status = get_import_status(meta)
+        status.state = "failed"
+        status.last_result = "failed"
+        status.error_type = type(err).__name__
+        checkpoints = deepcopy(previous_checkpoints)
+        state = checkpoints.setdefault(statistic_id, {})
+        state["import_status"] = {"state": status.state, **status.as_attributes()}
+        previous_success = getattr(meta, "_last_successful_import", None)
+        state["last_successful_import"] = (
+            previous_success.isoformat() if previous_success is not None else None
+        )
+        try:
+            store = getattr(coordinator, "_import_checkpoint_store", None)
+            if store is not None:
+                await store.async_save(checkpoints)
+            coordinator._import_checkpoints = checkpoints
+        except Exception as save_err:
+            _LOGGER.error(
+                "Could not persist failure diagnostics for %s: %s", statistic_id, save_err
+            )
+        if isinstance(err, EkzAuthenticationError):
+            raise ConfigEntryAuthFailed("EKZ authentication failed") from err
         raise UpdateFailed(f"Import failed for {statistic_id}: {err}") from err
+    finally:
+        publish_import_status(meta)
 
 
 class EkzCoordinator(DataUpdateCoordinator):
@@ -385,6 +446,10 @@ class EkzCoordinator(DataUpdateCoordinator):
         self._import_checkpoint_store = Store[dict[str, dict[str, Any]]](
             hass, 1, f"{DOMAIN}.{config.entry_id}.import_checkpoint"
         )
+        self._installation_store = Store[dict[str, dict[str, Any]]](
+            hass, 1, f"{DOMAIN}.{config.entry_id}.installations"
+        )
+        self._retry_setup = False
         self.last_prediction_sums: dict[str, float] = {}
         self.catching_up: dict[str, bool] = {}
         self._normal_interval = update_interval  # remember configured interval for later restore
@@ -404,6 +469,13 @@ class EkzCoordinator(DataUpdateCoordinator):
         checkpoint_store = getattr(self, "_import_checkpoint_store", None)
         if checkpoint_store is not None:
             self._import_checkpoints = await checkpoint_store.async_load() or {}
+        try:
+            await self._async_discover_installations()
+        except EkzAuthenticationError as err:
+            raise ConfigEntryAuthFailed("EKZ authentication failed") from err
+
+    async def _async_discover_installations(self):
+        """Discover and persist the currently active installations."""
         installations_data = await self.api_client.get_consumption_installations()
 
         # Filter for active contracts only
@@ -451,6 +523,8 @@ class EkzCoordinator(DataUpdateCoordinator):
                 if not test_data.is_empty():
                     self.production_installations[inst_id] = info.copy()
                     _LOGGER.info(f"Production data available for installation {inst_id}")
+            except EkzAuthenticationError:
+                raise
             except Exception as e:
                 _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
 
@@ -459,11 +533,35 @@ class EkzCoordinator(DataUpdateCoordinator):
         )
         if not self.installations and not self.production_installations:
             raise UpdateFailed("No active consumption or production installations found")
+        installation_store = getattr(self, "_installation_store", None)
+        if installation_store is not None:
+            await installation_store.async_save(
+                {
+                    "consumption": self.installations,
+                    "production": self.production_installations,
+                }
+            )
+        self._retry_setup = False
 
     async def _async_update_data(self):
         """Acquire reset lock then delegate to _do_update_data."""
         async with self._reset_lock:
-            await self._do_update_data()
+            try:
+                if self._retry_setup:
+                    await self._async_setup()
+                    registered_ids = (
+                        set(getattr(self, "meta_entities", None) or {}),
+                        set(getattr(self, "production_meta_entities", None) or {}),
+                    )
+                    current_ids = (set(self.installations), set(self.production_installations))
+                    if registered_ids != current_ids:
+                        self.hass.async_create_task(
+                            self.hass.config_entries.async_reload(self.config.entry_id)
+                        )
+                        return
+                await self._do_update_data()
+            except EkzAuthenticationError as err:
+                raise ConfigEntryAuthFailed("EKZ authentication failed") from err
 
     async def _get_running_sum_before(
         self, statistic_id: str, import_date: date, fallback: float = 0.0
@@ -499,6 +597,13 @@ class EkzCoordinator(DataUpdateCoordinator):
         This is the place to pre-process the data to lookup tables
         so entities can quickly look up their data.
         """
+        for kind, entities in (
+            ("consumption", getattr(self, "meta_entities", None)),
+            ("production", getattr(self, "production_meta_entities", None)),
+        ):
+            for key, meta in (entities or {}).items():
+                _restore_import_checkpoint(self, f"sensor.electricity_{kind}_ekz_{key}", meta)
+
         if self.installations is None or self.installations == []:
             installations_data = await self.api_client.get_consumption_installations()
 
@@ -533,6 +638,8 @@ class EkzCoordinator(DataUpdateCoordinator):
                     if not test_data.is_empty():
                         self.production_installations[inst_id] = info.copy()
                         _LOGGER.info(f"Production data available for installation {inst_id}")
+                except EkzAuthenticationError:
+                    raise
                 except Exception as e:
                     _LOGGER.debug(f"No production data for installation {inst_id}: {e}")
 
@@ -559,7 +666,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                     )
 
             statistic_id = f"sensor.electricity_consumption_ekz_{key}"
-            _restore_import_checkpoint(self, statistic_id, meta_entity)
             await _async_replay_import_checkpoint(self, statistic_id, meta_entity)
 
             # Query DB only on first cycle after (re)start to restore last import date
@@ -584,6 +690,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                                 f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date}"
                             )
                             meta_entity.set_last_import(import_date)
+                            meta_entity._last_successful_import = import_dt
 
                             # Pre-initialize catching_up flag
                             today_date = datetime.now(tz=ZRH).date()
@@ -606,18 +713,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                         )
             except Exception as e:
                 _LOGGER.debug(f"Migration check failed for {key}: {e}")
-
-            # Fall back to contract_start when no statistics exist yet
-            if meta_entity._last_import is None and contract_start is not None:
-                start = (
-                    contract_start
-                    if not isinstance(contract_start, str)
-                    else datetime.strptime(contract_start, "%Y-%m-%d")
-                )
-                meta_entity.set_last_import(start)
-                _LOGGER.info(
-                    f"No existing statistics for {key}, starting import from contract start {start}"
-                )
 
             # Rebuild the running sum before the day being re-imported.
             pending_from = getattr(meta_entity, "_pending_from", None)
@@ -829,7 +924,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                 prod_meta.set_contract_start(datetime.strptime(contract_start, "%Y-%m-%d").date())
 
             statistic_id = f"sensor.electricity_production_ekz_{key}"
-            _restore_import_checkpoint(self, statistic_id, prod_meta)
             await _async_replay_import_checkpoint(self, statistic_id, prod_meta)
             if prod_meta._last_import is None:
                 try:
@@ -851,13 +945,11 @@ class EkzCoordinator(DataUpdateCoordinator):
                                 f"Restored last import for production {key} from DB: {import_dt.date()} → rewinding to {import_date}"
                             )
                             prod_meta.set_last_import(import_date)  # Already subtracted 1 day above
+                            prod_meta._last_successful_import = import_dt
                             if last_stat_data[0].get("sum") is not None:
                                 self.last_production_sums[key] = last_stat_data[0]["sum"]
                 except Exception as e:
                     _LOGGER.debug(f"Could not query existing production statistics for {key}: {e}")
-
-            if prod_meta._last_import is None and contract_start:
-                prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
 
             pending_from = getattr(prod_meta, "_pending_from", None)
             production_import_date = get_import_start(prod_meta)
@@ -912,12 +1004,15 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
     scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
     # Create API client using new architecture
-    api_client = EkzApiClient(
-        entry.data["user"],
-        entry.data["password"],
-        entry.data.get("totp_secret"),
-        entry.data.get("device_name"),
-    )
+    try:
+        api_client = EkzApiClient(
+            entry.data["user"],
+            entry.data["password"],
+            entry.data.get("totp_secret"),
+            entry.data.get("device_name"),
+        )
+    except EkzAuthenticationError as err:
+        raise ConfigEntryAuthFailed("Invalid EKZ authentication configuration") from err
 
     coordinator = EkzCoordinator(hass, api_client, scan_interval, entry)
 
@@ -925,7 +1020,23 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         "conf": entry,
         "coordinator": coordinator,
     }
-    await coordinator.async_config_entry_first_refresh()
+    known_installations = await coordinator._installation_store.async_load()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        if not known_installations or not any(known_installations.values()):
+            await api_client.close()
+            raise
+        coordinator.installations = known_installations["consumption"]
+        coordinator.production_installations = known_installations["production"]
+        coordinator._retry_setup = True
+        _LOGGER.warning(
+            "EKZ startup refresh failed; restoring known installations for diagnostics. "
+            "Installation discovery will be retried before imports resume."
+        )
+    except ConfigEntryAuthFailed:
+        await api_client.close()
+        raise
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
 
     async def handle_reset_statistics(call):
@@ -966,6 +1077,8 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator.prediction_services = {}
             for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
                 meta.set_last_import(None)
+                meta._last_successful_import = None
+                meta._import_status = ImportStatus()
                 meta.set_history_cursor(None)
                 meta._empty_search_days = None
                 meta._recent_statistics = []
@@ -975,6 +1088,8 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 meta.set_pending(None)
             for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
                 meta.set_last_import(None)
+                meta._last_successful_import = None
+                meta._import_status = ImportStatus()
                 meta.set_history_cursor(None)
                 meta._empty_search_days = None
                 meta._recent_statistics = []
@@ -988,6 +1103,11 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         await coordinator.async_request_refresh()
 
     hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)
+    entry.async_create_background_task(
+        hass,
+        coordinator.async_request_refresh(),
+        "EKZ initial import",
+    )
     return True
 
 
@@ -995,6 +1115,8 @@ async def async_unload_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> bo
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unload_ok:
-        hass.data.pop(DOMAIN, None)
+        data = hass.data.pop(DOMAIN, None)
+        if data is not None:
+            await data["coordinator"].api_client.close()
         hass.services.async_remove(DOMAIN, "reset_statistics")
     return unload_ok
