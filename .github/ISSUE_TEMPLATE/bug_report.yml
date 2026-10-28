@@ -1,0 +1,74 @@
+name: 🐛 Bug Report
+description: Report a bug or problem
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please fill out the following fields as detailed as possible.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem Description
+      description: A clear and concise description of the problem
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the problem
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Scroll down to '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should happen instead?
+      placeholder: Describe what you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log excerpts (if available)
+      placeholder: |
+        Paste Home Assistant logs here
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: EKZ Integration Version
+      description: Which version of the integration are you using?
+      placeholder: e.g. 0.2.0-alpha.1
+    validations:
+      required: true
+
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant Version
+      description: Which Home Assistant version are you using?
+      placeholder: e.g. 2024.8.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Other information that might be helpful
+      placeholder: Screenshots, configuration, etc.

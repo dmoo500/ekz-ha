@@ -43,10 +43,9 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 1. Log in to [my.ekz.ch](https://my.ekz.ch) and open your account security settings.
 2. Click "Add authenticator app" and choose a device name (e.g. `Home Assistant`). **Note this name** — you may enter it as **Device Name** in the integration setup if you have multiple authenticator devices registered.
 3. When the QR code is shown, also reveal the **secret key** (usually labeled "Key", "Secret" or "Schlüssel anzeigen"). It looks like `JBSWY3DPEHPK3PXP`. Copy it.
-4. Enter the secret key into the **TOTP Secret** field when configuring this integration and save.
-   - If you have **not yet confirmed** the authenticator on the EKZ website, the integration will automatically submit the confirmation code to EKZ during setup — completing the registration transparently.
-   - Afterwards, you can also scan the QR code into your authenticator app as a manual backup.
-5. The integration will use the secret key to generate the correct 6-digit code on every login automatically.
+4. Enter the secret key into the **TOTP Secret** field when configuring this integration.
+5. Home Assistant will show a current 6-digit confirmation code in the next step. If you are registering a new authenticator, enter that code and the device name on the EKZ website, save the registration there, then return to Home Assistant and submit the confirmation step. If the authenticator is already registered, simply submit the confirmation step.
+6. The integration uses the secret key to generate a fresh 6-digit code for each login. You can also scan the QR code into your authenticator app as a backup.
 
 > **Tip:** If you no longer have the secret key from when you set up the authenticator app, remove the existing authenticator in your EKZ account security settings and re-add it, noting down the secret key this time.
 
@@ -61,9 +60,13 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 
 ### Historical data backfill & chunk imports
 
-On first setup (or after a re-installation), the integration needs to import all historical consumption data starting from your contract start date. Because the EKZ API returns data in limited windows, the integration fetches **one 30-day chunk per update cycle** and writes it directly into the Home Assistant statistics database.
+On first setup (or after a re-installation), the integration starts looking for historical data at your contract start date. If the initial 30-day window has no readings, it progressively extends the search window until data is found or the present is reached. Once data is available, it imports **30-day chunks** directly into the Home Assistant statistics database. There is no fixed ten-year history cutoff.
 
-The import progress is tracked by the **meta entity** (`sensor.ekz_<installationId>_letzter_import`), which stores the date of the last successfully imported chunk. After a Home Assistant restart, the import automatically resumes from where it left off.
+The import progress is exposed by each installation's **Last Import** meta sensor, which stores the date of the last successfully imported data. After a Home Assistant restart, the import automatically resumes from where it left off. The last checkpoint's statistics are replayed into the recorder before either consumption or production imports resume, so queued readings are recovered even if Home Assistant stopped before writing them to its database.
+
+Consumption is fetched at 15-minute resolution where available. If a day has no quarter-hour readings, the integration uses EKZ's daily total for that day instead. Within the most recent 30 days, daily-fallback and incomplete days are revisited so corrected daily totals can be imported. For consumption days already represented by a daily fallback, the latest daily total is fetched even when some quarter-hour readings are available. Only a complete set of quarter-hour readings replaces a daily fallback; partial readings retain the latest available daily total. This reconciliation also applies to production imports.
+
+When EKZ supplies separate high- and low-tariff series (HT/NT), only timestamps with readings in both supplied series are imported. A missing tariff reading is not assumed to be zero and cannot make an incomplete day replace a daily fallback. This applies to consumption and production; single-series and TOTAL responses remain supported.
 
 #### Adaptive polling interval
 
@@ -71,10 +74,11 @@ To speed up the backfill without overwhelming the EKZ API, the integration autom
 
 | State | Polling interval |
 |---|---|
+| Initial/default interval | **20 minutes** |
 | Backlog present (historical data not yet fully imported) | **5 minutes** |
-| Caught up (import is up to date) | **20 minutes** |
+| Caught up (import is up to date) | **4 hours** |
 
-Once all historical data is imported, the polling interval switches back to normal automatically. Both intervals can be changed in [`const.py`](custom_components/ekz_ha/const.py).
+After the first update determines the import status, the integration switches to the catch-up or normal interval automatically. These intervals are defined in [`const.py`](custom_components/ekz_ha/const.py).
 
 #### Energy Dashboard
 
@@ -83,6 +87,8 @@ After the first chunk is imported, you can add the sensor to the Energy Dashboar
 2. Select `sensor.electricity_consumption_ekz_<installationId>` for "Energy imported from grid"
 3. (Optional) Select `sensor.electricity_production_ekz_<installationId>` for "Energy exported to grid"
 4. Historical data already imported will appear immediately; remaining chunks will appear as each update cycle completes.
+
+The entity IDs shown here are the defaults derived from the entity names. Home Assistant may use a different ID if an entity was renamed or an existing entity ID was already registered; in that case, select the corresponding EKZ sensor shown in the entity picker.
 
 > **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
 
@@ -94,6 +100,7 @@ EKZ delivers consumption data with a delay of approximately 7–10 days. To fill
 
 **How it works:**
 - While importing historical data, the integration accumulates **hourly consumption averages** per UTC month+hour bucket from the raw 15-minute slots.
+- Historical contributions remain in these aggregate buckets. Individual slots are retained only for the latest 32 days of imported data to handle repeated readings and corrections within the 30-day import lookback. Older slots are frozen in the aggregates and ignored if returned again, keeping prediction memory bounded.
 - Once the historical import is complete (catch-up mode ends), each update cycle generates predicted hourly values from the last real data point up to the current time.
 - The predictions are written as HA statistics — the Energy Dashboard will show them as an estimate for the recent gap.
 
@@ -106,13 +113,13 @@ EKZ delivers consumption data with a delay of approximately 7–10 days. To fill
 
 ## Solar production data
 
-If you have one or more EKZ solar installations (feed-in / Einspeisung), the integration automatically detects them and imports your production history into Home Assistant long-term statistics.
+If you have one or more EKZ solar installations (feed-in / Einspeisung), the integration automatically detects them and imports your production history into Home Assistant long-term statistics. Accounts with production contracts but no consumption contract are supported as well; in that case, only production entities are created.
 
-Production data appears in the Energy Dashboard alongside your consumption data:
+Add production data to the Energy Dashboard:
 1. Go to **Settings → Energy → Solar panels → Add solar production**
 2. Select `sensor.electricity_production_ekz_<installationId>`
 
-Production entities are grouped under the same device as the corresponding consumption installation.
+Production entities are grouped under a device for the relevant EKZ installation.
 
 > **Note:** As with consumption, the initial import works through your full history in 30-day chunks. Navigate back in the Energy Dashboard to verify historical production data.
 

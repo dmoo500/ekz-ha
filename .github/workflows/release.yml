@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'           # Stable: 0.2.0
+      - '[0-9]+.[0-9]+.[0-9]+-*'         # Pre-release with dash: 0.2.0-alpha.1
+      - '[0-9]+.[0-9]+.[0-9]+a[0-9]+'    # PEP 440 alpha: 0.2.0a1
+      - '[0-9]+.[0-9]+.[0-9]+b[0-9]+'    # PEP 440 beta: 0.2.0b1
+      - '[0-9]+.[0-9]+.[0-9]+rc[0-9]+'   # PEP 440 rc: 0.2.0rc1
+
+jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag format (no 'v' prefix)
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          if [[ $TAG_NAME =~ ^v ]]; then
+            echo "❌ ERROR: Tag '$TAG_NAME' starts with 'v'"
+            echo "This project uses tags WITHOUT 'v' prefix"
+            echo "Correct format: 0.2.0-alpha.1 (not v0.2.0-alpha.1)"
+            echo "See CONTRIBUTING.md for details"
+            exit 1
+          fi
+          echo "✓ Tag format is correct: $TAG_NAME"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest
+
+      - name: Validate version consistency
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/}
+          MANIFEST_VERSION=$(python -c "import json; print(json.load(open('custom_components/ekz_ha/manifest.json'))['version'])")
+          PACKAGE_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+
+          echo "Tag version: $TAG_VERSION"
+          echo "Manifest version: $MANIFEST_VERSION"
+          echo "Package version: $PACKAGE_VERSION"
+
+          if [[ "$TAG_VERSION" != "$MANIFEST_VERSION" || "$TAG_VERSION" != "$PACKAGE_VERSION" ]]; then
+            echo "❌ Version mismatch!"
+            exit 1
+          fi
+
+          echo "✓ Versions match"
+
+  release:
+    name: Create Release
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+
+          echo "# Changelog" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+
+          if [ -n "$PREV_TAG" ]; then
+            echo "Changes from $PREV_TAG to $CURRENT_TAG:" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+
+            # Group commits by type
+            echo "## 🐛 Bug Fixes" >> CHANGELOG.md
+            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --grep="fix:" --grep="bug:" >> CHANGELOG.md || true
+            echo "" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+
+            echo "## ✨ Features" >> CHANGELOG.md
+            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --grep="feat:" --grep="feature:" >> CHANGELOG.md || true
+            echo "" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+
+            echo "## 🔧 Other Changes" >> CHANGELOG.md
+            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --invert-grep --grep="fix:" --grep="bug:" --grep="feat:" --grep="feature:" >> CHANGELOG.md || true
+          else
+            echo "Initial release" >> CHANGELOG.md
+          fi
+
+      - name: Detect pre-release
+        id: prerelease
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          # Check for PEP 440 pre-release formats (a, b, rc) or dash formats (alpha, beta, rc)
+          if [[ $TAG_NAME =~ (a|b|rc)[0-9]+$ ]] || [[ $TAG_NAME =~ -(alpha|beta|rc) ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "✓ Detected pre-release version: $TAG_NAME"
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            echo "✓ Detected stable release: $TAG_NAME"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Release ${{ github.ref_name }} created successfully!"

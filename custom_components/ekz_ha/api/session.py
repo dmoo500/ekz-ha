@@ -1,12 +1,12 @@
 """Interact with EKZ."""
 
 import logging
+import re
+from datetime import UTC, datetime
 
 import aiohttp
-from bs4 import BeautifulSoup
 import pyotp
-
-from .apitypes import ConsumptionData, InstallationData, InstallationSelectionData
+from bs4 import BeautifulSoup
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +29,24 @@ class Session:
         self._session.headers.add("User-Agent", "ekz-ha")
         self._username = username
         self._password = password
-        self._totp_secret = totp_secret.strip().replace(" ", "") if totp_secret else None
+
+        # Clean and validate TOTP secret
+        if totp_secret:
+            cleaned_secret = totp_secret.strip().replace(" ", "").replace("-", "").upper()
+            # Validate Base32 format (only A-Z, 2-7)
+            if not re.match(r"^[A-Z2-7]+=*$", cleaned_secret):
+                raise ValueError(
+                    "Invalid TOTP secret format. Secret must be Base32 encoded (only A-Z and 2-7). "
+                    "Received secret contains invalid characters. "
+                    "Please check your authenticator app and re-enter the secret."
+                )
+            self._totp_secret = cleaned_secret
+            _LOGGER.debug(
+                "[EKZ TOTP] Secret validated (length=%d). Format OK.", len(cleaned_secret)
+            )
+        else:
+            self._totp_secret = None
+
         self._device_name = device_name.strip() if device_name else None
         self._logged_in = False
 
@@ -41,18 +58,64 @@ class Session:
 
     async def _reset_session(self):
         if self._session is not None:
-            await self._session.close()            
+            await self._session.close()
         self._session = None
         self._logged_in = False
+
+    async def _fetch_with_retry(
+        self, url: str, operation_name: str, empty_value, extra_context: str = ""
+    ):
+        """Fetch data with automatic retry on failure."""
+
+        async def _request_json():
+            async with self._session.get(url, headers=JSON_HEADERS) as response:
+                if not response.ok:
+                    return response.status, None
+                return response.status, await response.json()
+
+        for attempt in range(2):
+            if attempt:
+                await self._reset_session()
+                await self._ensure_logged_in()
+            try:
+                status, data = await _request_json()
+            except aiohttp.ContentTypeError:
+                if attempt:
+                    raise
+                _LOGGER.warning(
+                    "Refreshing session as fetching %s returned a non-JSON response%s - retrying once",
+                    operation_name,
+                    extra_context,
+                )
+                continue
+            if status >= 400:
+                if attempt:
+                    raise aiohttp.ClientError(
+                        f"Fetching {operation_name} failed after retry (HTTP {status})"
+                    )
+                _LOGGER.warning(
+                    "Refreshing session as fetching %s failed (status %s%s) - retrying once",
+                    operation_name,
+                    status,
+                    extra_context,
+                )
+                continue
+            if data == [] and not attempt:
+                _LOGGER.warning(
+                    "Refreshing session as fetching %s returned empty results%s - retrying once",
+                    operation_name,
+                    extra_context,
+                )
+                continue
+            return data
+        raise aiohttp.ClientError(f"Fetching {operation_name} failed after retry")
 
     async def _ensure_logged_in(self):
         if self._logged_in:
             return
         self._init_session()
 
-        async with self._session.get(
-            "https://my.ekz.ch/verbrauch/", headers=HTML_HEADERS
-        ) as r:
+        async with self._session.get("https://my.ekz.ch/verbrauch/", headers=HTML_HEADERS) as r:
             if not r.ok:
                 raise ValueError("EKZ seems unreachable")
             html = await r.text()
@@ -89,7 +152,17 @@ class Session:
                             "Please reconfigure the integration and enter the TOTP secret key from your authenticator app."
                         )
                     otp_action = otpform[0]["action"]
-                    totp_code = pyotp.TOTP(self._totp_secret).now()
+
+                    # Generate TOTP code
+                    current_time = datetime.now()
+                    totp = pyotp.TOTP(self._totp_secret)
+                    totp_code = totp.now()
+
+                    _LOGGER.info(
+                        "[EKZ TOTP] Generated code at %s (UTC: %s)",
+                        current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S"),
+                    )
 
                     # The OTP form may also contain a device selector (selectedCredentialId).
                     # Both fields must be submitted together in a single POST.
@@ -102,10 +175,16 @@ class Session:
                         for inp in radio_inputs:
                             cred_id = inp.get("value", "")
                             inp_id = inp.get("id", "")
-                            label_tag = otpform[0].select_one(f"label[for={inp_id}]") if inp_id else None
+                            label_tag = (
+                                otpform[0].select_one(f"label[for={inp_id}]") if inp_id else None
+                            )
                             if label_tag:
                                 title_span = label_tag.select_one("span.pf-c-tile__title")
-                                device_label = title_span.get_text(strip=True) if title_span else label_tag.get_text(strip=True)
+                                device_label = (
+                                    title_span.get_text(strip=True)
+                                    if title_span
+                                    else label_tag.get_text(strip=True)
+                                )
                             else:
                                 device_label = cred_id
                             candidates.append((cred_id, device_label))
@@ -128,7 +207,8 @@ class Session:
                                 if inp.has_attr("checked"):
                                     chosen_id = inp.get("value", "")
                                     chosen_label = next(
-                                        (lbl for cid, lbl in candidates if cid == chosen_id), chosen_id
+                                        (lbl for cid, lbl in candidates if cid == chosen_id),
+                                        chosen_id,
                                     )
                                     break
                         if chosen_id is None:
@@ -139,7 +219,9 @@ class Session:
                         )
                         post_data["selectedCredentialId"] = chosen_id
 
-                    _LOGGER.debug("[EKZ login] Submitting OTP form with fields: %s", list(post_data.keys()))
+                    _LOGGER.debug(
+                        "[EKZ login] Submitting OTP form with fields: %s", list(post_data.keys())
+                    )
                     async with self._session.post(
                         otp_action, data=post_data, allow_redirects=True
                     ) as r:
@@ -152,8 +234,19 @@ class Session:
                             "[EKZ login] Step: after TOTP submit. Forms on page: %s", all_form_ids
                         )
                         if soup.select("form[id=otp], form[id=kc-otp-login-form]"):
+                            _LOGGER.error(
+                                "[EKZ TOTP] Code was rejected. Current system time: %s (UTC: %s). "
+                                "Please verify: 1) TOTP secret is correct, 2) System clock is synchronized.",
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                            )
                             raise ValueError(
-                                "TOTP code was rejected by EKZ. Check that your TOTP secret key is correct and that the system clock is accurate."
+                                "TOTP code was rejected by EKZ. "
+                                "Possible causes:\n"
+                                "1. TOTP secret key is incorrect - please check your authenticator app\n"
+                                "2. System clock is not synchronized - TOTP requires accurate time\n"
+                                "3. TOTP secret was not properly copied (check for missing characters)\n\n"
+                                "To fix: Remove and re-add the integration with the correct TOTP secret."
                             )
                 elif smscode_form:
                     raise ValueError(
@@ -173,104 +266,79 @@ class Session:
 
                 self._logged_in = True
 
-    async def installation_selection_data(self) -> InstallationSelectionData:
+    async def installation_selection_data(self) -> dict:
         """Fetch the available installations."""
-        await self._ensure_logged_in()
         for variant in ["?installationVariant=CONSUMPTION", ""]:
-            async with self._session.get(
+            await self._ensure_logged_in()
+            url = (
                 "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-selection-data"
-                + variant,
-                headers=JSON_HEADERS,
-            ) as r:
-                if not r.ok:
-                    _LOGGER.warning(
-                        "Refreshing session as fetching InstallationSelectionData failed (status %s)",
-                        r.status,
-                    )
-                    await self._reset_session()
-                    return InstallationSelectionData()
-                data = await r.json()
-                _LOGGER.debug(
-                    "[installation_selection_data] variant=%s, keys=%s, contracts=%s",
-                    variant or "(none)",
-                    list(data.keys()) if isinstance(data, dict) else type(data).__name__,
-                    data.get("contracts") if isinstance(data, dict) else data,
-                )
-                if isinstance(data, dict) and data.get("contracts"):
-                    return data
-                if variant == "":
-                    # Both attempts returned no contracts — return whatever we have
-                    _LOGGER.warning(
-                        "[installation_selection_data] No contracts found in either API variant. "
-                        "Full response: %s", data
-                    )
-                    return data
-        return InstallationSelectionData()
-
-    async def production_installation_selection_data(self) -> InstallationSelectionData:
-        """Fetch installations with solar/production variant."""
-        await self._ensure_logged_in()
-        async with self._session.get(
-            "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-selection-data"
-            "?installationVariant=PRODUCTION",
-            headers=JSON_HEADERS,
-        ) as r:
-            if not r.ok:
-                _LOGGER.debug(
-                    "[production_installation_selection_data] Request failed (status %s) — no production installations",
-                    r.status,
-                )
-                return InstallationSelectionData()
-            data = await r.json()
+                + variant
+            )
+            data = await self._fetch_with_retry(
+                url,
+                "InstallationSelectionData",
+                None,
+                f", variant={variant or '(none)'}",
+            )
+            if data is None:
+                continue
             _LOGGER.debug(
-                "[production_installation_selection_data] keys=%s, contracts=%s",
+                "[installation_selection_data] variant=%s, keys=%s, contracts=%s",
+                variant or "(none)",
                 list(data.keys()) if isinstance(data, dict) else type(data).__name__,
                 data.get("contracts") if isinstance(data, dict) else data,
             )
-            return data if isinstance(data, dict) else InstallationSelectionData()
+            if isinstance(data, dict) and data.get("contracts"):
+                return data
+            if variant == "":
+                _LOGGER.warning(
+                    "[installation_selection_data] No contracts found in either API variant. "
+                    "Full response: %s",
+                    data,
+                )
+                return data
+        return {}
 
-    async def get_installation_data(self, installation_id: str) -> InstallationData:
+    async def production_installation_selection_data(self) -> dict:
+        """Fetch installations with solar/production variant."""
+        await self._ensure_logged_in()
+        data = await self._fetch_with_retry(
+            "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-selection-data"
+            "?installationVariant=PRODUCTION",
+            "ProductionInstallationSelectionData",
+            {},
+        )
+        _LOGGER.debug(
+            "[production_installation_selection_data] keys=%s, contracts=%s",
+            list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+            data.get("contracts") if isinstance(data, dict) else data,
+        )
+        return data if isinstance(data, dict) else {}
+
+    async def get_installation_data(self, installation_id: str) -> dict:
         """Fetch the metadata for an installation."""
         await self._ensure_logged_in()
-        async with self._session.get(
+        url = (
             "https://my.ekz.ch/api/portal-services/consumption-view/v1/installation-data"
-            "?installationId=" + installation_id,
-            headers=JSON_HEADERS,
-        ) as r:
-            if not r.ok:
-                # We may have timed out. Mark as not logged in and return an empty object.
-                _LOGGER.warning(
-                    "Refreshing session as fetching InstallationData failed"
-                )
-                await self._reset_session()
-                return InstallationData()
-            data = await r.json()
-            if data == []:
-                _LOGGER.warning(
-                    "Refreshing session as fetching InstallationData returned empty results"
-                )
-                await self._reset_session()
-            return data
+            "?installationId=" + installation_id
+        )
+        return await self._fetch_with_retry(
+            url,
+            "InstallationData",
+            {},
+        )
 
     async def get_consumption_data(
         self, installation_id: str, data_type: str, date_from: str, date_to: str
-    ) -> ConsumptionData:
+    ) -> dict:
         """Fetch the consumption date at the given intallation in the date range provided."""
         await self._ensure_logged_in()
-        async with self._session.get(
+        url = (
             f"https://my.ekz.ch/api/portal-services/consumption-view/v1/consumption-data"
-            f"?installationId={installation_id}&from={date_from}&to={date_to}&type={data_type}",
-            headers=JSON_HEADERS,
-        ) as r:
-            if not r.ok:
-                # We may have timed out. Mark as not logged in and return an empty object.
-                _LOGGER.warning("Refreshing session as fetching ConsumptionData failed")
-                await self._reset_session()
-                return ConsumptionData()
-            data = await r.json()
-            if data == []:
-                _LOGGER.warning(
-                    "Refreshing session as fetching ConsumptionData returned empty results"
-                )
-                await self._reset_session()
-            return data
+            f"?installationId={installation_id}&from={date_from}&to={date_to}&type={data_type}"
+        )
+        return await self._fetch_with_retry(
+            url,
+            "ConsumptionData",
+            {},
+        )
