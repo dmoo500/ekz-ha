@@ -64,6 +64,39 @@ On first setup (or after a re-installation), the integration starts looking for 
 
 The import progress is exposed by each installation's **Last Import** meta sensor, which stores the date of the last successfully imported data. After a Home Assistant restart, the import automatically resumes from where it left off. The last checkpoint's statistics are replayed into the recorder before either consumption or production imports resume, so queued readings are recovered even if Home Assistant stopped before writing them to its database.
 
+#### Import diagnostics (0.2.1)
+
+Each consumption and production installation has its own **Import status** sensor,
+with names and states translated into English and German:
+
+| State | Meaning |
+|---|---|
+| `waiting` | No import attempt has run yet. |
+| `searching` | The initial historical search found no readings and is extending its search window. |
+| `importing` | The integration is working through historical periods. |
+| `current` | The import has reached the present; EKZ readings may still arrive with a delay. |
+| `failed` | An import or coordinator update failed. Inspect the diagnostic attributes and logs. |
+
+The attributes `requested_from` and `requested_to` show the most recently attempted
+API window (start included, end excluded), including a narrower follow-up request
+after a successful historical search. `last_attempt` records when that request
+started. `last_result` distinguishes `imported`, `no_data`, and `failed`;
+`error_type` identifies the exception class for an import failure without exposing
+account details. A coordinator-level failure also exposes `coordinator_error_type`.
+`next_update` shows the planned update after a successful coordinator cycle.
+
+**Last Import** now shows the latest successfully imported statistic timestamp,
+not the contract start or an empty search cursor. It is `unknown` before any
+successful import and retains its previous value when an update fails. Both it
+and the status sensor remain available for troubleshooting during failed updates.
+Existing checkpoints and recorder history are used to recover the timestamp on
+upgrade; no statistics reset is needed for these sensors.
+
+If the result is `no_data` while searching, allow the next update to search a
+larger period. For `failed`, enable debug logging, reload the integration once,
+and include the attempted dates and exception class when reporting an issue.
+Do not reset statistics solely because a historical period is empty.
+
 Consumption is fetched at 15-minute resolution where available. If a day has no quarter-hour readings, the integration uses EKZ's daily total for that day instead. Within the most recent 30 days, daily-fallback and incomplete days are revisited so corrected daily totals can be imported. For consumption days already represented by a daily fallback, the latest daily total is fetched even when some quarter-hour readings are available. Only a complete set of quarter-hour readings replaces a daily fallback; partial readings retain the latest available daily total. This reconciliation also applies to production imports.
 
 When EKZ supplies separate high- and low-tariff series (HT/NT), only timestamps with readings in both supplied series are imported. A missing tariff reading is not assumed to be zero and cannot make an incomplete day replace a daily fallback. This applies to consumption and production; single-series and TOTAL responses remain supported.

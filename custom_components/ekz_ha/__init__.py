@@ -196,6 +196,8 @@ def _restore_import_checkpoint(coordinator: "EkzCoordinator", statistic_id: str,
         meta._import_status = ImportStatus.restore(state["import_status"])
     if state.get("last_successful_import"):
         meta._last_successful_import = datetime.fromisoformat(state["last_successful_import"])
+    elif meta._recent_statistics:
+        meta._last_successful_import = max(row["start"] for row in meta._recent_statistics)
     if state.get("pending_from"):
         pending_date = date.fromisoformat(state["pending_from"])
         pending_offset = float(state["pending_offset"])
@@ -332,7 +334,11 @@ async def _async_import_chunk(
             )
         )
         if statistics:
-            meta._last_successful_import = max(row["start"] for row in statistics)
+            timestamps = [row["start"] for row in statistics]
+            previous_success = getattr(meta, "_last_successful_import", None)
+            if previous_success is not None:
+                timestamps.append(previous_success)
+            meta._last_successful_import = max(timestamps)
         if statistics:
             await _persist_source_resolution(coordinator, statistic_id, statistics)
         await _persist_import_checkpoint(coordinator, statistic_id, meta, statistics)

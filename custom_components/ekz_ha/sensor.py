@@ -211,7 +211,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
     def set_contract_start(self, value: date):
         self._contract_start = value
 
-    def set_last_import(self, value: date):
+    def set_last_import(self, value: date | None):
         self._last_import = value
 
     def set_history_cursor(self, value: date | None) -> None:
