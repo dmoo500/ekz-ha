@@ -25,6 +25,73 @@ class StubImporter(BaseImporter):
         return "Stub"
 
 
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+@pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
+@pytest.mark.parametrize("missing", ["one", "empty", "complementary"])
+async def test_incomplete_tariff_series_cannot_replace_daily_fallback(
+    monkeypatch, freezer, importer_type, local_day, missing
+):
+    from custom_components.ekz_ha.data.validator import day_slots
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH)
+    freezer.move_to(start + timedelta(days=2))
+    slots = day_slots(local_day.isoformat())
+    nt_slots = slots[1:] if missing == "one" else [] if missing == "empty" else slots[1::2]
+    ht_slots = slots if missing != "complementary" else slots[::2]
+
+    def split_data(ht, nt):
+        return ConsumptionData.from_dict(
+            {
+                "level": "QUARTER_HOUR",
+                "seriesHt": {
+                    "values": [{"timestamp": slot.isoformat(), "value": 0.1} for slot in ht]
+                },
+                "seriesNt": {
+                    "values": [{"timestamp": slot.isoformat(), "value": 0.2} for slot in nt]
+                },
+            }
+        )
+
+    partial = split_data(ht_slots, nt_slots)
+    api = Mock(
+        get_consumption_15min=AsyncMock(return_value=partial),
+        get_consumption_daily=AsyncMock(
+            return_value=api_series("DAY", [(start.isoformat(), 40.0, "VALID")])
+        ),
+        get_production_15min=AsyncMock(return_value=partial),
+    )
+    meta = EkzMetaEntity(Mock(), "825821")
+    meta.set_last_import(local_day)
+    meta._daily_statistics = {local_day.isoformat()}
+    meta._recent_statistics = [{"start": start.astimezone(UTC), "state": 40.0, "sum": 140.0}]
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
+    )
+    importer = (
+        ConsumptionImporter(api, daily_fallback_days=meta._daily_statistics)
+        if importer_type is ConsumptionImporter
+        else ProductionImporter(api)
+    )
+
+    result = await importer.import_statistics(Mock(), "825821", start, meta, 100.0)
+
+    assert sum(row["state"] for row in result["statistics"]) == pytest.approx(40.0)
+    assert result["statistics"][-1]["sum"] == pytest.approx(140.0)
+    assert meta._pending_from == local_day
+    assert result["raw_values"] == []
+
+    complete = split_data(slots, slots)
+    api.get_consumption_15min.return_value = complete
+    api.get_production_15min.return_value = complete
+    result = await importer.import_statistics(Mock(), "825821", start, meta, 100.0)
+    assert sum(row["state"] for row in result["statistics"]) == pytest.approx(len(slots) * 0.3)
+    assert len(result["raw_values"]) == len(slots)
+    assert all(row["source_resolution"] == "hour" for row in result["statistics"])
+    assert meta._pending_from is None
+
+
 def test_calculate_date_range_rechecks_last_imported_day():
     importer = StubImporter(None)
     last_import = date(2026, 9, 30)

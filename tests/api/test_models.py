@@ -81,6 +81,50 @@ class TestSeriesData:
 class TestConsumptionData:
     """Tests for ConsumptionData dataclass."""
 
+    @pytest.mark.parametrize("series_key", ["series", "seriesHt", "seriesNt"])
+    def test_import_values_preserve_single_series(self, series_key):
+        data = ConsumptionData.from_dict(
+            {series_key: {"values": [{"timestamp": "20260715000000", "value": 0.0}]}}
+        )
+        assert data.get_import_values() == data.get_all_values()
+        assert len(data.get_import_values()) == 1
+
+    @pytest.mark.parametrize("level", ["DAY", "QUARTER_HOUR"])
+    @pytest.mark.parametrize("missing_status", ["MISSING", "NOT_AVAILABLE"])
+    def test_import_values_require_valid_values_from_both_tariffs(self, level, missing_status):
+        data = ConsumptionData.from_dict(
+            {
+                "level": level,
+                "seriesHt": {
+                    "values": [
+                        {"timestamp": "20260715000000", "value": 1.0},
+                        {"timestamp": "20260715001500", "value": 2.0},
+                    ]
+                },
+                "seriesNt": {
+                    "values": [
+                        {"timestamp": "20260715000000", "value": 0.0},
+                        {"timestamp": "20260715001500", "value": 3.0, "status": missing_status},
+                    ]
+                },
+            }
+        )
+        imported = data.get_import_values()
+        assert len(imported) == 2
+        assert {value.timestamp for value in imported} == {"20260715000000"}
+        assert sum(value.value for value in imported) == 1.0
+        assert len(data.get_all_values()) == 3
+
+    def test_import_values_do_not_use_total_to_mask_empty_split_tariff(self):
+        data = ConsumptionData.from_dict(
+            {
+                "seriesHt": {"values": [{"timestamp": "20260715000000", "value": 1.0}]},
+                "seriesNt": {"values": []},
+                "series": {"values": [{"timestamp": "20260715000000", "value": 99.0}]},
+            }
+        )
+        assert data.get_import_values() == []
+
     def test_from_dict_with_ht_nt_series(self):
         """Test parsing response with HT and NT series."""
         data = {

@@ -1,10 +1,13 @@
 """Data models for EKZ API responses."""
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 from zoneinfo import ZoneInfo
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ValueOrigin(StrEnum):
@@ -125,6 +128,23 @@ class ConsumptionData:
     def is_empty(self) -> bool:
         """Check if this response contains no data."""
         return not self.get_all_values()
+
+    def get_import_values(self) -> list[ApiValue]:
+        """Return only timestamps covered by every supplied split-tariff series."""
+        values = self.get_all_values()
+        split_series = [series for series in (self.series_ht, self.series_nt) if series is not None]
+        if len(split_series) < 2 or not any(series.values for series in split_series):
+            return values
+        covered = set.intersection(
+            *({value.timestamp for value in series.values} for series in split_series)
+        )
+        import_values = [value for value in values if value.timestamp in covered]
+        if len(import_values) != len(values):
+            _LOGGER.debug(
+                "Excluded %d tariff readings without matching HT/NT coverage",
+                len(values) - len(import_values),
+            )
+        return import_values
 
 
 @dataclass

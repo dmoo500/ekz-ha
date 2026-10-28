@@ -303,7 +303,7 @@ class BaseImporter(ABC):
         # Fetch data from API
         consumption_data = await self.fetch_data(installation_id, from_date, to_date)
 
-        api_values = consumption_data.get_all_values()
+        api_values = consumption_data.get_import_values()
         if search_days is not None and search_days <= DEFAULT_IMPORT_CHUNK_DAYS and api_values:
             search_days = None
             searching_history = False
@@ -315,10 +315,11 @@ class BaseImporter(ABC):
                 earliest_data_date, earliest_data_date, max_days=DEFAULT_IMPORT_CHUNK_DAYS
             )
             bounded_data = await self.fetch_data(installation_id, bounded_from, bounded_to)
-            if not bounded_data.is_empty():
+            bounded_values = bounded_data.get_import_values()
+            if bounded_values:
                 consumption_data = bounded_data
                 from_date, to_date = bounded_from, bounded_to
-                api_values = consumption_data.get_all_values()
+                api_values = bounded_values
                 search_days = None
                 searching_history = False
                 if meta_entity is not None:

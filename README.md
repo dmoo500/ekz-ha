@@ -66,6 +66,8 @@ The import progress is exposed by each installation's **Last Import** meta senso
 
 Consumption is fetched at 15-minute resolution where available. If a day has no quarter-hour readings, the integration uses EKZ's daily total for that day instead. Within the most recent 30 days, daily-fallback and incomplete days are revisited so corrected daily totals can be imported. For consumption days already represented by a daily fallback, the latest daily total is fetched even when some quarter-hour readings are available. Only a complete set of quarter-hour readings replaces a daily fallback; partial readings retain the latest available daily total. This reconciliation also applies to production imports.
 
+When EKZ supplies separate high- and low-tariff series (HT/NT), only timestamps with readings in both supplied series are imported. A missing tariff reading is not assumed to be zero and cannot make an incomplete day replace a daily fallback. This applies to consumption and production; single-series and TOTAL responses remain supported.
+
 #### Adaptive polling interval
 
 To speed up the backfill without overwhelming the EKZ API, the integration automatically adjusts the polling interval:

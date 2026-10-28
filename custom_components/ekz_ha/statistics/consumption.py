@@ -54,7 +54,7 @@ class ConsumptionImporter(BaseImporter):
             date_to.strftime("%Y-%m-%d"),
         )
 
-        quarter_hour_values = self.aggregator.merge_tariffs(data.get_all_values())
+        quarter_hour_values = self.aggregator.merge_tariffs(data.get_import_values())
         available_days = {
             value.date
             for value in quarter_hour_values
@@ -79,7 +79,7 @@ class ConsumptionImporter(BaseImporter):
             return daily
         fallback_values = [
             replace(value, origin=ValueOrigin.DAILY_TOTAL)
-            for value in self.aggregator.merge_tariffs(daily.get_all_values())
+            for value in self.aggregator.merge_tariffs(daily.get_import_values())
             if date_from.date().isoformat() <= value.date < date_to.date().isoformat()
             and (value.date not in available_days or value.date in refresh_days)
         ]
