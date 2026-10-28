@@ -31,7 +31,7 @@ jobs:
           ruff check custom_components/ tests/ --output-format=json > ruff_output.json || [[ $? -eq 1 ]]
 
       - name: Upload lint suggestions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: copilot-lint-suggestions
           path: ruff_output.json
