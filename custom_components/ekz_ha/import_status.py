@@ -55,3 +55,9 @@ def get_import_status(meta: Any) -> ImportStatus:
         status = ImportStatus()
         meta._import_status = status
     return status
+
+
+def publish_import_status(meta: Any) -> None:
+    publish = getattr(meta, "async_publish_import_status", None)
+    if publish is not None:
+        publish()

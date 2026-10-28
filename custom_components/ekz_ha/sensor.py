@@ -159,6 +159,8 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._last_import: date | None = None
         self._last_successful_import: datetime | None = None
         self._import_status = ImportStatus()
+        self._diagnostic_entities: list[SensorEntity] = [self]
+        self._diagnostic_coordinator_error: object = object()
         self._history_cursor: date | None = None
         self._empty_search_days: int | None = None
         self._recent_statistics: list[dict[str, Any]] = []
@@ -168,6 +170,13 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._last_run_date: datetime | None = None
         self._pending_from: date | None = None
         self._pending_sum_offset: float = 0.0
+
+    def async_publish_import_status(self) -> None:
+        # A previous cycle's exception must not hide this attempt's local progress.
+        self._diagnostic_coordinator_error = self.coordinator.last_exception
+        for entity in self._diagnostic_entities:
+            if entity.hass is not None and entity.entity_id is not None:
+                entity.async_write_ha_state()
 
     @property
     def device_info(self):
@@ -242,6 +251,7 @@ class EkzImportStatusEntity(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, meta: EkzMetaEntity, import_type: str) -> None:
         super().__init__(coordinator)
         self._meta = meta
+        meta._diagnostic_entities.append(self)
         self._attr_unique_id = f"ekz_electricity_{import_type}_{meta.installation_id}_import_status"
         self._attr_translation_key = f"import_status_{import_type}"
 
@@ -255,9 +265,13 @@ class EkzImportStatusEntity(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> str:
-        if not self.coordinator.last_update_success:
+        status = get_import_status(self._meta)
+        if (
+            not self.coordinator.last_update_success
+            and self.coordinator.last_exception is not self._meta._diagnostic_coordinator_error
+        ):
             return "failed"
-        return get_import_status(self._meta).state
+        return status.state
 
     @property
     def extra_state_attributes(self):

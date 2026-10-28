@@ -14,7 +14,7 @@ from ..api.client import EkzApiClient
 from ..api.models import ApiValue, ConsumptionData, ValueOrigin
 from ..data import DataAggregator, DataReconciler, DataValidator, StatisticsTransformer
 from ..data.validator import day_bounds, day_slots
-from ..import_status import get_import_status
+from ..import_status import get_import_status, publish_import_status
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -313,6 +313,7 @@ class BaseImporter(ABC):
         # Fetch data from API
         if meta_entity is not None:
             get_import_status(meta_entity).begin(from_date, to_date, searching_history)
+            publish_import_status(meta_entity)
         consumption_data = await self.fetch_data(installation_id, from_date, to_date)
 
         api_values = consumption_data.get_import_values()
@@ -328,6 +329,7 @@ class BaseImporter(ABC):
             )
             if meta_entity is not None:
                 get_import_status(meta_entity).begin(bounded_from, bounded_to, True)
+                publish_import_status(meta_entity)
             bounded_data = await self.fetch_data(installation_id, bounded_from, bounded_to)
             bounded_values = bounded_data.get_import_values()
             if bounded_values:

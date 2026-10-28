@@ -38,7 +38,7 @@ from .api.client import EkzApiClient
 from .api.session import EkzAuthenticationError
 from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
 from .data.validator import day_slots
-from .import_status import ImportStatus, get_import_status
+from .import_status import ImportStatus, get_import_status, publish_import_status
 from .statistics.consumption import ConsumptionImporter
 from .statistics.importer import get_import_start
 from .statistics.prediction import PredictionService
@@ -403,6 +403,8 @@ async def _async_import_chunk(
         if isinstance(err, EkzAuthenticationError):
             raise ConfigEntryAuthFailed("EKZ authentication failed") from err
         raise UpdateFailed(f"Import failed for {statistic_id}: {err}") from err
+    finally:
+        publish_import_status(meta)
 
 
 class EkzCoordinator(DataUpdateCoordinator):

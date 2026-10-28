@@ -113,6 +113,10 @@ the entry reloads automatically to register their sensors before imports resume.
 partial readings discarded in favor of stored daily/hourly statistics remain
 `no_data`. An expanding historical search stays `searching` even when stored
 rows are replayed.
+Diagnostic sensors publish the attempted window as each request starts, including
+bounded follow-up requests, and publish each completed or failed chunk without
+waiting for other installations. Retries show their local progress even while
+the coordinator still retains the previous cycle's failure.
 
 Sensor registration does not wait for historical imports. Once the sensor
 platform is loaded, the first import runs as a background task tied to the

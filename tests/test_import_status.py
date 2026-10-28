@@ -76,6 +76,75 @@ async def import_chunk(installation, start):
     )
 
 
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("bounded", [False, True])
+async def test_diagnostics_publish_before_blocked_fetch_and_after_chunk(
+    installation, monkeypatch, freezer, hass, retry, bounded
+):
+    freezer.move_to("2026-10-28 12:00:00+00:00")
+    if retry:
+        installation.coordinator.last_update_success = False
+        installation.coordinator.last_exception = UpdateFailed("previous failure")
+    snapshots = []
+
+    def write():
+        snapshots.append(
+            (installation.sensor.native_value, dict(installation.sensor.extra_state_attributes))
+        )
+
+    for entity, entity_id in (
+        (installation.meta, "sensor.test_last_import"),
+        (installation.sensor, "sensor.test_import_status"),
+    ):
+        entity.hass = hass
+        entity.entity_id = entity_id
+        monkeypatch.setattr(entity, "async_write_ha_state", Mock(side_effect=write))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    data = ConsumptionData.from_dict(
+        {
+            "level": "DAY",
+            "series": {"values": [{"timestamp": "2007-01-01T00:00:00Z", "value": 1.0}]},
+        }
+    )
+    calls = 0
+
+    async def fetch(*args):
+        nonlocal calls
+        calls += 1
+        if bounded and calls == 1:
+            return data
+        entered.set()
+        await release.wait()
+        return data
+
+    if bounded:
+        installation.meta._empty_search_days = 3650
+    monkeypatch.setattr(installation.importer, "fetch_data", fetch)
+    task = asyncio.create_task(import_chunk(installation, datetime(2000, 1, 1, tzinfo=ZRH)))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert not task.done()
+        state, attributes = snapshots[-1]
+        assert state == "searching"
+        assert attributes["requested_from"] == ("2007-01-01" if bounded else "2000-01-01")
+        assert attributes["requested_to"] == ("2007-01-31" if bounded else "2000-01-31")
+        assert attributes["last_attempt"] is not None
+        assert attributes["last_result"] is None
+        if bounded:
+            assert snapshots[0][1]["requested_from"] == "2000-01-01"
+    finally:
+        release.set()
+        await task
+    assert snapshots[-1][0] == "importing"
+    assert snapshots[-1][1]["last_result"] == "imported"
+    assert installation.meta.native_value is not None
+    # A new coordinator failure must still override a completed local chunk.
+    installation.coordinator.last_update_success = False
+    installation.coordinator.last_exception = UpdateFailed("later installation failed")
+    assert installation.sensor.native_value == "failed"
+
+
 def test_initial_diagnostics_do_not_claim_success(installation):
     installation.meta.set_contract_start(date(2000, 1, 1))
     installation.meta.set_last_import(date(2000, 1, 1))
@@ -295,6 +364,28 @@ async def test_failed_attempt_retains_range_and_last_success(installation, monke
     await import_chunk(installation, datetime(2026, 1, 1, tzinfo=ZRH))
     assert installation.sensor.native_value == "current"
     assert installation.sensor.extra_state_attributes["error_type"] is None
+
+
+async def test_failed_chunk_publishes_diagnostics_before_coordinator_completion(
+    installation, monkeypatch, hass
+):
+    states = []
+    installation.sensor.hass = hass
+    installation.sensor.entity_id = "sensor.test_import_status"
+    monkeypatch.setattr(
+        installation.sensor,
+        "async_write_ha_state",
+        lambda: states.append(
+            (installation.sensor.native_value, installation.sensor.extra_state_attributes)
+        ),
+    )
+    monkeypatch.setattr(installation.importer, "fetch_data", AsyncMock(side_effect=TimeoutError()))
+    with pytest.raises(UpdateFailed):
+        await import_chunk(installation, datetime(2000, 1, 1, tzinfo=ZRH))
+    assert states[0][0] == "searching"
+    assert states[-1][0] == "failed"
+    assert states[-1][1]["last_result"] == "failed"
+    assert states[-1][1]["error_type"] == "TimeoutError"
 
 
 async def test_bounded_refetch_reports_actual_failed_range(installation, monkeypatch, freezer):
