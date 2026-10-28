@@ -411,7 +411,6 @@ class BaseImporter(ABC):
             if last_import_dt:
                 meta_entity.set_last_import(last_import_dt.astimezone(ZRH).date())
                 complete_days = set(self.validator.find_complete_days(raw_values_for_prediction))
-                complete_days.update(value.date for value in merged_values if value.origin.is_daily)
                 pending_day = max(
                     from_date.date(), datetime.now(tz=ZRH).date() - timedelta(days=30)
                 )

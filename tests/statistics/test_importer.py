@@ -363,6 +363,99 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
 
 
 @pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+@pytest.mark.parametrize("backfill", [False, True])
+async def test_recent_daily_fallback_is_revisited_for_corrections(
+    monkeypatch, freezer, importer_type, backfill
+):
+    freezer.move_to("2026-10-18 12:00:00+00:00")
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    meta = EkzMetaEntity(Mock(), "825821")
+    first_day = datetime(2026, 10, 15, tzinfo=ZRH)
+    next_day = first_day + timedelta(days=1)
+    daily = api_series(
+        "DAY",
+        [
+            (first_day.isoformat(), 6.0, "VALID"),
+            (next_day.isoformat(), 8.0, "VALID"),
+        ],
+    )
+    importer = importer_type(Mock())
+    fetch = AsyncMock(return_value=daily)
+    monkeypatch.setattr(importer, "fetch_data", fetch)
+
+    result = await importer.import_statistics(None, "825821", first_day, meta, 100.0)
+
+    assert meta._last_import == next_day.date()
+    assert meta._pending_from == first_day.date()
+    assert meta._pending_sum_offset == 100.0
+    assert result["statistics"][-1]["sum"] == pytest.approx(114.0)
+
+    if backfill:
+        start = first_day.astimezone(UTC)
+        fetch.return_value = api_series(
+            "QUARTER_HOUR",
+            [
+                ((start + timedelta(minutes=15 * index)).isoformat(), 0.25, "VALID")
+                for index in range(192)
+            ],
+        )
+    else:
+        fetch.return_value = api_series(
+            "DAY",
+            [
+                (first_day.isoformat(), 10.0, "VALID"),
+                (next_day.isoformat(), 8.0, "VALID"),
+            ],
+        )
+
+    updated = await importer.import_statistics(
+        None, "825821", first_day, meta, meta._pending_sum_offset
+    )
+
+    assert fetch.await_args.args[1] == first_day
+    assert updated["statistics"][-1]["sum"] == pytest.approx(148.0 if backfill else 118.0)
+    assert meta._pending_from == (None if backfill else first_day.date())
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+async def test_daily_fallback_pending_expires_after_recent_lookback(
+    monkeypatch, freezer, importer_type
+):
+    freezer.move_to("2026-10-18 12:00:00+00:00")
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    meta = EkzMetaEntity(Mock(), "825821")
+    first_day = datetime(2026, 10, 15, tzinfo=ZRH)
+    next_day = first_day + timedelta(days=1)
+    importer = importer_type(Mock())
+
+    async def fetch(_installation_id, start, end):
+        return api_series(
+            "DAY",
+            [
+                (day.isoformat(), 6.0, "VALID")
+                for day in (first_day, next_day)
+                if start <= day < end
+            ],
+        )
+
+    monkeypatch.setattr(importer, "fetch_data", fetch)
+    await importer.import_statistics(None, "825821", first_day, meta)
+    assert meta._pending_from == first_day.date()
+
+    freezer.move_to("2026-11-15 12:00:00+00:00")
+    await importer.import_statistics(None, "825821", first_day, meta)
+    assert meta._pending_from == next_day.date()
+    assert meta._pending_sum_offset == pytest.approx(6.0)
+
+    freezer.move_to("2026-11-16 12:00:00+00:00")
+    await importer.import_statistics(None, "825821", first_day, meta, meta._pending_sum_offset)
+    assert meta._pending_from is None
+    assert meta._history_cursor == date(2026, 10, 17)
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
 async def test_pending_day_is_revisited_until_complete(monkeypatch, freezer, importer_type):
     freezer.move_to("2026-10-18 12:00:00+00:00")
     from custom_components.ekz_ha.sensor import EkzMetaEntity
@@ -753,7 +846,7 @@ async def test_daily_source_waits_for_complete_quarter_hour_backfill(
                 for row in result["statistics"]
             ]
         }
-    meta.set_last_import(local_day)
+    assert meta._pending_from == local_day
     fetch.return_value = api_series(
         "QUARTER_HOUR",
         [
