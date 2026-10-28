@@ -148,6 +148,24 @@ git checkout -b refactor/clean-architecture
    git push -u origin feat/my-feature
    ```
 
+### Copilot review after CI
+
+The `Request Copilot Code Review` workflow requests a review only after the
+pull-request `CI` workflow succeeds, including lint, both Python test jobs,
+integration metadata, Hassfest, and HACS validation. Failed CI, draft or closed
+pull requests, and outdated revisions do not trigger a review. Re-running CI
+does not request another review when Copilot has already reviewed that revision
+or a review is still pending. The separate `Copilot PR Review` workflow produces
+Ruff suggestions; it is not the GitHub Copilot code reviewer.
+
+Maintainer activation: merge the requesting workflow into the default branch
+first (`workflow_run` uses workflows from that branch). Then disable automatic
+Copilot review requests in the repository ruleset **Copilot review for default
+branch**, retaining the required `copilot-pull-request-reviewer` status check.
+Until automatic requests are disabled, GitHub can still start a review before CI.
+The requesting workflow uses `pull-requests: write` without checking out or
+executing pull-request code.
+
 ### Commit Messages
 
 Format: `<type>: <description>`

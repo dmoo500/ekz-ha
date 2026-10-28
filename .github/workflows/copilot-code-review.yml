@@ -1,0 +1,69 @@
+name: Request Copilot Code Review
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: copilot-code-review-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  request-review:
+    name: Request review after successful CI
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Request Copilot for the current PR revision
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const reviewer = 'copilot-pull-request-reviewer[bot]';
+            const repository = `${context.repo.owner}/${context.repo.repo}`;
+            const candidates = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              { ...context.repo, commit_sha: run.head_sha, per_page: 100 },
+            );
+            for (const candidate of candidates) {
+              const { data: pr } = await github.rest.pulls.get({
+                ...context.repo,
+                pull_number: candidate.number,
+              });
+              if (
+                pr.state !== 'open' ||
+                pr.draft ||
+                pr.head.sha !== run.head_sha ||
+                pr.head.repo?.full_name !== run.head_repository.full_name ||
+                pr.base.repo.full_name !== repository ||
+                pr.base.ref !== context.payload.repository.default_branch
+              ) {
+                core.info(`Skipping PR #${pr.number}: not a current, ready PR for the default branch.`);
+                continue;
+              }
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                ...context.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              if (
+                pr.requested_reviewers.some(user => user.login === reviewer) ||
+                reviews.some(review =>
+                  review.user?.login === reviewer && review.commit_id === run.head_sha
+                )
+              ) {
+                core.info(`Skipping PR #${pr.number}: Copilot review already requested or completed.`);
+                continue;
+              }
+              await github.rest.pulls.requestReviewers({
+                ...context.repo,
+                pull_number: pr.number,
+                reviewers: [reviewer],
+              });
+              core.info(`Requested Copilot review for PR #${pr.number} at ${run.head_sha}.`);
+            }
