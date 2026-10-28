@@ -114,8 +114,10 @@ async def test_learning_survives_restart_without_recorder_rebuild(prediction):
     service.accumulate_values(slots(datetime(2026, 10, 20, tzinfo=UTC)))
     service.calculate_averages()
     coordinator.prediction_services["test"] = service
+    coordinator._prediction_initialized.add("test")
     await _async_save_prediction_state(coordinator)
     coordinator.prediction_services = {}
+    coordinator._prediction_initialized.clear()
     coordinator._prediction_states = None
     restored = await _async_get_prediction_service(coordinator, "test")
     assert restored.to_dict() == service.to_dict()
@@ -123,9 +125,10 @@ async def test_learning_survives_restart_without_recorder_rebuild(prediction):
     assert "test" in coordinator._prediction_initialized
 
 
+@pytest.mark.parametrize("recovery_failure", [None, "load", "recorder"])
 @pytest.mark.parametrize("age_days", [8, 15])
 async def test_successful_import_persists_learning_for_next_coordinator(
-    prediction, monkeypatch, age_days
+    prediction, monkeypatch, age_days, recovery_failure
 ):
     from custom_components.ekz_ha.api.models import InstallationSelectionData
     from custom_components.ekz_ha.import_status import get_import_status
@@ -154,11 +157,57 @@ async def test_successful_import_persists_learning_for_next_coordinator(
         }
 
     monkeypatch.setattr(ConsumptionImporter, "import_statistics", imported)
+    if recovery_failure is not None:
+        old = PredictionService()
+        old.seed_hourly_values([(datetime(2026, 9, 1, tzinfo=UTC), 3.0)])
+        old_state = old.to_dict()
+        if recovery_failure == "load":
+            await coordinator._prediction_store.async_save({"test": old_state})
+            original_load = coordinator._prediction_store.async_load
+            monkeypatch.setattr(
+                coordinator._prediction_store,
+                "async_load",
+                AsyncMock(side_effect=OSError("temporary load failure")),
+            )
+        else:
+            original_query = recorder.async_add_executor_job
+
+            async def fail_rebuild(function, *args):
+                from custom_components.ekz_ha import statistics_during_period
+
+                if function is statistics_during_period:
+                    raise OSError("temporary recorder failure")
+                return await original_query(function, *args)
+
+            recorder.async_add_executor_job = AsyncMock(side_effect=fail_rebuild)
+        await coordinator._do_update_data()
+        assert "test" not in coordinator._prediction_initialized
+        assert coordinator.prediction_services["test"].get_raw_accumulator() == {}
+        if recovery_failure == "load":
+            monkeypatch.setattr(coordinator._prediction_store, "async_load", original_load)
+            # Saving another initialized installation must not replace this profile.
+            coordinator.prediction_services["other"] = PredictionService()
+            coordinator._prediction_initialized.add("other")
+            await _async_save_prediction_state(coordinator)
+            assert (await original_load())["test"] == old_state
+        else:
+            recorder.async_add_executor_job = original_query
+            statistic_id = "sensor.electricity_consumption_ekz_test"
+            original_query.return_value = {
+                statistic_id: [
+                    {"start": datetime(2026, 8, 31, 23, tzinfo=UTC), "sum": 5.0},
+                    {"start": datetime(2026, 9, 1, tzinfo=UTC), "sum": 8.0},
+                ]
+            }
+        enqueue.reset_mock()
     await coordinator._do_update_data()
     predictions = enqueue.call_args.args[2]
     assert any(row["start"] > start for row in predictions) == (age_days <= 14)
     state = await coordinator._prediction_store.async_load()
     assert state["test"]["hourly_raw"]["1000"] == [1.0, 4]
+    if recovery_failure is not None:
+        assert state["test"]["hourly_raw"]["900"] == [3.0, 4]
+        assert "test" in coordinator._prediction_initialized
     coordinator.prediction_services.clear()
     coordinator._prediction_initialized.clear()
     coordinator._prediction_states = None
@@ -173,6 +222,7 @@ async def test_saving_one_installation_preserves_unloaded_other_installations(pr
     state = PredictionService().to_dict()
     coordinator._prediction_states = {"other": state}
     coordinator.prediction_services["test"] = PredictionService()
+    coordinator._prediction_initialized.add("test")
     await _async_save_prediction_state(coordinator)
     assert (await coordinator._prediction_store.async_load())["other"] == state
 

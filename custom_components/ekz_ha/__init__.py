@@ -72,7 +72,11 @@ async def _async_save_prediction_state(coordinator: "EkzCoordinator") -> None:
             return
     states = dict(coordinator._prediction_states or {})
     states.update(
-        {key: service.to_dict() for key, service in coordinator.prediction_services.items()}
+        {
+            key: service.to_dict()
+            for key, service in coordinator.prediction_services.items()
+            if key in coordinator._prediction_initialized
+        }
     )
     try:
         await store.async_save(states)
@@ -994,7 +998,11 @@ class EkzCoordinator(DataUpdateCoordinator):
             prediction_service = await _async_get_prediction_service(self, key)
 
             # Accumulate raw values from this import chunk
-            if result.get("raw_values"):
+            prediction_ready = (
+                getattr(self, "_prediction_store", None) is None
+                or key in self._prediction_initialized
+            )
+            if result.get("raw_values") and prediction_ready:
                 prediction_service.accumulate_values(result["raw_values"])
                 prediction_service.calculate_averages()
                 await _async_save_prediction_state(self)
