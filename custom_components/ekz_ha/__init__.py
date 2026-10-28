@@ -36,6 +36,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api.client import EkzApiClient
 from .const import CATCHUP_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NORMAL_SCAN_INTERVAL
 from .data.validator import day_slots
+from .import_status import ImportStatus, get_import_status
 from .statistics.consumption import ConsumptionImporter
 from .statistics.importer import get_import_start
 from .statistics.prediction import PredictionService
@@ -191,6 +192,10 @@ def _restore_import_checkpoint(coordinator: "EkzCoordinator", statistic_id: str,
             get_import_start(meta),
             float(first["sum"] - first["state"]),
         )
+    if state.get("import_status"):
+        meta._import_status = ImportStatus.restore(state["import_status"])
+    if state.get("last_successful_import"):
+        meta._last_successful_import = datetime.fromisoformat(state["last_successful_import"])
     if state.get("pending_from"):
         pending_date = date.fromisoformat(state["pending_from"])
         pending_offset = float(state["pending_offset"])
@@ -246,6 +251,15 @@ async def _persist_import_checkpoint(
     pending = getattr(meta, "_pending_from", None)
     state = {
         "slots": slots,
+        "import_status": {
+            "state": get_import_status(meta).state,
+            **get_import_status(meta).as_attributes(),
+        },
+        "last_successful_import": (
+            meta._last_successful_import.isoformat()
+            if getattr(meta, "_last_successful_import", None) is not None
+            else None
+        ),
         "history_cursor": meta._history_cursor.isoformat() if meta._history_cursor else None,
         "empty_search_days": getattr(meta, "_empty_search_days", None),
         "pending_from": pending.isoformat() if pending else None,
@@ -280,6 +294,7 @@ async def _async_import_chunk(
 ) -> dict[str, Any]:
     tracked_fields = (
         "_last_import",
+        "_last_successful_import",
         "_history_cursor",
         "_empty_search_days",
         "_pending_from",
@@ -304,6 +319,20 @@ async def _async_import_chunk(
         statistics = result.get("statistics", [])
         # The previous checkpoint must reach the recorder before it is replaced.
         await get_recorder_instance(coordinator.hass).async_block_till_done()
+        status = get_import_status(meta)
+        status.last_result = "imported" if statistics else "no_data"
+        status.state = (
+            "searching"
+            if not statistics and getattr(meta, "_empty_search_days", None) is not None
+            else (
+                "importing"
+                if (datetime.now(tz=ZRH).date() - result.get("to_date", contract_start.date())).days
+                > 1
+                else "current"
+            )
+        )
+        if statistics:
+            meta._last_successful_import = max(row["start"] for row in statistics)
         if statistics:
             await _persist_source_resolution(coordinator, statistic_id, statistics)
         await _persist_import_checkpoint(coordinator, statistic_id, meta, statistics)
@@ -343,6 +372,10 @@ async def _async_import_chunk(
                 setattr(meta, field, previous_meta[field])
             elif hasattr(meta, field):
                 delattr(meta, field)
+        status = get_import_status(meta)
+        status.state = "failed"
+        status.last_result = "failed"
+        status.error_type = type(err).__name__
         raise UpdateFailed(f"Import failed for {statistic_id}: {err}") from err
 
 
@@ -584,6 +617,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                                 f"Restored last import for {key} from DB: {import_dt.date()} → rewinding to {import_date}"
                             )
                             meta_entity.set_last_import(import_date)
+                            meta_entity._last_successful_import = import_dt
 
                             # Pre-initialize catching_up flag
                             today_date = datetime.now(tz=ZRH).date()
@@ -606,18 +640,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                         )
             except Exception as e:
                 _LOGGER.debug(f"Migration check failed for {key}: {e}")
-
-            # Fall back to contract_start when no statistics exist yet
-            if meta_entity._last_import is None and contract_start is not None:
-                start = (
-                    contract_start
-                    if not isinstance(contract_start, str)
-                    else datetime.strptime(contract_start, "%Y-%m-%d")
-                )
-                meta_entity.set_last_import(start)
-                _LOGGER.info(
-                    f"No existing statistics for {key}, starting import from contract start {start}"
-                )
 
             # Rebuild the running sum before the day being re-imported.
             pending_from = getattr(meta_entity, "_pending_from", None)
@@ -851,13 +873,11 @@ class EkzCoordinator(DataUpdateCoordinator):
                                 f"Restored last import for production {key} from DB: {import_dt.date()} → rewinding to {import_date}"
                             )
                             prod_meta.set_last_import(import_date)  # Already subtracted 1 day above
+                            prod_meta._last_successful_import = import_dt
                             if last_stat_data[0].get("sum") is not None:
                                 self.last_production_sums[key] = last_stat_data[0]["sum"]
                 except Exception as e:
                     _LOGGER.debug(f"Could not query existing production statistics for {key}: {e}")
-
-            if prod_meta._last_import is None and contract_start:
-                prod_meta.set_last_import(datetime.strptime(contract_start, "%Y-%m-%d"))
 
             pending_from = getattr(prod_meta, "_pending_from", None)
             production_import_date = get_import_start(prod_meta)
@@ -966,6 +986,8 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator.prediction_services = {}
             for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
                 meta.set_last_import(None)
+                meta._last_successful_import = None
+                meta._import_status = ImportStatus()
                 meta.set_history_cursor(None)
                 meta._empty_search_days = None
                 meta._recent_statistics = []
@@ -975,6 +997,8 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 meta.set_pending(None)
             for meta in (getattr(coordinator, "production_meta_entities", None) or {}).values():
                 meta.set_last_import(None)
+                meta._last_successful_import = None
+                meta._import_status = ImportStatus()
                 meta.set_history_cursor(None)
                 meta._empty_search_days = None
                 meta._recent_statistics = []

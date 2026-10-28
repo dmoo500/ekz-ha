@@ -1,4 +1,28 @@
 {
+  "entity": {
+    "sensor": {
+      "import_status_consumption": {
+        "name": "Consumption import status",
+        "state": {
+          "waiting": "Waiting for first update",
+          "searching": "Searching historical data",
+          "importing": "Importing historical data",
+          "current": "Up to date",
+          "failed": "Update failed"
+        }
+      },
+      "import_status_production": {
+        "name": "Production import status",
+        "state": {
+          "waiting": "Waiting for first update",
+          "searching": "Searching historical data",
+          "importing": "Importing historical data",
+          "current": "Up to date",
+          "failed": "Update failed"
+        }
+      }
+    }
+  },
   "config": {
     "step": {
       "user": {

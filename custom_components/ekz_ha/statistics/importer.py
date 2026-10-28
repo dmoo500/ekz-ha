@@ -14,6 +14,7 @@ from ..api.client import EkzApiClient
 from ..api.models import ApiValue, ConsumptionData, ValueOrigin
 from ..data import DataAggregator, DataReconciler, DataValidator, StatisticsTransformer
 from ..data.validator import day_bounds, day_slots
+from ..import_status import get_import_status
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -285,7 +286,7 @@ class BaseImporter(ABC):
             search_days is None
             and meta_entity is not None
             and getattr(meta_entity, "_history_cursor", None) is None
-            and last_import == contract_start_date
+            and last_import in (None, contract_start_date)
         ):
             search_days = DEFAULT_IMPORT_CHUNK_DAYS
         searching_history = search_days is not None
@@ -301,6 +302,8 @@ class BaseImporter(ABC):
         _LOGGER.debug("[%s] Fetching data: period %s to %s", data_type, from_date, to_date)
 
         # Fetch data from API
+        if meta_entity is not None:
+            get_import_status(meta_entity).begin(from_date, to_date, searching_history)
         consumption_data = await self.fetch_data(installation_id, from_date, to_date)
 
         api_values = consumption_data.get_import_values()
@@ -314,6 +317,8 @@ class BaseImporter(ABC):
             bounded_from, bounded_to = self.calculate_date_range(
                 earliest_data_date, earliest_data_date, max_days=DEFAULT_IMPORT_CHUNK_DAYS
             )
+            if meta_entity is not None:
+                get_import_status(meta_entity).begin(bounded_from, bounded_to, True)
             bounded_data = await self.fetch_data(installation_id, bounded_from, bounded_to)
             bounded_values = bounded_data.get_import_values()
             if bounded_values:
