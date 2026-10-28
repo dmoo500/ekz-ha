@@ -21,6 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
 DEFAULT_IMPORT_CHUNK_DAYS = 30
+MAX_REQUEST_DAYS = 360
 
 
 def get_import_start(meta_entity: Any) -> date | None:
@@ -247,6 +248,28 @@ class BaseImporter(ABC):
 
         return from_date, to_date
 
+    async def _fetch_in_slices(
+        self,
+        installation_id: str,
+        from_date: datetime,
+        to_date: datetime,
+    ) -> tuple[ConsumptionData, datetime, datetime]:
+        """Return the first importable chunk, retaining the full range if empty."""
+        if to_date <= from_date:
+            raise ValueError("The import request must end after its start")
+
+        current_from = from_date
+        while current_from < to_date:
+            current_to = min(current_from + timedelta(days=MAX_REQUEST_DAYS), to_date)
+            data = await self.fetch_data(installation_id, current_from, current_to)
+            if data.get_import_values():
+                return data, current_from, current_to
+            if current_to >= to_date:
+                break
+            current_from = current_to
+
+        return ConsumptionData(), from_date, to_date
+
     @staticmethod
     def _as_local_date(value: ApiValue) -> date:
         timestamp = datetime.strptime(value.timestamp, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
@@ -281,8 +304,8 @@ class BaseImporter(ABC):
             contract_start,
         )
 
-        # Search progressively farther from the contract start until the first
-        # available data is found, then resume normal 30-day imports.
+        # Advance through empty history until the first available readings,
+        # then resume normal 30-day imports.
         last_import = get_import_start(meta_entity)
         contract_start_date = (
             contract_start.date() if isinstance(contract_start, datetime) else contract_start
@@ -300,9 +323,8 @@ class BaseImporter(ABC):
             search_days = DEFAULT_IMPORT_CHUNK_DAYS
         searching_history = search_days is not None
         if search_days is not None:
-            from_date, to_date = self.calculate_date_range(
-                None, contract_start_date, max_days=search_days
-            )
+            search_from = getattr(meta_entity, "_empty_search_from", None) or contract_start_date
+            from_date, to_date = self.calculate_date_range(None, search_from, max_days=search_days)
         else:
             from_date, to_date = self.calculate_date_range(
                 last_import, contract_start_date, max_days=DEFAULT_IMPORT_CHUNK_DAYS
@@ -310,18 +332,25 @@ class BaseImporter(ABC):
 
         _LOGGER.debug("[%s] Fetching data: period %s to %s", data_type, from_date, to_date)
 
-        # Fetch data from API
+        # EKZ rejects large historical requests; bound each API request separately.
         if meta_entity is not None:
             get_import_status(meta_entity).begin(from_date, to_date, searching_history)
             publish_import_status(meta_entity)
-        consumption_data = await self.fetch_data(installation_id, from_date, to_date)
+        if to_date - from_date > timedelta(days=MAX_REQUEST_DAYS):
+            consumption_data, from_date, to_date = await self._fetch_in_slices(
+                installation_id, from_date, to_date
+            )
+        else:
+            consumption_data = await self.fetch_data(installation_id, from_date, to_date)
 
         api_values = consumption_data.get_import_values()
+        found_history_data = bool(api_values)
         if search_days is not None and search_days <= DEFAULT_IMPORT_CHUNK_DAYS and api_values:
             search_days = None
             searching_history = False
             if meta_entity is not None:
                 meta_entity._empty_search_days = None
+                meta_entity._empty_search_from = None
         if search_days is not None and search_days > DEFAULT_IMPORT_CHUNK_DAYS and api_values:
             earliest_data_date = min(self._as_local_date(value) for value in api_values)
             bounded_from, bounded_to = self.calculate_date_range(
@@ -340,6 +369,7 @@ class BaseImporter(ABC):
                 searching_history = False
                 if meta_entity is not None:
                     meta_entity._empty_search_days = None
+                    meta_entity._empty_search_from = None
             else:
                 consumption_data = bounded_data
                 api_values = []
@@ -348,13 +378,16 @@ class BaseImporter(ABC):
             searching_history
             and search_days is not None
             and not api_values
+            and not found_history_data
             and meta_entity is not None
         ):
             tomorrow = datetime.now(tz=ZRH).date() + timedelta(days=1)
-            days_remaining = (tomorrow - contract_start_date).days
+            days_remaining = (tomorrow - to_date.date()).days
             if to_date.date() >= tomorrow:
                 meta_entity._empty_search_days = None
+                meta_entity._empty_search_from = None
             else:
+                meta_entity._empty_search_from = to_date.date()
                 meta_entity._empty_search_days = min(search_days * 2, days_remaining)
 
         if consumption_data.level == "DAY":
@@ -373,7 +406,7 @@ class BaseImporter(ABC):
         if meta_entity and not (searching_history and meta_entity._empty_search_days is not None):
             recent_boundary = datetime.now(tz=ZRH).date() - timedelta(days=30)
             history_cursor = min(to_date.date() - timedelta(days=1), recent_boundary)
-            if history_cursor > from_date.date():
+            if history_cursor > from_date.date() or searching_history:
                 meta_entity.set_history_cursor(history_cursor)
             pending = getattr(meta_entity, "_pending_from", None)
             if pending is not None and pending < recent_boundary:

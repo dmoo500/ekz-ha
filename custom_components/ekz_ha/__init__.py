@@ -185,6 +185,8 @@ def _restore_import_checkpoint(coordinator: "EkzCoordinator", statistic_id: str,
     history_cursor = state.get("history_cursor")
     meta._history_cursor = date.fromisoformat(history_cursor) if history_cursor else None
     meta._empty_search_days = state.get("empty_search_days")
+    empty_search_from = state.get("empty_search_from")
+    meta._empty_search_from = date.fromisoformat(empty_search_from) if empty_search_from else None
     if meta._recent_statistics:
         first = meta._recent_statistics[0]
         _cache_sum_offsets(
@@ -266,6 +268,11 @@ async def _persist_import_checkpoint(
         ),
         "history_cursor": meta._history_cursor.isoformat() if meta._history_cursor else None,
         "empty_search_days": getattr(meta, "_empty_search_days", None),
+        "empty_search_from": (
+            meta._empty_search_from.isoformat()
+            if getattr(meta, "_empty_search_from", None) is not None
+            else None
+        ),
         "pending_from": pending.isoformat() if pending else None,
         "pending_offset": float(getattr(meta, "_pending_sum_offset", 0.0)),
         "statistics": [
@@ -301,6 +308,7 @@ async def _async_import_chunk(
         "_last_successful_import",
         "_history_cursor",
         "_empty_search_days",
+        "_empty_search_from",
         "_pending_from",
         "_pending_sum_offset",
         "_last_run_date",
@@ -492,6 +500,9 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.installations = {
             contract.anlage: {"contract_start": contract.einzdat} for contract in active_contracts
         }
+        consumption_vstellen = {
+            contract.anlage: contract.vstelle for contract in active_contracts if contract.anlage
+        }
 
         _LOGGER.info(
             "Found %d active installation(s): %s",
@@ -511,10 +522,21 @@ class EkzCoordinator(DataUpdateCoordinator):
             contract.anlage: {"contract_start": contract.einzdat}
             for contract in production_contracts
         }
+        production_vstellen = {
+            contract.vstelle for contract in production_contracts if contract.vstelle
+        }
         # Some accounts expose production on the consumption installation
         # instead of returning it in the separate production contract list.
         for inst_id, info in self.installations.items():
             if inst_id in self.production_installations:
+                continue
+            vstelle = consumption_vstellen.get(inst_id)
+            if vstelle and vstelle in production_vstellen:
+                _LOGGER.debug(
+                    "Skipping production probe for %s: supply point %s has a production contract",
+                    inst_id,
+                    vstelle,
+                )
                 continue
             try:
                 test_data = await self.api_client.get_production_15min(
@@ -628,8 +650,22 @@ class EkzCoordinator(DataUpdateCoordinator):
                 contract.anlage: {"contract_start": contract.einzdat}
                 for contract in production_contracts
             }
+            production_vstellen = {
+                contract.vstelle for contract in production_contracts if contract.vstelle
+            }
+            consumption_vstellen = {}
+            if production_vstellen and self.installations:
+                consumption_data = await self.api_client.get_consumption_installations()
+                consumption_vstellen = {
+                    contract.anlage: contract.vstelle
+                    for contract in consumption_data.contracts
+                    if contract.anlage and _is_contract_active(contract)
+                }
             for inst_id, info in self.installations.items():
                 if inst_id in self.production_installations:
+                    continue
+                vstelle = consumption_vstellen.get(inst_id)
+                if vstelle and vstelle in production_vstellen:
                     continue
                 try:
                     test_data = await self.api_client.get_production_15min(
@@ -1081,6 +1117,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 meta._import_status = ImportStatus()
                 meta.set_history_cursor(None)
                 meta._empty_search_days = None
+                meta._empty_search_from = None
                 meta._recent_statistics = []
                 meta._daily_statistics = set()
                 meta._hourly_slots = {}
@@ -1092,6 +1129,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 meta._import_status = ImportStatus()
                 meta.set_history_cursor(None)
                 meta._empty_search_days = None
+                meta._empty_search_from = None
                 meta._recent_statistics = []
                 meta._daily_statistics = set()
                 meta._hourly_slots = {}

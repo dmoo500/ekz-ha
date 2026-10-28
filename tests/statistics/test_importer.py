@@ -9,7 +9,14 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from custom_components.ekz_ha import EkzCoordinator, statistics_during_period
-from custom_components.ekz_ha.api.models import ApiValue, ConsumptionData, SeriesData, ValueOrigin
+from custom_components.ekz_ha.api.models import (
+    ApiValue,
+    ConsumptionData,
+    InstallationContract,
+    InstallationSelectionData,
+    SeriesData,
+    ValueOrigin,
+)
 from custom_components.ekz_ha.const import NORMAL_SCAN_INTERVAL
 from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
 from custom_components.ekz_ha.statistics.importer import ZRH, BaseImporter
@@ -111,6 +118,111 @@ def test_calculate_date_range_preserves_contract_start_before_ten_years():
     assert to_date.date() == contract_start + timedelta(days=30)
 
 
+async def test_fetch_in_slices_returns_first_non_empty_window():
+    importer = StubImporter(None)
+    start = date(2024, 1, 1)
+    end = start + timedelta(days=700)
+    requests = []
+
+    async def fetch_data(_installation_id, date_from, date_to):
+        requests.append((date_from.date(), date_to.date()))
+        if date_from.date() == start and date_to.date() == start + timedelta(days=360):
+            return ConsumptionData()
+        return api_series(
+            "DAY",
+            [
+                (
+                    datetime.combine(end - timedelta(days=1), datetime.min.time(), tzinfo=ZRH)
+                    .astimezone(UTC)
+                    .strftime("%Y%m%d%H%M%S"),
+                    1.0,
+                    "VALID",
+                )
+            ],
+        )
+
+    importer.fetch_data = fetch_data
+
+    result, from_date, to_date = await importer._fetch_in_slices(
+        "825821",
+        datetime.combine(start, datetime.min.time(), tzinfo=ZRH),
+        datetime.combine(end, datetime.min.time(), tzinfo=ZRH),
+    )
+
+    assert requests[0] == (start, start + timedelta(days=360))
+    assert requests[1] == (start + timedelta(days=360), end)
+    assert not result.is_empty()
+    assert from_date.date() == start + timedelta(days=360)
+    assert to_date.date() == end
+
+
+async def test_history_slices_skip_unimportable_tariff_readings(monkeypatch):
+    importer = StubImporter(None)
+    start = datetime(2000, 1, 1, tzinfo=ZRH)
+    partial = ConsumptionData.from_dict(
+        {
+            "level": "QUARTER_HOUR",
+            "seriesHt": {"values": [{"timestamp": start.isoformat(), "value": 1.0}]},
+            "seriesNt": {"values": []},
+        }
+    )
+    first = start + timedelta(days=400)
+    data = api_series("DAY", [(first.isoformat(), 2.0, "VALID")])
+    fetch = AsyncMock(side_effect=[partial, data])
+    monkeypatch.setattr(importer, "fetch_data", fetch)
+    result, date_from, date_to = await importer._fetch_in_slices(
+        "825821", start, start + timedelta(days=960)
+    )
+    assert result is data
+    assert date_from == start + timedelta(days=360)
+    assert date_to == start + timedelta(days=720)
+    assert fetch.await_count == 2
+
+
+async def test_discovery_skips_shared_supply_point_with_production_contract():
+    api_client = SimpleNamespace(
+        get_consumption_installations=AsyncMock(
+            return_value=InstallationSelectionData(
+                contracts=[
+                    InstallationContract(
+                        gpart="g",
+                        vkonto="k",
+                        vertrag="v",
+                        anlage="729431",
+                        vstelle="2738118",
+                        einzdat="2009-06-01",
+                    )
+                ]
+            )
+        ),
+        get_production_installations=AsyncMock(
+            return_value=InstallationSelectionData(
+                contracts=[
+                    InstallationContract(
+                        gpart="g",
+                        vkonto="k",
+                        vertrag="v",
+                        anlage="899575",
+                        vstelle="2738118",
+                        einzdat="2026-01-01",
+                    )
+                ]
+            )
+        ),
+        get_production_15min=AsyncMock(return_value=ConsumptionData()),
+    )
+    coordinator = SimpleNamespace(api_client=api_client)
+    coordinator._installation_store = None
+    coordinator._async_discover_installations = MethodType(
+        EkzCoordinator._async_discover_installations, coordinator
+    )
+
+    await coordinator._async_discover_installations()
+
+    api_client.get_production_15min.assert_not_awaited()
+    assert coordinator.production_installations == {"899575": {"contract_start": "2026-01-01"}}
+
+
 async def test_empty_initial_windows_expand_and_import_first_available_chunk(freezer, monkeypatch):
     freezer.move_to("2026-10-26 12:00:00+00:00")
     contract_start = date(2000, 1, 1)
@@ -131,10 +243,11 @@ async def test_empty_initial_windows_expand_and_import_first_available_chunk(fre
 
     async def fetch_data(_installation_id, date_from, date_to):
         requests.append((date_from.date(), date_to.date()))
-        if date_from.date() == contract_start and date_to.date() <= first_available:
+        if date_to.date() <= first_available:
             return ConsumptionData()
+        assert date_from.date() <= first_available < date_to.date()
         timestamp = datetime.combine(first_available, datetime.min.time(), tzinfo=ZRH)
-        return api_series("DAY", [(timestamp.strftime("%Y%m%d%H%M%S"), 8.0, "VALID")])
+        return api_series("DAY", [(timestamp.isoformat(), 8.0, "VALID")])
 
     monkeypatch.setattr(importer, "fetch_data", fetch_data)
 
@@ -151,10 +264,14 @@ async def test_empty_initial_windows_expand_and_import_first_available_chunk(fre
     assert result["from_date"] == first_available
     assert result["to_date"] == first_available + timedelta(days=30)
     assert requests[0] == (contract_start, contract_start + timedelta(days=30))
-    assert requests[1][0] == contract_start
-    assert requests[1][1] == contract_start + timedelta(days=60)
+    assert requests[1][0] == contract_start + timedelta(days=30)
+    assert requests[1][1] == contract_start + timedelta(days=90)
+    for previous, following in zip(requests[:-2], requests[1:-1], strict=True):
+        assert previous[1] == following[0]
+    assert all((end - start).days <= 360 for start, end in requests)
     assert requests[-1] == (first_available, first_available + timedelta(days=30))
     assert metadata._empty_search_days is None
+    assert metadata._empty_search_from is None
 
 
 def api_series(level, entries):
@@ -858,7 +975,7 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
         api_client=Mock(
             get_consumption_installations=AsyncMock(
                 return_value=SimpleNamespace(
-                    contracts=[SimpleNamespace(anlage="825821", einzdat="2026-10-15", auszdat=None)]
+                    contracts=[InstallationContract("", "", "", "825821", "", einzdat="2026-10-15")]
                 )
             ),
             get_production_installations=AsyncMock(return_value=SimpleNamespace(contracts=[])),
@@ -1355,7 +1472,7 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
         api_client=Mock(
             get_consumption_installations=AsyncMock(
                 return_value=SimpleNamespace(
-                    contracts=[SimpleNamespace(anlage="825821", einzdat="2026-10-01", auszdat=None)]
+                    contracts=[InstallationContract("", "", "", "825821", "", einzdat="2026-10-01")]
                 )
             ),
             get_production_installations=AsyncMock(return_value=SimpleNamespace(contracts=[])),
