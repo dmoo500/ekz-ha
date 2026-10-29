@@ -34,6 +34,61 @@ class StubImporter(BaseImporter):
 
 
 @pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+@pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 10, 25), date(2026, 10, 27)])
+async def test_complementary_inactive_tariffs_replace_daily_fallback(
+    monkeypatch, freezer, importer_type, local_day
+):
+    from custom_components.ekz_ha.data.validator import day_slots
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH)
+    freezer.move_to(start + timedelta(days=2))
+    slots = day_slots(local_day.isoformat())
+    response = {}
+    for tariff in ("HT", "NT"):
+        response[f"series{tariff.title()}"] = {
+            "level": "QUARTER_HOUR",
+            "values": [
+                {
+                    "timestamp": slot.isoformat(),
+                    "value": 0.1
+                    if (7 <= slot.astimezone(ZRH).hour < 20) == (tariff == "HT")
+                    else 0,
+                    "status": "VALID"
+                    if (7 <= slot.astimezone(ZRH).hour < 20) == (tariff == "HT")
+                    else "NOT_AVAILABLE",
+                }
+                for slot in slots
+            ],
+        }
+    data = ConsumptionData.from_dict(response)
+    api = Mock(
+        get_consumption_15min=AsyncMock(return_value=data),
+        get_consumption_daily=AsyncMock(return_value=ConsumptionData()),
+        get_production_15min=AsyncMock(return_value=data),
+    )
+    meta = EkzMetaEntity(Mock(), "test")
+    meta.set_last_import(local_day)
+    meta._daily_statistics = {local_day.isoformat()}
+    meta._recent_statistics = [{"start": start.astimezone(UTC), "state": 40.0, "sum": 140.0}]
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda _hass: recorder
+    )
+    importer = (
+        ConsumptionImporter(api, daily_fallback_days=meta._daily_statistics)
+        if importer_type is ConsumptionImporter
+        else ProductionImporter(api)
+    )
+    result = await importer.import_statistics(Mock(), "test", start, meta, 100.0)
+    assert len(result["raw_values"]) == len(slots)
+    assert sum(row["state"] for row in result["statistics"]) == pytest.approx(len(slots) * 0.1)
+    assert result["statistics"][-1]["sum"] == pytest.approx(100.0 + len(slots) * 0.1)
+    assert all(row["source_resolution"] == "hour" for row in result["statistics"])
+    assert meta._pending_from is None
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
 @pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
 @pytest.mark.parametrize("missing", ["one", "empty", "complementary"])
 async def test_incomplete_tariff_series_cannot_replace_daily_fallback(
