@@ -44,7 +44,10 @@ def _cache_sum_offsets(
     if next_import_date is not None:
         boundary = datetime.combine(next_import_date, datetime.min.time(), tzinfo=ZRH)
         preceding = [statistic for statistic in statistics if statistic["start"] < boundary]
-        offsets[next_import_date] = float(preceding[-1]["sum"]) if preceding else running_sum_offset
+        if preceding:
+            offsets[next_import_date] = float(preceding[-1]["sum"])
+        else:
+            offsets.setdefault(next_import_date, running_sum_offset)
     if not hasattr(coordinator, "_sum_offsets"):
         coordinator._sum_offsets = {}
     coordinator._sum_offsets[statistic_id] = offsets

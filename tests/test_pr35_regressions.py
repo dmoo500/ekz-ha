@@ -14,6 +14,7 @@ from custom_components.ekz_ha.api.models import (
 )
 from custom_components.ekz_ha.coordinator import EkzCoordinator
 from custom_components.ekz_ha.sensor import EkzMetaEntity
+from custom_components.ekz_ha.statistics.checkpoint import _restore_import_checkpoint
 from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
 from custom_components.ekz_ha.statistics.importer import ZRH, get_import_start
 from custom_components.ekz_ha.statistics.production import ProductionImporter
@@ -85,7 +86,9 @@ async def test_completed_search_never_resumes_before_recent_contract(
 
 
 @pytest.mark.parametrize("kind", ["consumption", "production"])
-@pytest.mark.parametrize("search_mode", ["next_chunk", "later_slice", "bounded_refetch"])
+@pytest.mark.parametrize(
+    "search_mode", ["next_chunk", "later_slice", "bounded_refetch", "bounded_recent"]
+)
 @pytest.mark.parametrize("recorded_source", ["recorder", "checkpoint"])
 async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
     hass, monkeypatch, freezer, kind, search_mode, recorded_source
@@ -153,6 +156,10 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
         lambda *_args: None,
     )
     new_day = start + timedelta(days=361 if search_mode == "later_slice" else 31)
+    if search_mode == "bounded_recent":
+        freezer.move_to(
+            datetime.combine(new_day + timedelta(days=1), datetime.min.time(), tzinfo=ZRH)
+        )
     data = ConsumptionData.from_dict(
         {
             "level": "DAY",
@@ -170,7 +177,7 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
     )
     fetch = AsyncMock(
         side_effect=[ConsumptionData(), data, data]
-        if search_mode != "bounded_refetch"
+        if search_mode not in ("bounded_refetch", "bounded_recent")
         else [data, data]
     )
     importer_type = ConsumptionImporter if kind == "consumption" else ProductionImporter
@@ -186,6 +193,20 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
     sums = coordinator.last_sums if kind == "consumption" else coordinator.last_production_sums
     assert sums["test"] == 3.0
     assert meta._recent_statistics[-1]["sum"] == 3.0
+    if search_mode == "bounded_recent":
+        assert get_import_start(meta) == new_day
+        assert coordinator._sum_offsets[statistic_id][new_day] == 1.0
+        fetch.side_effect = None
+        fetch.return_value = data
+        await coordinator._do_update_data()
+        assert sums["test"] == 3.0
+        assert meta._recent_statistics[-1]["sum"] == 3.0
+        coordinator._sum_offsets.clear()
+        meta._checkpoint_restored = False
+        _restore_import_checkpoint(coordinator, statistic_id, meta)
+        assert coordinator._sum_offsets[statistic_id][new_day] == 1.0
+        await coordinator._do_update_data()
+        assert sums["test"] == 3.0
 
 
 def test_pending_day_takes_priority_over_forward_search_cursor():
