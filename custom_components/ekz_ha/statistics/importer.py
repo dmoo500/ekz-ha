@@ -339,6 +339,7 @@ class BaseImporter(ABC):
             )
 
         _LOGGER.debug("[%s] Fetching data: period %s to %s", data_type, from_date, to_date)
+        original_from_date = from_date
 
         # EKZ rejects large historical requests; bound each API request separately.
         if meta_entity is not None:
@@ -400,6 +401,17 @@ class BaseImporter(ABC):
 
         if consumption_data.level == "DAY":
             api_values = [replace(value, origin=ValueOrigin.DAILY_TOTAL) for value in api_values]
+        if hass is not None and from_date > original_from_date:
+            statistic_id = f"sensor.electricity_{data_type.lower()}_ekz_{installation_id}"
+            skipped_rows = await self._load_day_statistics(
+                hass,
+                statistic_id,
+                original_from_date,
+                from_date,
+                getattr(meta_entity, "_recent_statistics", []),
+            )
+            if skipped_rows:
+                running_sum_offset = float(skipped_rows[max(skipped_rows)]["sum"])
         merged_values = self.aggregator.merge_tariffs(api_values)
         merged_values, fetched_data = await self._reconcile_day_resolution(
             hass,

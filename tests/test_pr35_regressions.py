@@ -85,8 +85,10 @@ async def test_completed_search_never_resumes_before_recent_contract(
 
 
 @pytest.mark.parametrize("kind", ["consumption", "production"])
+@pytest.mark.parametrize("search_mode", ["next_chunk", "later_slice", "bounded_refetch"])
+@pytest.mark.parametrize("recorded_source", ["recorder", "checkpoint"])
 async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
-    hass, monkeypatch, freezer, kind
+    hass, monkeypatch, freezer, kind, search_mode, recorded_source
 ):
     freezer.move_to("2026-10-28T12:00:00+00:00")
     start = date(2000, 1, 1)
@@ -103,9 +105,11 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
     meta.set_last_import(start)
     meta._checkpoint_restored = True
     meta._checkpoint_needs_replay = False
-    meta._recent_statistics = [
-        {"start": first, "state": 1.0, "sum": 1.0, "source_resolution": "day"}
-    ]
+    meta._recent_statistics = (
+        [{"start": first, "state": 1.0, "sum": 1.0, "source_resolution": "day"}]
+        if recorded_source == "checkpoint"
+        else []
+    )
     coordinator.meta_entities = {"test": meta} if kind == "consumption" else {}
     coordinator.production_meta_entities = {"test": meta} if kind == "production" else {}
     coordinator._daily_statistics = {statistic_id: ["2000-01-02"]}
@@ -118,7 +122,8 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
                 statistic_id: [
                     row
                     for row in persisted
-                    if date_from.timestamp() <= row["start"] < date_to.timestamp()
+                    if recorded_source == "recorder"
+                    and date_from.timestamp() <= row["start"] < date_to.timestamp()
                 ]
             }
         return {}
@@ -147,19 +152,36 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
         "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
         lambda *_args: None,
     )
+    new_day = start + timedelta(days=361 if search_mode == "later_slice" else 31)
     data = ConsumptionData.from_dict(
         {
             "level": "DAY",
-            "series": {"values": [{"timestamp": "2000-02-01T00:00:00+01:00", "value": 2.0}]},
+            "series": {
+                "values": [
+                    {
+                        "timestamp": datetime.combine(
+                            new_day, datetime.min.time(), tzinfo=ZRH
+                        ).isoformat(),
+                        "value": 2.0,
+                    }
+                ]
+            },
         }
     )
-    fetch = AsyncMock(side_effect=[ConsumptionData(), data, data])
+    fetch = AsyncMock(
+        side_effect=[ConsumptionData(), data, data]
+        if search_mode != "bounded_refetch"
+        else [data, data]
+    )
     importer_type = ConsumptionImporter if kind == "consumption" else ProductionImporter
     monkeypatch.setattr(importer_type, "fetch_data", fetch)
-    await coordinator._do_update_data()
-    assert meta._empty_search_from == date(2000, 1, 31)
-    assert get_import_start(meta) == date(2000, 1, 31)
-    assert coordinator._sum_offsets[statistic_id][date(2000, 1, 31)] == 1.0
+    if search_mode == "next_chunk":
+        await coordinator._do_update_data()
+        assert meta._empty_search_from == date(2000, 1, 31)
+        assert get_import_start(meta) == date(2000, 1, 31)
+        assert coordinator._sum_offsets[statistic_id][date(2000, 1, 31)] == 1.0
+    else:
+        meta._empty_search_days = 960
     await coordinator._do_update_data()
     sums = coordinator.last_sums if kind == "consumption" else coordinator.last_production_sums
     assert sums["test"] == 3.0

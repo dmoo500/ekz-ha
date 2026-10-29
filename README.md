@@ -62,6 +62,8 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 
 On first setup (or after a re-installation), the integration starts looking for historical data at your contract start date. If the initial 30-day window has no readings, it advances past the successfully checked empty period and progressively increases the next search window until data is found or the present is reached. Each API request covers at most **360 days**. The search position is saved across restarts; failed requests do not advance it. The actual contract start date remains unchanged. Once data is available, it imports **30-day chunks** directly into the Home Assistant statistics database. There is no fixed ten-year history cutoff. After reaching the present, regular updates recheck the recent period for delayed readings. Resetting statistics also resets the historical search position.
 
+If slicing or a bounded refetch moves the import start forward, existing recorder or checkpoint contributions in the skipped interval remain included in the cumulative sum. This applies to both consumption and production.
+
 The import progress is exposed by each installation's **Last Import** meta sensor, which stores the date of the last successfully imported data. After a Home Assistant restart, the import automatically resumes from where it left off. The last checkpoint's statistics are replayed into the recorder before either consumption or production imports resume, so queued readings are recovered even if Home Assistant stopped before writing them to its database.
 
 #### Import diagnostics (0.2.1)
