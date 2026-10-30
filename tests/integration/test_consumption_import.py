@@ -316,7 +316,9 @@ async def test_production_only_update_imports_without_consumption_metadata(
 
 @pytest.mark.parametrize("consumption_available", [False, True])
 @pytest.mark.parametrize("healthy_production", [False, True])
-@pytest.mark.parametrize("failure", ["api", "replay", "auth"])
+@pytest.mark.parametrize(
+    "failure", ["api", "replay", "auth", "metadata", "prepare_barrier", "prepare_auth"]
+)
 async def test_production_failures_do_not_abort_other_installations(
     hass,
     monkeypatch,
@@ -411,6 +413,35 @@ async def test_production_failures_do_not_abort_other_installations(
         return result
 
     monkeypatch.setattr(ProductionImporter, "import_statistics", production_import)
+    if failure in ("metadata", "prepare_barrier", "prepare_auth"):
+        from homeassistant.helpers import entity_registry as er
+
+        er.async_get(hass).async_update_entity(
+            failed_id, new_entity_id="sensor.renamed_failed_production"
+        )
+        preparation_failed = False
+
+        async def query_metadata(function, *args):
+            nonlocal preparation_failed
+            if (
+                failure in ("metadata", "prepare_auth")
+                and not preparation_failed
+                and getattr(function, "keywords", {}).get("statistic_ids")
+                == {failed_id, "sensor.renamed_failed_production"}
+            ):
+                preparation_failed = True
+                if failure == "prepare_auth":
+                    raise EkzAuthenticationError("rejected during preparation")
+                raise OSError("metadata unavailable")
+            return {}
+
+        recorder.async_add_executor_job.side_effect = query_metadata
+        if failure == "prepare_barrier":
+            recorder.async_block_till_done.side_effect = (
+                [None, OSError("recorder unavailable"), None]
+                if consumption_available
+                else [OSError("recorder unavailable"), None]
+            )
     if failure == "replay":
         failed_meta._checkpoint_needs_replay = True
         failed_meta._recent_statistics = [
@@ -423,7 +454,7 @@ async def test_production_failures_do_not_abort_other_installations(
             else [OSError("recorder unavailable"), None]
         )
 
-    if failure == "auth":
+    if failure in ("auth", "prepare_auth"):
         with pytest.raises(ConfigEntryAuthFailed):
             await coordinator._do_update_data()
     elif not consumption_available and not healthy_production:
@@ -441,6 +472,10 @@ async def test_production_failures_do_not_abort_other_installations(
             )
 
     assert consumption_import.await_count == int(consumption_available)
+    if failure == "prepare_auth":
+        assert preparation_failed
+        assert not attempted
+        return
     assert failed_meta._import_status.state == "failed"
     assert failed_meta._import_status.last_result == "failed"
     assert (
@@ -449,17 +484,25 @@ async def test_production_failures_do_not_abort_other_installations(
             "api": "TimeoutError",
             "replay": "OSError",
             "auth": "EkzAuthenticationError",
+            "metadata": "OSError",
+            "prepare_barrier": "OSError",
+            "prepare_auth": "EkzAuthenticationError",
         }[failure]
     )
-    assert coordinator._import_checkpoints[failed_id]["import_status"]["state"] == "failed"
+    if failure in ("api", "replay", "auth"):
+        assert coordinator._import_checkpoints[failed_id]["import_status"]["state"] == "failed"
+    else:
+        assert failed_id not in coordinator._import_checkpoints
     assert failed_meta._empty_search_from == date(2026, 10, 25)
     assert failed_meta._pending_sum_offset == 100.0
     assert coordinator.last_production_sums["failed"] == 100.0
-    assert ("healthy" in attempted) == (healthy_production and failure != "auth")
+    assert ("healthy" in attempted) == (
+        healthy_production and failure not in ("auth", "prepare_auth")
+    )
     if failure == "replay":
         assert failed_meta._checkpoint_needs_replay
         assert "failed" not in attempted
-    if failure != "auth":
+    if failure not in ("auth", "prepare_auth"):
         assert "failed for failed" in caplog.text
         recorder.async_block_till_done.side_effect = None
 
@@ -476,7 +519,8 @@ async def test_production_failures_do_not_abort_other_installations(
         assert failed_meta._import_status.state == "current"
         assert failed_meta._import_status.error_type is None
         assert not failed_meta._checkpoint_needs_replay
-        assert coordinator._import_checkpoints[failed_id]["import_status"]["state"] == "current"
+        recovered_id = coordinator._statistic_ids["production:failed"]
+        assert coordinator._import_checkpoints[recovered_id]["import_status"]["state"] == "current"
 
 
 @pytest.mark.parametrize("mean_type", [None, 0])
@@ -751,9 +795,12 @@ async def test_failed_write_does_not_advance_import_state(
         lambda hass, key: None,
     )
 
+    imported = Mock()
+
     async def import_chunk(
-        self, hass, installation_id, contract_start, metadata, running_sum_offset
+        self, hass, installation_id, contract_start, metadata, running_sum_offset, *, statistic_id
     ):
+        imported(statistic_id)
         metadata.set_last_import(date(2026, 8, 20))
         metadata.set_history_cursor(date(2026, 8, 30))
         metadata.set_pending(date(2026, 8, 15), 105.0)
@@ -773,9 +820,20 @@ async def test_failed_write_does_not_advance_import_state(
     importer_type = ConsumptionImporter if entity_type == "consumption" else ProductionImporter
     monkeypatch.setattr(importer_type, "import_statistics", import_chunk)
 
-    with pytest.raises(UpdateFailed):
+    with pytest.raises(UpdateFailed) as raised:
         await EkzCoordinator._do_update_data(coordinator)
 
+    imported.assert_called_once_with(statistic_id)
+    assert isinstance(raised.value.__cause__, ValueError if failure == "recorder" else OSError)
+    assert (
+        str(raised.value.__cause__)
+        == {
+            "recorder": "recorder failure",
+            "recorder_barrier": "recorder barrier failure",
+            "source_store": "source failure",
+            "checkpoint_store": "checkpoint failure",
+        }[failure]
+    )
     assert meta._last_import == first_day
     assert meta._history_cursor is None
     assert meta._pending_from is None

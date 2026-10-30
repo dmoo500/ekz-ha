@@ -516,14 +516,24 @@ class EkzCoordinator(DataUpdateCoordinator):
 
             try:
                 statistic_id = await _async_prepare_energy_statistic(self, key, "production")
-            except UpdateFailed as err:
+            except EkzAuthenticationError as err:
+                raise ConfigEntryAuthFailed("EKZ authentication failed") from err
+            except ConfigEntryAuthFailed:
+                raise
+            except Exception as err:
                 status = get_import_status(prod_meta)
                 status.state = "failed"
                 status.last_result = "failed"
                 status.error_type = type(err.__cause__ or err).__name__
                 publish_import_status(prod_meta)
                 _LOGGER.error("Production statistic migration failed for %s: %s", key, err)
-                production_errors.append(err)
+                failure = err
+                if not isinstance(failure, UpdateFailed):
+                    failure = UpdateFailed(
+                        f"Production statistic migration failed for {key}: {err}"
+                    )
+                    failure.__cause__ = err
+                production_errors.append(failure)
                 continue
             try:
                 _restore_import_checkpoint(self, statistic_id, prod_meta)
