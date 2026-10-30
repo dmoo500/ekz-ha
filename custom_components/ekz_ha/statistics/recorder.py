@@ -10,10 +10,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.recorder.models import StatisticMetaData
-from homeassistant.components.recorder.statistics import (
-    async_update_statistics_metadata,
-    get_metadata,
-)
+from homeassistant.components.recorder.statistics import get_metadata
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
@@ -110,8 +107,7 @@ async def _async_prepare_energy_statistic(
             def migration_done() -> None:
                 coordinator.hass.loop.call_soon_threadsafe(completed.set_result, None)
 
-            async_update_statistics_metadata(
-                coordinator.hass,
+            recorder.async_update_statistics_metadata(
                 previous_id,
                 new_statistic_id=statistic_id,
                 on_done=migration_done,
