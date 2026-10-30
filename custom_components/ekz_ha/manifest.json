@@ -3,6 +3,7 @@
   "name": "EKZ",
   "after_dependencies": ["recorder"],
   "codeowners": ["@dmoo500"],
+  "categories": ["energy.meters_monitoring"],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://www.github.com/dmoo500/ekz-ha",
