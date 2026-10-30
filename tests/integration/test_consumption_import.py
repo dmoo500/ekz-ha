@@ -204,12 +204,13 @@ async def test_empty_discovery_is_retryable_and_production_only_is_supported():
         contracts=[InstallationContract("", "", "", "solar", "", einzdat="2026-01-01")]
     )
     coordinator = SimpleNamespace(
+        _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
         api_client=SimpleNamespace(
             get_consumption_installations=AsyncMock(return_value=InstallationSelectionData()),
             get_production_installations=AsyncMock(
                 side_effect=[InstallationSelectionData(), production]
             ),
-        )
+        ),
     )
     coordinator._async_discover_installations = MethodType(
         EkzCoordinator._async_discover_installations, coordinator
@@ -258,7 +259,9 @@ async def test_config_flow_checks_production_before_rejecting_account(
         assert flow.async_show_form.call_args.kwargs["errors"] == {"base": "no_contracts"}
 
 
-async def test_production_only_update_imports_without_consumption_metadata(monkeypatch):
+async def test_production_only_update_imports_without_consumption_metadata(
+    monkeypatch, register_energy_entities
+):
     import_date = date(2026, 10, 15)
     metadata = SimpleNamespace(_last_import=import_date, _contract_start=import_date)
     coordinator = SimpleNamespace(
@@ -271,6 +274,7 @@ async def test_production_only_update_imports_without_consumption_metadata(monke
         last_production_sums={},
         update_interval=timedelta(minutes=20),
     )
+    register_energy_entities(coordinator)
     coordinator._get_running_sum_before = MethodType(
         EkzCoordinator._get_running_sum_before, coordinator
     )
@@ -314,7 +318,14 @@ async def test_production_only_update_imports_without_consumption_metadata(monke
 @pytest.mark.parametrize("healthy_production", [False, True])
 @pytest.mark.parametrize("failure", ["api", "replay", "auth"])
 async def test_production_failures_do_not_abort_other_installations(
-    hass, monkeypatch, freezer, caplog, consumption_available, healthy_production, failure
+    hass,
+    monkeypatch,
+    freezer,
+    caplog,
+    consumption_available,
+    healthy_production,
+    failure,
+    register_energy_entities,
 ):
     from homeassistant.exceptions import ConfigEntryAuthFailed
 
@@ -338,6 +349,7 @@ async def test_production_failures_do_not_abort_other_installations(
         key: EkzMetaEntity(coordinator, key, model="Solar Meter")
         for key in coordinator.production_installations
     }
+    register_energy_entities(coordinator)
     for meta in [
         *coordinator.meta_entities.values(),
         *coordinator.production_meta_entities.values(),
@@ -482,7 +494,7 @@ def test_statistic_metadata_matches_home_assistant_version(monkeypatch, mean_typ
 @pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
 @pytest.mark.parametrize("have_averages", [False, True])
 async def test_daily_import_clears_whole_day_before_predicting(
-    monkeypatch, freezer, local_day, have_averages
+    monkeypatch, freezer, local_day, have_averages, register_energy_entities
 ):
     start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH).astimezone(UTC)
     end = datetime.combine(
@@ -513,6 +525,7 @@ async def test_daily_import_clears_whole_day_before_predicting(
         migrated_prediction_statistics=set(),
         update_interval=timedelta(minutes=20),
     )
+    register_energy_entities(coordinator)
     coordinator._get_running_sum_before = MethodType(
         EkzCoordinator._get_running_sum_before, coordinator
     )
@@ -567,7 +580,7 @@ async def test_daily_import_clears_whole_day_before_predicting(
     [(1, 1.5), (2, 1.0), (3, 0.5), (4, 0.0)],
 )
 async def test_partial_last_hour_is_completed_by_prediction(
-    monkeypatch, freezer, delivered_slots, expected_partial
+    monkeypatch, freezer, delivered_slots, expected_partial, register_energy_entities
 ):
     now = datetime(2026, 10, 26, 13, tzinfo=UTC)
     freezer.move_to(now)
@@ -596,6 +609,7 @@ async def test_partial_last_hour_is_completed_by_prediction(
         migrated_prediction_statistics=set(),
         update_interval=timedelta(minutes=20),
     )
+    register_energy_entities(coordinator)
     coordinator._get_running_sum_before = MethodType(
         EkzCoordinator._get_running_sum_before, coordinator
     )
@@ -661,7 +675,9 @@ async def test_partial_last_hour_is_completed_by_prediction(
 @pytest.mark.parametrize(
     "failure", ["recorder", "recorder_barrier", "source_store", "checkpoint_store"]
 )
-async def test_failed_write_does_not_advance_import_state(monkeypatch, entity_type, failure):
+async def test_failed_write_does_not_advance_import_state(
+    monkeypatch, entity_type, failure, register_energy_entities
+):
     from custom_components.ekz_ha.sensor import EkzMetaEntity
 
     key = "825821"
@@ -701,6 +717,7 @@ async def test_failed_write_does_not_advance_import_state(monkeypatch, entity_ty
         ),
         update_interval=timedelta(minutes=20),
     )
+    register_energy_entities(coordinator)
     coordinator._get_running_sum_before = MethodType(
         EkzCoordinator._get_running_sum_before, coordinator
     )
@@ -778,7 +795,7 @@ async def test_failed_write_does_not_advance_import_state(monkeypatch, entity_ty
 
 @pytest.mark.parametrize("entity_type", ["consumption", "production"])
 async def test_restart_replays_unflushed_historical_checkpoint(
-    monkeypatch, hass, freezer, entity_type
+    monkeypatch, hass, freezer, entity_type, register_energy_entities
 ):
     from homeassistant.helpers.storage import Store
 
@@ -869,13 +886,14 @@ async def test_restart_replays_unflushed_historical_checkpoint(
         _import_checkpoints=await Store(hass, 1, storage_key).async_load(),
         update_interval=timedelta(minutes=20),
     )
+    register_energy_entities(coordinator)
     coordinator._get_running_sum_before = MethodType(
         EkzCoordinator._get_running_sum_before, coordinator
     )
     starts = []
 
     async def import_next(
-        self, _hass, installation_id, contract_start, metadata, running_sum_offset
+        self, _hass, installation_id, contract_start, metadata, running_sum_offset, *, statistic_id
     ):
         from custom_components.ekz_ha.statistics.importer import get_import_start
 

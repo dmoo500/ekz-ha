@@ -6,7 +6,7 @@ import logging
 import zoneinfo
 from copy import deepcopy
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.recorder.models import StatisticData
@@ -20,7 +20,7 @@ from ..import_status import ImportStatus, get_import_status, publish_import_stat
 from .consumption import ConsumptionImporter
 from .importer import get_import_start
 from .production import ProductionImporter
-from .recorder import _make_stat_meta
+from .recorder import _energy_statistic_id, _make_stat_meta
 
 if TYPE_CHECKING:
     from ..coordinator import EkzCoordinator
@@ -75,6 +75,24 @@ async def _persist_source_resolution(
     if store is not None:
         await store.async_save(sources)
     coordinator._daily_statistics = sources
+
+
+def _restore_energy_import_checkpoints(coordinator: EkzCoordinator) -> None:
+    """Restore diagnostics before imports, including history under a previous ID."""
+    kinds: tuple[Literal["consumption", "production"], ...] = ("consumption", "production")
+    for kind in kinds:
+        entities = getattr(
+            coordinator,
+            "meta_entities" if kind == "consumption" else "production_meta_entities",
+            {},
+        )
+        for key, meta in (entities or {}).items():
+            statistic_id = _energy_statistic_id(coordinator.hass, key, kind)
+            if statistic_id not in coordinator._import_checkpoints:
+                statistic_id = coordinator._statistic_ids.get(
+                    f"{kind}:{key}", f"sensor.electricity_{kind}_ekz_{key}"
+                )
+            _restore_import_checkpoint(coordinator, statistic_id, meta)
 
 
 def _restore_import_checkpoint(coordinator: EkzCoordinator, statistic_id: str, meta: Any) -> None:
@@ -235,6 +253,7 @@ async def _async_import_chunk(
             contract_start,
             meta,
             running_sum_offset=running_sum_offset,
+            statistic_id=statistic_id,
         )
         statistics = result.get("statistics", [])
         # The previous checkpoint must reach the recorder before it is replaced.

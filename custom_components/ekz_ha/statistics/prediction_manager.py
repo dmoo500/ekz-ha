@@ -16,7 +16,12 @@ from homeassistant.components.recorder.statistics import (
 )
 
 from .prediction import PredictionService
-from .recorder import _async_clear_statistics, _make_stat_meta, _prediction_statistic_id
+from .recorder import (
+    _async_clear_statistics,
+    _energy_statistic_id,
+    _make_stat_meta,
+    _prediction_statistic_id,
+)
 
 if TYPE_CHECKING:
     from ..coordinator import EkzCoordinator
@@ -85,7 +90,10 @@ async def _async_get_prediction_service(coordinator: EkzCoordinator, key: str) -
             coordinator._prediction_initialized.add(key)
             return service
 
-    statistic_id = f"sensor.electricity_consumption_ekz_{key}"
+    statistic_id = _energy_statistic_id(coordinator.hass, key, "consumption")
+    if statistic_id is None:
+        _LOGGER.warning("Cannot rebuild prediction history: consumption entity %s is missing", key)
+        return service
     now = datetime.now(tz=UTC)
     try:
         rows_by_id = await get_recorder_instance(coordinator.hass).async_add_executor_job(

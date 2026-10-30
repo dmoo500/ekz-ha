@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 
 from custom_components.ekz_ha import async_setup_entry
 from custom_components.ekz_ha.api.models import ApiValue
@@ -30,6 +31,12 @@ def prediction(hass, monkeypatch, freezer):
     freezer.move_to("2026-10-28T12:01:00+00:00")
     coordinator = EkzCoordinator(
         hass, Mock(), timedelta(hours=4), Mock(entry_id="prediction-recovery")
+    )
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        "ekz_ha",
+        "ekz_electricity_consumption_test",
+        suggested_object_id="electricity_consumption_ekz_test",
     )
     coordinator.installations = {"test": {"contract_start": "2026-01-01"}}
     coordinator.catching_up = {"test": False}

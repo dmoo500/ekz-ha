@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
@@ -299,10 +300,12 @@ async def test_failure_metadata_write_error_preserves_original_error_and_retry(
 
 
 @pytest.mark.parametrize("first_kind", ["consumption", "production"])
-async def test_all_checkpoints_restored_before_first_installation_fails(monkeypatch, first_kind):
+async def test_all_checkpoints_restored_before_first_installation_fails(
+    hass, monkeypatch, first_kind
+):
     timestamp = datetime(2026, 8, 2, tzinfo=UTC)
     coordinator = SimpleNamespace(
-        hass=Mock(),
+        hass=hass,
         api_client=Mock(),
         installations={"first": {"contract_start": "2026-01-01"}}
         if first_kind == "consumption"
@@ -314,6 +317,8 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
         meta_entities={},
         production_meta_entities={},
         _import_checkpoints={},
+        _statistic_ids={},
+        _statistic_id_store=Mock(async_save=AsyncMock()),
         _get_running_sum_before=AsyncMock(return_value=0.0),
         last_sums={},
         last_production_sums={},
@@ -324,6 +329,12 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
         ("production", coordinator.production_installations, coordinator.production_meta_entities),
     ):
         for key in installations:
+            er.async_get(hass).async_get_or_create(
+                "sensor",
+                "ekz_ha",
+                f"ekz_electricity_{kind}_{key}",
+                suggested_object_id=f"electricity_{kind}_ekz_{key}",
+            )
             meta = EkzMetaEntity(Mock(), key)
             meta._last_successful_import = timestamp
             meta._import_status.begin(timestamp, timestamp + timedelta(days=30), False)
@@ -513,9 +524,11 @@ async def test_sensor_setup_creates_separate_import_statuses(hass, consumption):
     from custom_components.ekz_ha.sensor import async_setup_entry
 
     coordinator = Mock(
+        hass=hass,
         installations={"825821": {}} if consumption else {},
         production_installations={"825821": {}},
         _import_checkpoints={},
+        _statistic_ids={},
     )
     hass.data[DOMAIN] = {"coordinator": coordinator}
     add = Mock()
@@ -627,15 +640,26 @@ async def test_statistics_reset_clears_empty_history_cursor_for_both_import_type
         await setup_sensors(hass, entry, Mock())
 
     monkeypatch.setattr("custom_components.ekz_ha.EkzApiClient", Mock())
-    monkeypatch.setattr(
-        "custom_components.ekz_ha._async_clear_statistics", AsyncMock(return_value=True)
-    )
+    clear = AsyncMock(return_value=True)
+    monkeypatch.setattr("custom_components.ekz_ha._async_clear_statistics", clear)
     monkeypatch.setattr(EkzCoordinator, "async_config_entry_first_refresh", discover)
     refresh = AsyncMock()
     monkeypatch.setattr(EkzCoordinator, "async_request_refresh", refresh)
     with patch.object(hass.config_entries, "async_forward_entry_setups", side_effect=forward):
         assert await async_setup_entry(hass, entry)
     coordinator = coordinators[0]
+    registry = er.async_get(hass)
+    registered_ids = []
+    for kind, key in (("consumption", "test"), ("production", "solar")):
+        registered_ids.append(
+            registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                f"ekz_electricity_{kind}_{key}",
+                suggested_object_id=f"renamed_{kind}",
+            ).entity_id
+        )
+    coordinator._statistic_ids = {"consumption:test": "sensor.previous_consumption_name"}
     metas = [
         *coordinator.meta_entities.values(),
         *coordinator.production_meta_entities.values(),
@@ -647,6 +671,9 @@ async def test_statistics_reset_clears_empty_history_cursor_for_both_import_type
     coordinator._prediction_initialized.add("test")
     await coordinator._prediction_store.async_save(coordinator._prediction_states)
     await hass.services.async_call(DOMAIN, "reset_statistics", {}, blocking=True)
+    assert set(registered_ids + ["sensor.previous_consumption_name"]).issubset(
+        clear.await_args.args[1]
+    )
     for meta in metas:
         assert meta._empty_search_from is None
         assert meta._empty_search_days is None

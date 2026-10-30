@@ -116,7 +116,7 @@ class BaseImporter(ABC):
     async def _reconcile_day_resolution(
         self,
         hass: Any,
-        installation_id: str,
+        statistic_id: str,
         values: list[ApiValue],
         level: str,
         meta_entity: Any,
@@ -127,9 +127,6 @@ class BaseImporter(ABC):
             return values, bool(values)
         preserved = []
         accepted_data = False
-        statistic_id = (
-            f"sensor.electricity_{self.get_data_type_name().lower()}_ekz_{installation_id}"
-        )
         cached = getattr(meta_entity, "_recent_statistics", [])
         daily_dates: set[str] = getattr(meta_entity, "_daily_statistics", set())
         returned_days = [day_bounds(day) for day in {value.date for value in values}]
@@ -286,6 +283,8 @@ class BaseImporter(ABC):
         contract_start: datetime,
         meta_entity: Any = None,
         running_sum_offset: float = 0.0,
+        *,
+        statistic_id: str | None = None,
     ) -> dict:
         """
         Import statistics for an installation.
@@ -296,11 +295,14 @@ class BaseImporter(ABC):
             contract_start: Contract start date
             meta_entity: Optional metadata entity for tracking
             running_sum_offset: Initial running sum offset from database
+            statistic_id: Registered entity ID used for recorder reads and reconciliation
 
         Returns:
             Dictionary with import results
         """
         data_type = self.get_data_type_name()
+        if statistic_id is None:
+            statistic_id = f"sensor.electricity_{data_type.lower()}_ekz_{installation_id}"
         _LOGGER.debug(
             "[%s] Starting import: installation=%s, contract_start=%s",
             data_type,
@@ -402,7 +404,6 @@ class BaseImporter(ABC):
         if consumption_data.level == "DAY":
             api_values = [replace(value, origin=ValueOrigin.DAILY_TOTAL) for value in api_values]
         if hass is not None and from_date > original_from_date:
-            statistic_id = f"sensor.electricity_{data_type.lower()}_ekz_{installation_id}"
             skipped_rows = await self._load_day_statistics(
                 hass,
                 statistic_id,
@@ -415,7 +416,7 @@ class BaseImporter(ABC):
         merged_values = self.aggregator.merge_tariffs(api_values)
         merged_values, fetched_data = await self._reconcile_day_resolution(
             hass,
-            installation_id,
+            statistic_id,
             merged_values,
             consumption_data.level,
             meta_entity,

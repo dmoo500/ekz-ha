@@ -13,7 +13,11 @@ from .api.session import EkzAuthenticationError
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .coordinator import EkzCoordinator
 from .import_status import ImportStatus
-from .statistics.recorder import _async_clear_statistics, _prediction_statistic_id
+from .statistics.recorder import (
+    _async_clear_statistics,
+    _energy_statistic_id,
+    _prediction_statistic_id,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,12 +67,20 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         statistic_ids = []
         for key in coordinator.installations:
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}")
+            consumption_id = _energy_statistic_id(hass, key, "consumption")
+            if consumption_id is not None:
+                statistic_ids.append(consumption_id)
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}_prediction")
             prediction_statistic_id = _prediction_statistic_id(hass, key)
             if prediction_statistic_id is not None:
                 statistic_ids.append(prediction_statistic_id)
         for key in coordinator.production_installations:
             statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
+            production_id = _energy_statistic_id(hass, key, "production")
+            if production_id is not None:
+                statistic_ids.append(production_id)
+        statistic_ids.extend(coordinator._statistic_ids.values())
+        statistic_ids = list(dict.fromkeys(statistic_ids))
 
         _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
 

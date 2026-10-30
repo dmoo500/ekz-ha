@@ -154,7 +154,9 @@ After the first chunk is imported, you can add the sensor to the Energy Dashboar
 3. (Optional) Select `sensor.electricity_production_ekz_<installationId>` for "Energy exported to grid"
 4. Historical data already imported will appear immediately; remaining chunks will appear as each update cycle completes.
 
-The entity IDs shown here are the defaults derived from the entity names. Home Assistant may use a different ID if an entity was renamed or an existing entity ID was already registered; in that case, select the corresponding EKZ sensor shown in the entity picker.
+The entity IDs shown here are examples derived from the entity names. Home Assistant may use a different ID if an entity was renamed or an existing entity ID was already registered; in that case, select the corresponding EKZ sensor shown in the entity picker. Consumption and production imports use the actual registered entity IDs for both reading and writing statistics, including prediction learning and checkpoint recovery.
+
+On upgrade, existing statistics under the integration's former fixed IDs are moved to the registered entity IDs without re-importing or resetting their history. Later entity-ID changes are tracked across restarts as well. If an ID changes, check the selection in your Energy Dashboard. If both the old and new IDs already have statistics metadata, the affected import stops with an explicit error rather than overwriting either history; do not delete statistics to resolve this without first checking which history should be retained.
 
 > **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
 

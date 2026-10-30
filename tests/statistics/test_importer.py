@@ -596,7 +596,7 @@ async def test_issue20_real_daily_fixture_preserves_api_timestamp(monkeypatch):
 @pytest.mark.parametrize("recorder_flushed", [False, True])
 @pytest.mark.parametrize("history_gap", [False, True])
 async def test_issue20_consecutive_updates_do_not_read_stale_offset(
-    monkeypatch, freezer, entity_type, recorder_flushed, history_gap
+    monkeypatch, freezer, entity_type, recorder_flushed, history_gap, register_energy_entities
 ):
     freezer.move_to("2026-10-18 12:00:00+00:00")
     installation_id = "825821"
@@ -622,6 +622,7 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         update_interval=NORMAL_SCAN_INTERVAL,
         _daily_statistics={statistic_id: [first_day.isoformat()]},
     )
+    register_energy_entities(coordinator)
     coordinator._get_running_sum_before = MethodType(
         EkzCoordinator._get_running_sum_before, coordinator
     )
@@ -676,7 +677,9 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
     second_day_start = datetime(2026, 10, 16, tzinfo=ZRH).astimezone(UTC)
     call_count = 0
 
-    async def import_chunk(self, hass, key, contract_start, metadata, running_sum_offset):
+    async def import_chunk(
+        self, hass, key, contract_start, metadata, running_sum_offset, *, statistic_id
+    ):
         nonlocal call_count
         if entity_type == "consumption":
             assert self.daily_fallback_days == metadata._daily_statistics
@@ -1057,6 +1060,7 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
     await _persist_source_resolution(before_restart, statistic_id, first["statistics"])
 
     after_restart = SimpleNamespace(
+        _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
         _source_resolution_store=Store(hass, 1, key),
         api_client=Mock(
             get_consumption_installations=AsyncMock(
@@ -1560,6 +1564,7 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
     rows = [{"start": start, "state": 0.5, "sum": 100.5, "slots": {hour: 0.5}}]
     await _persist_import_checkpoint(old, statistic_id, old_meta, rows)
     fresh = SimpleNamespace(
+        _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
         _import_checkpoint_store=Store(hass, 1, key),
         api_client=Mock(
             get_consumption_installations=AsyncMock(

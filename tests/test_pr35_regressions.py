@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from homeassistant.components.recorder.statistics import statistics_during_period
+from homeassistant.helpers import entity_registry as er
 
 from custom_components.ekz_ha.api.models import (
     ConsumptionData,
@@ -90,13 +91,21 @@ async def test_completed_search_never_resumes_before_recent_contract(
     "search_mode", ["next_chunk", "later_slice", "bounded_refetch", "bounded_recent"]
 )
 @pytest.mark.parametrize("recorded_source", ["recorder", "checkpoint"])
+@pytest.mark.parametrize("renamed", [False, True])
 async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
-    hass, monkeypatch, freezer, kind, search_mode, recorded_source
+    hass, monkeypatch, freezer, kind, search_mode, recorded_source, renamed
 ):
     freezer.move_to("2026-10-28T12:00:00+00:00")
     start = date(2000, 1, 1)
     first = datetime(2000, 1, 2, tzinfo=ZRH).astimezone(UTC)
     statistic_id = f"sensor.electricity_{kind}_ekz_test"
+    registered = er.async_get(hass).async_get_or_create(
+        "sensor",
+        "ekz_ha",
+        f"ekz_electricity_{kind}_test",
+        suggested_object_id=f"renamed_{kind}" if renamed else statistic_id.removeprefix("sensor."),
+    )
+    statistic_id = registered.entity_id
     coordinator = EkzCoordinator(hass, Mock(), timedelta(hours=4), Mock(entry_id=f"offset-{kind}"))
     info = {"test": {"contract_start": start.isoformat()}}
     coordinator.installations = info if kind == "consumption" else {}
@@ -118,7 +127,7 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
     coordinator._daily_statistics = {statistic_id: ["2000-01-02"]}
     persisted = [{"start": first.timestamp(), "state": 1.0, "sum": 1.0}]
 
-    async def query(function, _hass, *args):
+    async def query(function, _hass=None, *args, **kwargs):
         if function is statistics_during_period:
             date_from, date_to = args[:2]
             return {

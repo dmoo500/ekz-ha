@@ -24,6 +24,7 @@ from .statistics.checkpoint import (
     _async_import_chunk,
     _async_replay_import_checkpoint,
     _persist_import_checkpoint,
+    _restore_energy_import_checkpoints,
     _restore_import_checkpoint,
 )
 from .statistics.consumption import ConsumptionImporter
@@ -31,7 +32,10 @@ from .statistics.importer import get_import_start
 from .statistics.prediction import PredictionService
 from .statistics.prediction_manager import async_extend_predictions, async_update_predictions
 from .statistics.production import ProductionImporter
-from .statistics.recorder import _async_clear_statistics
+from .statistics.recorder import (
+    _async_clear_statistics,
+    _async_prepare_energy_statistic,
+)
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
@@ -99,6 +103,10 @@ class EkzCoordinator(DataUpdateCoordinator):
             hass, 1, f"{DOMAIN}.{config.entry_id}.source_resolution"
         )
         self._import_checkpoints: dict[str, dict[str, Any]] = {}
+        self._statistic_ids: dict[str, str] = {}
+        self._statistic_id_store = Store[dict[str, str]](
+            hass, 1, f"{DOMAIN}.{config.entry_id}.statistic_ids"
+        )
         self._import_checkpoint_store = Store[dict[str, dict[str, Any]]](
             hass, 1, f"{DOMAIN}.{config.entry_id}.import_checkpoint"
         )
@@ -128,6 +136,7 @@ class EkzCoordinator(DataUpdateCoordinator):
 
     async def _async_setup(self):
         """Load installations on first start."""
+        self._statistic_ids = await self._statistic_id_store.async_load() or {}
         store = getattr(self, "_source_resolution_store", None)
         if store is not None:
             self._daily_statistics = await store.async_load() or {}
@@ -276,12 +285,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         This is the place to pre-process the data to lookup tables
         so entities can quickly look up their data.
         """
-        for kind, entities in (
-            ("consumption", getattr(self, "meta_entities", None)),
-            ("production", getattr(self, "production_meta_entities", None)),
-        ):
-            for key, meta in (entities or {}).items():
-                _restore_import_checkpoint(self, f"sensor.electricity_{kind}_ekz_{key}", meta)
+        _restore_energy_import_checkpoints(self)
 
         if self.installations is None or self.installations == []:
             installations_data = await self.api_client.get_consumption_installations()
@@ -362,7 +366,17 @@ class EkzCoordinator(DataUpdateCoordinator):
                         datetime.strptime(contract_start, "%Y-%m-%d").date()
                     )
 
-            statistic_id = f"sensor.electricity_consumption_ekz_{key}"
+            try:
+                statistic_id = await _async_prepare_energy_statistic(self, key, "consumption")
+            except UpdateFailed as err:
+                status = get_import_status(meta_entity)
+                status.state = "failed"
+                status.last_result = "failed"
+                status.error_type = type(err.__cause__ or err).__name__
+                publish_import_status(meta_entity)
+                _LOGGER.error("Consumption statistic migration failed for %s: %s", key, err)
+                raise
+            _restore_import_checkpoint(self, statistic_id, meta_entity)
             await _async_replay_import_checkpoint(self, statistic_id, meta_entity)
 
             # Query DB only on first cycle after (re)start to restore last import date
@@ -402,7 +416,7 @@ class EkzCoordinator(DataUpdateCoordinator):
                 old_stats = await get_recorder_instance(self.hass).async_add_executor_job(
                     get_last_statistics, self.hass, 1, old_statistic_id, True, {"sum"}
                 )
-                if old_stats and old_statistic_id in old_stats:
+                if old_statistic_id != statistic_id and old_stats and old_statistic_id in old_stats:
                     _LOGGER.info(f"Migrating: clearing old statistics under {old_statistic_id}")
                     if not await _async_clear_statistics(self.hass, [old_statistic_id]):
                         _LOGGER.info(
@@ -500,8 +514,19 @@ class EkzCoordinator(DataUpdateCoordinator):
             if prod_meta._contract_start is None and contract_start:
                 prod_meta.set_contract_start(datetime.strptime(contract_start, "%Y-%m-%d").date())
 
-            statistic_id = f"sensor.electricity_production_ekz_{key}"
             try:
+                statistic_id = await _async_prepare_energy_statistic(self, key, "production")
+            except UpdateFailed as err:
+                status = get_import_status(prod_meta)
+                status.state = "failed"
+                status.last_result = "failed"
+                status.error_type = type(err.__cause__ or err).__name__
+                publish_import_status(prod_meta)
+                _LOGGER.error("Production statistic migration failed for %s: %s", key, err)
+                production_errors.append(err)
+                continue
+            try:
+                _restore_import_checkpoint(self, statistic_id, prod_meta)
                 await _async_replay_import_checkpoint(self, statistic_id, prod_meta)
             except UpdateFailed as err:
                 status = get_import_status(prod_meta)

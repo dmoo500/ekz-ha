@@ -13,7 +13,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 from .import_status import ImportStatus, get_import_status
-from .statistics.checkpoint import _restore_import_checkpoint
+from .statistics.checkpoint import _restore_energy_import_checkpoints
 
 
 def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> None:
@@ -62,13 +62,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         sensors.append(EkzImportStatusEntity(coordinator, prod_meta, "production"))
     coordinator.production_meta_entities = production_meta_entities
 
-    for kind, entities in (
-        ("consumption", meta_entities),
-        ("production", production_meta_entities),
-    ):
-        for key, meta in entities.items():
-            _restore_import_checkpoint(coordinator, f"sensor.electricity_{kind}_ekz_{key}", meta)
-
+    _restore_energy_import_checkpoints(coordinator)
     async_add_entities(sensors, False)
 
 
