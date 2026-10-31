@@ -1,4 +1,10 @@
 {
+  "issues": {
+    "external_statistics": {
+      "title": "Neue EKZ-Energiestatistiken auswählen",
+      "description": "EKZ verwendet jetzt externe Statistiken statt Energie-Sensorentitäten. Die vorhandene Historie wird automatisch kopiert; die alten Daten bleiben erhalten. Ersetze unter Einstellungen > Energie jede bisherige EKZ-Auswahl für Verbrauch, Produktion und Prognose durch die passende neue EKZ-Statistik: {statistics}. Setze die Statistiken während der Migration nicht zurück und lösche sie nicht. Diagnose-Sensoren bleiben verfügbar. Die alten Statistiken können unter Entwicklerwerkzeuge > Statistik weiterhin Warnungen anzeigen, weil ihre Sensorentitäten nicht mehr existieren."
+    }
+  },
   "entity": {
     "sensor": {
       "import_status_consumption": {

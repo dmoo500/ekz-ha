@@ -8,7 +8,7 @@ from custom_components.ekz_ha.const import DOMAIN
 from custom_components.ekz_ha.sensor import _migrate_production_meta_entities
 from custom_components.ekz_ha.statistics.recorder import (
     _async_clear_statistics,
-    _prediction_statistic_id,
+    _legacy_prediction_statistic_id,
 )
 
 
@@ -20,7 +20,7 @@ def test_prediction_statistic_id_uses_registered_entity_id(monkeypatch):
         "custom_components.ekz_ha.statistics.recorder.er.async_get", lambda hass: registry
     )
 
-    result = _prediction_statistic_id(object(), "825821")
+    result = _legacy_prediction_statistic_id(object(), "825821")
 
     assert result == registered_id
     registry.async_get_entity_id.assert_called_once_with(

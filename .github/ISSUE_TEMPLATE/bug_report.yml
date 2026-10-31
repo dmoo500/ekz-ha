@@ -7,6 +7,8 @@ body:
     attributes:
       value: |
         Thank you for reporting a bug! Please fill out the following fields as detailed as possible.
+        Before submitting, check existing issues and record the exact EKZ and Home Assistant versions.
+        Never include your password, TOTP secret, authentication codes, cookies or access tokens.
 
   - type: textarea
     id: description
@@ -39,21 +41,12 @@ body:
     validations:
       required: true
 
-  - type: textarea
-    id: logs
-    attributes:
-      label: Logs
-      description: Relevant log excerpts (if available)
-      placeholder: |
-        Paste Home Assistant logs here
-      render: shell
-
   - type: input
     id: version
     attributes:
       label: EKZ Integration Version
-      description: Which version of the integration are you using?
-      placeholder: e.g. 0.2.0-alpha.1
+      description: Copy the installed version from HACS, including the beta suffix if applicable.
+      placeholder: e.g. 0.3.0b1
     validations:
       required: true
 
@@ -62,9 +55,82 @@ body:
     attributes:
       label: Home Assistant Version
       description: Which Home Assistant version are you using?
-      placeholder: e.g. 2024.8.0
+      placeholder: e.g. 2026.10.4
     validations:
       required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Affected data
+      options:
+        - Consumption
+        - Production / feed-in
+        - Predictions
+        - Multiple data types
+        - Login / setup
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Import status and statistic IDs
+      description: |
+        For import or Energy Dashboard problems, include the affected Import status sensor's
+        state and attributes (requested_from/to, last_result, error_type, last_successful_import).
+        Include the actual statistic IDs selected in Settings > Energy and the exact warning text.
+        Mention any renamed entities, upgrade, restart or statistics reset.
+        Mask account details and installation IDs consistently if needed.
+      placeholder: |
+        Import status:
+        Statistic IDs:
+        Warning:
+        Previous version / recent changes:
+
+  - type: markdown
+    attributes:
+      value: |
+        ### How to capture EKZ debug logs
+        1. Open **Settings > Devices & services > Integrations** and find **EKZ**.
+        2. Open its three-dot menu and select **Enable debug logging**.
+        3. Reproduce the problem. For an import failure, reload the EKZ integration once
+           using its three-dot menu, then wait for an update attempt. For delayed data,
+           capture at least one relevant poll; enabling logging alone does not start a poll.
+        4. Return to the same menu and select **Disable debug logging**.
+           Home Assistant offers the captured log file for download.
+        5. Inspect the file before uploading it. Remove credentials, TOTP secrets/codes,
+           cookies, authorization headers, tokens, e-mail addresses and other personal data.
+           Debug logs can contain API responses, consumption readings and installation IDs.
+           Keep timestamps and error tracebacks; use consistent replacements for IDs.
+        6. Drag the sanitized `.log` or `.txt` file into a comment on the issue, or paste
+           the relevant sanitized excerpt below. State the time of the reproduced problem.
+
+        If the integration cannot be loaded or the debug menu is unavailable, add this
+        to the existing `logger` section in `configuration.yaml` (do not create duplicate
+        YAML keys), restart Home Assistant, reproduce the problem, and obtain the logs from
+        **Settings > System > Logs** or your installation's `home-assistant.log`:
+
+        ```yaml
+        logger:
+          default: warning
+          logs:
+            custom_components.ekz_ha: debug
+        ```
+
+        Remove the debug override afterwards and restart Home Assistant.
+        Do not reset or delete statistics just to collect logs.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized debug logs
+      description: Paste relevant logs including the full traceback, or indicate where you attached the sanitized file. If logs cannot be collected, explain why.
+      placeholder: |
+        Reproduced at (including time zone):
+        Logs or reason logs are unavailable:
+      render: text
 
   - type: textarea
     id: additional

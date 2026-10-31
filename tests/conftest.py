@@ -16,6 +16,8 @@ def register_energy_entities(hass):
         coordinator.hass = hass
         coordinator._statistic_ids = {}
         coordinator._statistic_id_store = Mock(async_save=AsyncMock())
+        coordinator._external_migrations = {}
+        coordinator._external_migration_store = Mock(async_save=AsyncMock())
         for attribute in ("_import_checkpoints", "_daily_statistics", "_sum_offsets"):
             if not isinstance(getattr(coordinator, attribute, None), dict):
                 setattr(coordinator, attribute, {})
@@ -24,13 +26,19 @@ def register_energy_entities(hass):
             ("production", coordinator.production_installations),
         ):
             for key in installations:
-                entity = er.async_get(hass).async_get_or_create(
+                er.async_get(hass).async_get_or_create(
                     "sensor",
                     "ekz_ha",
                     f"ekz_electricity_{kind}_{key}",
                     suggested_object_id=f"electricity_{kind}_ekz_{key}",
                 )
-                coordinator._statistic_ids[f"{kind}:{key}"] = entity.entity_id
+                target = f"ekz_ha:electricity_{kind}_{key}"
+                coordinator._external_migrations[target] = {"complete": True, "sources": []}
+                if kind == "consumption":
+                    coordinator._external_migrations[f"{target}_prediction"] = {
+                        "complete": True,
+                        "sources": [],
+                    }
 
     return register
 

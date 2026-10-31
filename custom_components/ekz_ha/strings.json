@@ -1,4 +1,10 @@
 {
+  "issues": {
+    "external_statistics": {
+      "title": "Select the new EKZ energy statistics",
+      "description": "EKZ now uses external statistics instead of energy sensor entities. Existing history is copied automatically; the old history is retained. In Settings > Energy, replace each old EKZ consumption, production and prediction selection with its new EKZ statistic: {statistics}. Do not reset or delete statistics during migration. Diagnostic sensors remain available. The old statistics may still show warnings in Developer Tools > Statistics because their sensor entities no longer exist."
+    }
+  },
   "entity": {
     "sensor": {
       "import_status_consumption": {

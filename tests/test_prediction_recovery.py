@@ -39,6 +39,10 @@ def prediction(hass, monkeypatch, freezer):
         suggested_object_id="electricity_consumption_ekz_test",
     )
     coordinator.installations = {"test": {"contract_start": "2026-01-01"}}
+    coordinator._external_migrations = {
+        "ekz_ha:electricity_consumption_test": {"complete": True},
+        "ekz_ha:electricity_consumption_test_prediction": {"complete": True},
+    }
     coordinator.catching_up = {"test": False}
     meta = EkzMetaEntity(coordinator, "test")
     meta._last_successful_import = datetime(2026, 10, 20, tzinfo=UTC)
@@ -58,10 +62,10 @@ def prediction(hass, monkeypatch, freezer):
         )
     enqueue = Mock()
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", enqueue
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics", enqueue
     )
     monkeypatch.setattr(
         "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
@@ -213,7 +217,7 @@ async def test_successful_import_persists_learning_for_next_coordinator(
             assert (await original_load())["test"] == old_state
         else:
             recorder.async_add_executor_job = original_query
-            statistic_id = "sensor.electricity_consumption_ekz_test"
+            statistic_id = "ekz_ha:electricity_consumption_test"
             original_query.return_value = {
                 statistic_id: [
                     {"start": datetime(2026, 8, 31, 23, tzinfo=UTC), "sum": 5.0},
@@ -250,7 +254,7 @@ async def test_saving_one_installation_preserves_unloaded_other_installations(pr
 
 async def test_recorder_rebuild_excludes_daily_days_gaps_and_negative_deltas(prediction):
     coordinator, recorder, _ = prediction
-    statistic_id = "sensor.electricity_consumption_ekz_test"
+    statistic_id = "ekz_ha:electricity_consumption_test"
     coordinator._daily_statistics = {statistic_id: ["2026-10-19"]}
     start = datetime(2026, 10, 19, 20, tzinfo=UTC)
     recorder.async_add_executor_job.return_value = {
@@ -272,7 +276,7 @@ async def test_recorder_rebuild_excludes_daily_days_gaps_and_negative_deltas(pre
 
 async def test_recorder_rebuild_overlapping_raw_import_does_not_double_count(prediction):
     coordinator, recorder, _ = prediction
-    statistic_id = "sensor.electricity_consumption_ekz_test"
+    statistic_id = "ekz_ha:electricity_consumption_test"
     start = datetime(2026, 10, 20, tzinfo=UTC)
     recorder.async_add_executor_job.return_value = {
         statistic_id: [

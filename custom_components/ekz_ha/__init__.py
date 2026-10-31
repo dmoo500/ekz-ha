@@ -13,9 +13,12 @@ from .api.session import EkzAuthenticationError
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .coordinator import EkzCoordinator
 from .import_status import ImportStatus
+from .statistics.migration import async_initialize_migration
 from .statistics.recorder import (
     _async_clear_statistics,
     _energy_statistic_id,
+    _legacy_energy_statistic_id,
+    _legacy_prediction_statistic_id,
     _prediction_statistic_id,
 )
 
@@ -60,6 +63,12 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
     except ConfigEntryAuthFailed:
         await api_client.close()
         raise
+    try:
+        await async_initialize_migration(coordinator)
+    except Exception as err:
+        await api_client.close()
+        _LOGGER.error("Cannot prepare external statistics migration: %s", err)
+        raise ConfigEntryNotReady("Cannot persist external statistics migration") from err
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
 
     async def handle_reset_statistics(call):
@@ -68,18 +77,30 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
         for key in coordinator.installations:
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}")
             consumption_id = _energy_statistic_id(hass, key, "consumption")
+            legacy_id = _legacy_energy_statistic_id(hass, key, "consumption")
+            if legacy_id is not None:
+                statistic_ids.append(legacy_id)
             if consumption_id is not None:
                 statistic_ids.append(consumption_id)
             statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}_prediction")
             prediction_statistic_id = _prediction_statistic_id(hass, key)
+            legacy_prediction_id = _legacy_prediction_statistic_id(hass, key)
+            if legacy_prediction_id is not None:
+                statistic_ids.append(legacy_prediction_id)
             if prediction_statistic_id is not None:
                 statistic_ids.append(prediction_statistic_id)
         for key in coordinator.production_installations:
             statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
             production_id = _energy_statistic_id(hass, key, "production")
+            legacy_id = _legacy_energy_statistic_id(hass, key, "production")
+            if legacy_id is not None:
+                statistic_ids.append(legacy_id)
             if production_id is not None:
                 statistic_ids.append(production_id)
         statistic_ids.extend(coordinator._statistic_ids.values())
+        for target, migration in coordinator._external_migrations.items():
+            statistic_ids.append(target)
+            statistic_ids.extend(migration["sources"])
         statistic_ids = list(dict.fromkeys(statistic_ids))
 
         _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
@@ -100,6 +121,11 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             await coordinator._source_resolution_store.async_save({})
             coordinator._import_checkpoints = {}
             await coordinator._import_checkpoint_store.async_save({})
+            coordinator._external_migrations = {
+                target: {**state, "complete": True}
+                for target, state in coordinator._external_migrations.items()
+            }
+            await coordinator._external_migration_store.async_save(coordinator._external_migrations)
             coordinator.catching_up = {}
             coordinator.consumption_averages_raw = {}
             # Reset all prediction services

@@ -29,13 +29,10 @@ from .statistics.checkpoint import (
 )
 from .statistics.consumption import ConsumptionImporter
 from .statistics.importer import get_import_start
+from .statistics.migration import _async_prepare_energy_statistic
 from .statistics.prediction import PredictionService
 from .statistics.prediction_manager import async_extend_predictions, async_update_predictions
 from .statistics.production import ProductionImporter
-from .statistics.recorder import (
-    _async_clear_statistics,
-    _async_prepare_energy_statistic,
-)
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
@@ -104,6 +101,10 @@ class EkzCoordinator(DataUpdateCoordinator):
         )
         self._import_checkpoints: dict[str, dict[str, Any]] = {}
         self._statistic_ids: dict[str, str] = {}
+        self._external_migrations: dict[str, dict[str, Any]] = {}
+        self._external_migration_store = Store[dict[str, dict[str, Any]]](
+            hass, 1, f"{DOMAIN}.{config.entry_id}.external_statistics"
+        )
         self._statistic_id_store = Store[dict[str, str]](
             hass, 1, f"{DOMAIN}.{config.entry_id}.statistic_ids"
         )
@@ -122,7 +123,6 @@ class EkzCoordinator(DataUpdateCoordinator):
         self.prediction_services: dict[
             str, PredictionService
         ] = {}  # prediction service per installation
-        self.migrated_prediction_statistics: set[str] = set()
         self.next_update_time: datetime | None = None
         self._prediction_store = Store[dict[str, dict[str, Any]]](
             hass, 1, f"{DOMAIN}.{config.entry_id}.prediction"
@@ -137,6 +137,7 @@ class EkzCoordinator(DataUpdateCoordinator):
     async def _async_setup(self):
         """Load installations on first start."""
         self._statistic_ids = await self._statistic_id_store.async_load() or {}
+        self._external_migrations = await self._external_migration_store.async_load() or {}
         store = getattr(self, "_source_resolution_store", None)
         if store is not None:
             self._daily_statistics = await store.async_load() or {}
@@ -409,21 +410,6 @@ class EkzCoordinator(DataUpdateCoordinator):
                                 self.catching_up[key] = False
                 except Exception as e:
                     _LOGGER.debug(f"Could not query existing statistics for {key}: {e}")
-
-            # One-time migration: clear old statistic_id
-            old_statistic_id = f"sensor.ekz_electricity_consumption_{key}"
-            try:
-                old_stats = await get_recorder_instance(self.hass).async_add_executor_job(
-                    get_last_statistics, self.hass, 1, old_statistic_id, True, {"sum"}
-                )
-                if old_statistic_id != statistic_id and old_stats and old_statistic_id in old_stats:
-                    _LOGGER.info(f"Migrating: clearing old statistics under {old_statistic_id}")
-                    if not await _async_clear_statistics(self.hass, [old_statistic_id]):
-                        _LOGGER.info(
-                            f"async_clear_statistics not available — old statistics under {old_statistic_id} will remain"
-                        )
-            except Exception as e:
-                _LOGGER.debug(f"Migration check failed for {key}: {e}")
 
             # Rebuild the running sum before the day being re-imported.
             pending_from = getattr(meta_entity, "_pending_from", None)

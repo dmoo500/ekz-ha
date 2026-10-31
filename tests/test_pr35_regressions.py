@@ -98,15 +98,18 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
     freezer.move_to("2026-10-28T12:00:00+00:00")
     start = date(2000, 1, 1)
     first = datetime(2000, 1, 2, tzinfo=ZRH).astimezone(UTC)
-    statistic_id = f"sensor.electricity_{kind}_ekz_test"
-    registered = er.async_get(hass).async_get_or_create(
+    er.async_get(hass).async_get_or_create(
         "sensor",
         "ekz_ha",
         f"ekz_electricity_{kind}_test",
-        suggested_object_id=f"renamed_{kind}" if renamed else statistic_id.removeprefix("sensor."),
+        suggested_object_id=f"renamed_{kind}" if renamed else f"electricity_{kind}_ekz_test",
     )
-    statistic_id = registered.entity_id
+    statistic_id = f"ekz_ha:electricity_{kind}_test"
     coordinator = EkzCoordinator(hass, Mock(), timedelta(hours=4), Mock(entry_id=f"offset-{kind}"))
+    coordinator._external_migrations = {
+        statistic_id: {"complete": True},
+        "ekz_ha:electricity_consumption_test_prediction": {"complete": True},
+    }
     info = {"test": {"contract_start": start.isoformat()}}
     coordinator.installations = info if kind == "consumption" else {}
     coordinator.production_installations = info if kind == "production" else {"unused": {}}
@@ -155,10 +158,10 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
             f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
         )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", Mock()
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", Mock()
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", Mock()
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics", Mock()
     )
     monkeypatch.setattr(
         "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",

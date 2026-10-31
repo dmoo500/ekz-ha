@@ -22,7 +22,7 @@ class EkzApiClient:
         """Initialize the API client."""
         self.session = Session(username, password, totp_secret, device_name)
 
-    async def close(self):
+    async def close(self) -> None:
         """Close the API session."""
         if self.session._session:
             await self.session._session.close()

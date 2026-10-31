@@ -67,17 +67,17 @@ def installation(request, monkeypatch):
         monkeypatch.setattr(f"{module}.get_recorder_instance", lambda _hass: recorder)
     enqueue = Mock()
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", enqueue
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics", enqueue
     )
     return SimpleNamespace(
         coordinator=coordinator,
         meta=meta,
         sensor=sensor,
         importer=importer,
-        statistic_id=f"sensor.electricity_{kind}_ekz_825821",
+        statistic_id=f"ekz_ha:electricity_{kind}_825821",
         enqueue=enqueue,
     )
 
@@ -301,7 +301,7 @@ async def test_failure_metadata_write_error_preserves_original_error_and_retry(
 
 @pytest.mark.parametrize("first_kind", ["consumption", "production"])
 async def test_all_checkpoints_restored_before_first_installation_fails(
-    hass, monkeypatch, first_kind
+    hass, monkeypatch, first_kind, register_energy_entities
 ):
     timestamp = datetime(2026, 8, 2, tzinfo=UTC)
     coordinator = SimpleNamespace(
@@ -324,6 +324,7 @@ async def test_all_checkpoints_restored_before_first_installation_fails(
         last_production_sums={},
         catching_up={},
     )
+    register_energy_entities(coordinator)
     for kind, installations, entities in (
         ("consumption", coordinator.installations, coordinator.meta_entities),
         ("production", coordinator.production_installations, coordinator.production_meta_entities),
@@ -339,7 +340,7 @@ async def test_all_checkpoints_restored_before_first_installation_fails(
             meta._last_successful_import = timestamp
             meta._import_status.begin(timestamp, timestamp + timedelta(days=30), False)
             meta._import_status.last_result = "imported"
-            statistic_id = f"sensor.electricity_{kind}_ekz_{key}"
+            statistic_id = f"ekz_ha:electricity_{kind}_{key}"
             await _persist_import_checkpoint(
                 coordinator, statistic_id, meta, [{"start": timestamp, "sum": 2.0, "state": 1.0}]
             )
@@ -358,10 +359,10 @@ async def test_all_checkpoints_restored_before_first_installation_fails(
             f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
         )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", replay
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", replay
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", replay
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics", replay
     )
 
     attempts = 0
@@ -529,6 +530,7 @@ async def test_sensor_setup_creates_separate_import_statuses(hass, consumption):
         production_installations={"825821": {}},
         _import_checkpoints={},
         _statistic_ids={},
+        _external_migrations={},
     )
     hass.data[DOMAIN] = {"coordinator": coordinator}
     add = Mock()
@@ -681,6 +683,10 @@ async def test_statistics_reset_clears_empty_history_cursor_for_both_import_type
         assert meta._last_import is None
     assert coordinator._import_checkpoints == {}
     assert coordinator._prediction_states == {}
+    assert all(state["complete"] for state in coordinator._external_migrations.values())
+    assert (
+        await coordinator._external_migration_store.async_load() == coordinator._external_migrations
+    )
     assert coordinator._prediction_initialized == set()
     assert await coordinator._prediction_store.async_load() == {}
     refresh.assert_awaited_once()
@@ -706,7 +712,7 @@ async def test_offline_restart_registers_saved_diagnostics_and_retries_discovery
     await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.installations").async_save(known)
     timestamp = datetime(2026, 8, 2, tzinfo=UTC)
     checkpoint = {
-        f"sensor.electricity_{data_type}_ekz_{key}": {
+        f"ekz_ha:electricity_{data_type}_{key}": {
             "last_successful_import": timestamp.isoformat(),
             "import_status": {
                 "state": "failed",
