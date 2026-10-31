@@ -149,16 +149,20 @@ After the first update determines the import status, the integration switches to
 #### Energy Dashboard
 
 After the first chunk is imported, you can add the external statistic to the Energy Dashboard:
-1. Go to **Settings → Energy → Electricity grid → Add consumption sensor**
+1. Go to **Energy Dashboard → ⋮ → Energy configuration → Electricity grid → Add consumption sensor**
 2. Select **EKZ \<installationId\> Electricity consumption** (`ekz_ha:electricity_consumption_<installationId>`) for "Energy imported from grid"
 3. (Optional) Select **EKZ \<installationId\> Electricity production** (`ekz_ha:electricity_production_<installationId>`) for "Energy exported to grid"
 4. Historical data already imported will appear immediately; remaining chunks will appear as each update cycle completes.
 
 Starting with 0.3.0, consumption, production and prediction use stable external statistics, not sensor entities with an `unknown` state. Renaming diagnostic sensors does not affect these IDs. All diagnostic and import-status sensors remain available.
 
-On upgrade, existing hourly statistics are copied locally using Home Assistant's supported external-statistics API, preserving timestamps, states and cumulative sums. Renamed sensor IDs, import checkpoints and prediction learning are retained. Migration runs before new imports, in bounded batches, and resumes after a restart. Conflicting histories stop the affected import with an explicit error rather than overwriting data.
+Open **Energy** in the sidebar, then **⋮ → Energy configuration** (direct URL:
+`/config/energy`). This is the Energy Dashboard's configuration, not a separate
+Energy item in the general Settings menu.
 
-**Upgrade action:** A Repairs notice lists the new statistics. Replace the old EKZ selections in **Settings → Energy**, including optional production and prediction entries. Dashboard selections are not changed automatically. The old energy sensor entities are removed, but their historical statistics are retained. Those old statistics may still show warnings in **Developer Tools → Statistics**; the new external selections avoid the missing-current-state warning. Do not delete or reset statistics to perform this upgrade.
+On upgrade, existing hourly statistics are copied locally using Home Assistant's supported external-statistics API, preserving timestamps, states and cumulative sums. Renamed sensor IDs, import checkpoints and prediction learning are retained. The first import is scheduled after Home Assistant has started so the recorder can process its queue. Migration runs before new imports, in bounded batches, and resumes after a restart. Fresh installations without legacy statistics skip the historical scan. Conflicting histories, including incompatible cumulative baselines where separate series join, stop the affected import with an explicit error rather than overwriting data. Ambiguous joins across gaps are not automatically rebased.
+
+**Upgrade action:** A Repairs notice lists the new statistics. Replace the old EKZ selections in **Energy Dashboard → ⋮ → Energy configuration**, including optional production and prediction entries. Dashboard selections are not changed automatically. The old energy sensor entities are removed, but their historical statistics are retained. Those old statistics may still show warnings in **Developer Tools → Statistics**; the new external selections avoid the missing-current-state warning. Do not delete or reset statistics to perform this upgrade.
 
 > **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
 
@@ -179,7 +183,7 @@ EKZ delivers consumption data with a delay of approximately 7–10 days. To fill
 - The predictions are written as HA statistics — the Energy Dashboard will show them as an estimate for the recent gap.
 
 **Adding prediction statistics to the Energy Dashboard:**
-1. Go to **Settings → Energy → Electricity grid → Add consumption sensor**
+1. Go to **Energy Dashboard → ⋮ → Energy configuration → Electricity grid → Add consumption sensor**
 2. Select **EKZ \<installationId\> Electricity consumption prediction** (`ekz_ha:electricity_consumption_<installationId>_prediction`)
 3. Predictions are generated once catch-up completes. Existing prediction history is preserved on upgrade.
 
@@ -190,7 +194,7 @@ EKZ delivers consumption data with a delay of approximately 7–10 days. To fill
 If you have one or more EKZ solar installations (feed-in / Einspeisung), the integration automatically detects them and imports your production history into Home Assistant long-term statistics. Accounts with production contracts but no consumption contract are supported as well; in that case, only production statistics and diagnostic entities are created.
 
 Add production data to the Energy Dashboard:
-1. Go to **Settings → Energy → Solar panels → Add solar production**
+1. Go to **Energy Dashboard → ⋮ → Energy configuration → Solar panels → Add solar production**
 2. Select **EKZ \<installationId\> Electricity production** (`ekz_ha:electricity_production_<installationId>`)
 
 Production diagnostic entities are grouped under a device for the relevant EKZ installation.

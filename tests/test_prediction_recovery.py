@@ -428,6 +428,7 @@ async def test_prediction_timer_registration_and_unload(hass, monkeypatch):
     with patch.object(hass.config_entries, "async_forward_entry_setups", side_effect=forward):
         assert await async_setup_entry(hass, entry)
     assert timer.call_args.kwargs == {"minute": 1, "second": 0}
-    entry.async_on_unload.assert_called_once_with(cancel)
-    entry.async_on_unload.call_args.args[0]()
+    entry.async_on_unload.assert_any_call(cancel)
+    assert entry.async_on_unload.call_count == 2
+    cancel()
     cancel.assert_called_once()

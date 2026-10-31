@@ -15,6 +15,7 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.recorder import get_instance as get_recorder_instance
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from ..const import DOMAIN
 
@@ -102,7 +103,13 @@ async def _async_wait_for_statistics(hass: HomeAssistant, statistic_id: str) -> 
         hass.loop.call_soon_threadsafe(complete)
 
     get_recorder_instance(hass).async_update_statistics_metadata(statistic_id, on_done=on_done)
-    await asyncio.wait_for(asyncio.shield(future), timeout=60)
+    try:
+        await asyncio.wait_for(asyncio.shield(future), timeout=60)
+    except TimeoutError as err:
+        raise UpdateFailed(
+            f"Recorder did not finish queued statistics tasks for {statistic_id} within 60 seconds. "
+            "Migration progress is retained; check recorder startup/database logs and retry."
+        ) from err
 
 
 async def _async_clear_statistics(hass: HomeAssistant, statistic_ids: list[str]) -> bool:

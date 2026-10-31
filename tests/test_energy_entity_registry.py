@@ -21,11 +21,13 @@ from custom_components.ekz_ha.statistics.checkpoint import (
 )
 from custom_components.ekz_ha.statistics.migration import (
     _async_prepare_energy_statistic,
+    _validate_history_joins,
     async_initialize_migration,
     async_migrate_statistics,
 )
 from custom_components.ekz_ha.statistics.prediction_manager import _async_get_prediction_service
 from custom_components.ekz_ha.statistics.recorder import (
+    _async_wait_for_statistics,
     _async_write_statistics,
     _energy_statistic_id,
     _make_stat_meta,
@@ -59,7 +61,7 @@ async def energy(hass, request):
 
 async def history(recorder, hass, statistic_id, start=START, end=END):
     result = await recorder.async_add_executor_job(
-        statistics_during_period, hass, START, end, {statistic_id}, "hour", None, {"state", "sum"}
+        statistics_during_period, hass, start, end, {statistic_id}, "hour", None, {"state", "sum"}
     )
     return [(row["start"], row["state"], row["sum"]) for row in result.get(statistic_id, [])]
 
@@ -432,3 +434,134 @@ async def test_setup_storage_failure_preserves_entities_and_closes_api(hass, mon
         await async_setup_entry(hass, entry)
     api.close.assert_awaited_once()
     assert er.async_get(hass).async_get(entity.entity_id) is not None
+
+
+@pytest.mark.parametrize("next_sum", [3.0, 103.0, 203.0])
+@pytest.mark.parametrize("cross_batch", [False, True])
+async def test_disjoint_history_joins_validate_cumulative_baselines(
+    recorder_mock, energy, next_sum, cross_batch
+):
+    coordinator, kind, source, target = energy
+    other = next(
+        value for value in coordinator._external_migrations[target]["sources"] if value != source
+    )
+    boundary = START + (timedelta(days=366) if cross_batch else timedelta(hours=1))
+    coordinator._external_migrations[target]["end"] = (boundary + timedelta(hours=1)).isoformat()
+    _async_write_statistics(
+        coordinator.hass,
+        _make_stat_meta(source),
+        [StatisticData(start=boundary - timedelta(hours=1), state=2.0, sum=100.0)],
+    )
+    _async_write_statistics(
+        coordinator.hass,
+        _make_stat_meta(other),
+        [StatisticData(start=boundary, state=3.0, sum=next_sum)],
+    )
+    await recorder_mock.async_add_executor_job(recorder_mock.block_till_done)
+    if next_sum == 103.0:
+        await async_migrate_statistics(coordinator, "170579", kind)
+        assert coordinator._external_migrations[target]["complete"]
+    else:
+        with pytest.raises(UpdateFailed, match="Incompatible cumulative history join"):
+            await async_migrate_statistics(coordinator, "170579", kind)
+        assert not coordinator._external_migrations[target]["complete"]
+        assert (
+            await history(
+                recorder_mock,
+                coordinator.hass,
+                target,
+                start=boundary,
+                end=boundary + timedelta(hours=1),
+            )
+            == []
+        )
+        # Resume also must reject the bad boundary rather than treating partial data as completion.
+        with pytest.raises(UpdateFailed, match="Incompatible cumulative history join"):
+            await async_migrate_statistics(coordinator, "170579", kind)
+
+
+def test_disjoint_target_tail_is_not_overwritten_by_an_unrelated_baseline():
+    with pytest.raises(UpdateFailed, match="Incompatible cumulative history join"):
+        _validate_history_joins(
+            "ekz_ha:consumption",
+            {
+                "sensor.old": {0.0: (2.0, 100.0)},
+                "ekz_ha:consumption": {3600.0: (3.0, 3.0)},
+            },
+            None,
+        )
+
+
+def test_existing_partial_copy_cannot_hide_incompatible_legacy_joins():
+    target = "ekz_ha:consumption"
+    with pytest.raises(UpdateFailed, match="Incompatible cumulative history join"):
+        _validate_history_joins(
+            target,
+            {
+                "sensor.first": {0.0: (2.0, 100.0)},
+                "sensor.second": {3600.0: (3.0, 3.0)},
+                target: {0.0: (2.0, 100.0), 3600.0: (3.0, 3.0)},
+            },
+            None,
+        )
+
+
+async def test_fresh_installation_skips_empty_scans_and_rekeys_checkpoint(energy, monkeypatch):
+    coordinator, kind, source, target = energy
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.migration.get_recorder_instance",
+        lambda _hass: recorder,
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.migration._async_wait_for_statistics", AsyncMock()
+    )
+    coordinator._import_checkpoints[source] = {"history_cursor": "2026-10-19"}
+    await async_migrate_statistics(coordinator, "170579", kind)
+    recorder.async_add_executor_job.assert_awaited_once()
+    assert coordinator._external_migrations[target]["complete"]
+    assert coordinator._import_checkpoints == {target: {"history_cursor": "2026-10-19"}}
+
+
+async def test_recorder_timeout_has_actionable_error_and_cause(hass, monkeypatch):
+    import asyncio
+
+    recorder = Mock()
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.recorder.get_recorder_instance", lambda _hass: recorder
+    )
+    real_wait = asyncio.wait_for
+
+    async def short_wait(awaitable, *, timeout):
+        assert timeout == 60
+        return await real_wait(awaitable, timeout=0.001)
+
+    monkeypatch.setattr("custom_components.ekz_ha.statistics.recorder.asyncio.wait_for", short_wait)
+    with pytest.raises(UpdateFailed, match="Recorder did not finish.*within 60 seconds") as raised:
+        await _async_wait_for_statistics(hass, "ekz_ha:electricity_consumption_test")
+    assert isinstance(raised.value.__cause__, TimeoutError)
+
+
+async def test_beta1_progress_without_tail_revalidates_the_previous_boundary(recorder_mock, energy):
+    coordinator, kind, source, target = energy
+    boundary = START + timedelta(hours=1)
+    state = coordinator._external_migrations[target]
+    state.pop("tail")
+    state["cursor"] = boundary.isoformat()
+    other = next(value for value in state["sources"] if value != source)
+    for statistic_id in (source, target):
+        _async_write_statistics(
+            coordinator.hass,
+            _make_stat_meta(statistic_id),
+            [StatisticData(start=START, state=2.0, sum=100.0)],
+        )
+    _async_write_statistics(
+        coordinator.hass,
+        _make_stat_meta(other),
+        [StatisticData(start=boundary, state=3.0, sum=3.0)],
+    )
+    await recorder_mock.async_add_executor_job(recorder_mock.block_till_done)
+    with pytest.raises(UpdateFailed, match="Incompatible cumulative history join"):
+        await async_migrate_statistics(coordinator, "170579", kind)
+    assert not state["complete"]
+    assert await history(recorder_mock, coordinator.hass, target, start=boundary) == []

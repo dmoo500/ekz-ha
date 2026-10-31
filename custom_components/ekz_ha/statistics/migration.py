@@ -6,6 +6,7 @@ import logging
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from math import isclose
 from typing import TYPE_CHECKING, Any, Literal
 
 from homeassistant.components.recorder.models import StatisticData
@@ -52,6 +53,35 @@ def _statistics_by_start(
     return result
 
 
+def _validate_history_joins(
+    target: str,
+    series: dict[str, dict[float, tuple[float | None, float]]],
+    previous: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Check cumulative baselines when switching between unrelated source histories."""
+    combined: dict[float, tuple[tuple[float | None, float], set[str]]] = {}
+    for source, rows in series.items():
+        for timestamp, values in rows.items():
+            if timestamp in combined:
+                if combined[timestamp][0] != values:
+                    raise UpdateFailed(f"Conflicting history for {target} at {timestamp}")
+                combined[timestamp][1].add(source)
+            else:
+                combined[timestamp] = (values, {source})
+    for timestamp, ((state, total), origins) in sorted(combined.items()):
+        if target in origins and len(origins) > 1:
+            origins = origins - {target}
+        if previous is not None and not origins.intersection(previous["origins"]):
+            delta = total - previous["sum"]
+            if state is None or not isclose(delta, state, rel_tol=1e-9, abs_tol=1e-6):
+                raise UpdateFailed(
+                    f"Incompatible cumulative history join for {target} at {timestamp}: "
+                    f"previous sum {previous['sum']}, next state {state}, next sum {total}"
+                )
+        previous = {"start": timestamp, "sum": total, "origins": sorted(origins)}
+    return previous
+
+
 async def async_initialize_migration(coordinator: EkzCoordinator) -> None:
     """Persist legacy IDs before the sensor platform removes obsolete entities."""
     states = dict(coordinator._external_migrations)
@@ -92,6 +122,7 @@ async def async_initialize_migration(coordinator: EkzCoordinator) -> None:
                     "cursor": "1970-01-01T00:00:00+00:00",
                     "end": datetime.now(UTC).isoformat(),
                     "complete": False,
+                    "tail": None,
                 }
     await coordinator._external_migration_store.async_save(states)
     coordinator._external_migrations = states
@@ -156,7 +187,7 @@ async def async_migrate_statistics(
                 or not meta["has_sum"]
             ):
                 raise UpdateFailed(f"Incompatible statistics metadata for {statistic_id}")
-            if statistic_id in sources:
+            if statistic_id in sources or statistic_id == target:
                 latest = await recorder.async_add_executor_job(
                     get_last_statistics, coordinator.hass, 1, statistic_id, True, {"sum"}
                 )
@@ -166,6 +197,36 @@ async def async_migrate_statistics(
                         end, datetime.fromtimestamp(max(timestamps), UTC) + timedelta(hours=1)
                     )
         state = {**state, "end": end.isoformat()}
+        active_sources = [source for source in sources if source in metadata]
+        if not active_sources:
+            start = end
+        elif "tail" not in state:
+            boundary = start
+            epoch = datetime(1970, 1, 1, tzinfo=UTC)
+            while boundary > epoch:
+                previous_start = max(epoch, boundary - timedelta(days=366))
+                previous_rows = await recorder.async_add_executor_job(
+                    statistics_during_period,
+                    coordinator.hass,
+                    previous_start,
+                    boundary,
+                    set(sources) | {target},
+                    "hour",
+                    None,
+                    {"state", "sum"},
+                )
+                tail = _validate_history_joins(
+                    target,
+                    {
+                        source: _statistics_by_start(source, rows)
+                        for source, rows in previous_rows.items()
+                    },
+                    None,
+                )
+                if tail is not None:
+                    state = {**state, "tail": tail}
+                    break
+                boundary = previous_start
         while start < end:
             stop = min(start + timedelta(days=366), end)
             rows_by_id = await recorder.async_add_executor_job(
@@ -179,10 +240,10 @@ async def async_migrate_statistics(
                 {"state", "sum"},
             )
             merged: dict[float, tuple[float | None, float]] = {}
+            series = {}
             for source in sources:
-                for timestamp, values in _statistics_by_start(
-                    source, rows_by_id.get(source, [])
-                ).items():
+                series[source] = _statistics_by_start(source, rows_by_id.get(source, []))
+                for timestamp, values in series[source].items():
                     if timestamp in merged and merged[timestamp] != values:
                         raise UpdateFailed(
                             f"Conflicting legacy history for {target} at {timestamp}"
@@ -192,6 +253,8 @@ async def async_migrate_statistics(
             for timestamp, values in merged.items():
                 if timestamp in existing and existing[timestamp] != values:
                     raise UpdateFailed(f"Conflicting external history for {target} at {timestamp}")
+            series[target] = existing
+            previous = _validate_history_joins(target, series, state.get("tail"))
             missing: list[StatisticData] = []
             for timestamp, (hourly_state, total) in sorted(merged.items()):
                 if timestamp in existing:
@@ -219,13 +282,10 @@ async def async_migrate_statistics(
                 actual = _statistics_by_start(target, verified.get(target, []))
                 if any(actual.get(timestamp) != values for timestamp, values in merged.items()):
                     raise UpdateFailed(f"Could not verify migrated history for {target}")
-            state = {**state, "cursor": stop.isoformat()}
+            state = {**state, "cursor": stop.isoformat(), "tail": previous}
             updated = {**coordinator._external_migrations, target: state}
             await coordinator._external_migration_store.async_save(updated)
             coordinator._external_migrations = updated
-            _LOGGER.info(
-                "External statistics migration completed for %s; legacy history retained", target
-            )
             start = stop
 
         for attribute, store in (
@@ -256,6 +316,9 @@ async def async_migrate_statistics(
         updated = {**coordinator._external_migrations, target: {**state, "complete": True}}
         await coordinator._external_migration_store.async_save(updated)
         coordinator._external_migrations = updated
+        _LOGGER.info(
+            "External statistics migration completed for %s; legacy history retained", target
+        )
     except (UpdateFailed, EkzAuthenticationError):
         raise
     except Exception as err:

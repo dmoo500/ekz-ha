@@ -572,6 +572,7 @@ def test_status_round_trip_and_translation_states(installation):
 async def test_setup_returns_with_registered_sensors_while_initial_import_is_blocked(
     hass, monkeypatch, prediction_timer
 ):
+    from homeassistant.core import CoreState
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     from custom_components.ekz_ha import async_setup_entry
@@ -579,6 +580,7 @@ async def test_setup_returns_with_registered_sensors_while_initial_import_is_blo
     from custom_components.ekz_ha.sensor import async_setup_entry as setup_sensors
 
     entry = MockConfigEntry(domain=DOMAIN, data={"user": "test", "password": "test"})
+    hass.set_state(CoreState.starting)
     started = asyncio.Event()
     release = asyncio.Event()
     registrations = []
@@ -604,6 +606,9 @@ async def test_setup_returns_with_registered_sensors_while_initial_import_is_blo
     monkeypatch.setattr(EkzCoordinator, "async_request_refresh", blocked_import)
     with patch.object(hass.config_entries, "async_forward_entry_setups", side_effect=forward):
         assert await async_setup_entry(hass, entry)
+    assert not started.is_set()
+    assert not entry._background_tasks
+    await hass.async_start()
     await asyncio.wait_for(started.wait(), timeout=1)
     tasks = list(entry._background_tasks)
     assert len(tasks) == 1

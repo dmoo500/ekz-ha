@@ -7,6 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.start import async_at_started
 
 from .api.client import EkzApiClient
 from .api.session import EkzAuthenticationError
@@ -169,11 +170,13 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
     entry.async_on_unload(
         async_track_time_change(hass, coordinator.async_extend_predictions, minute=1, second=0)
     )
-    entry.async_create_background_task(
-        hass,
-        coordinator.async_request_refresh(),
-        "EKZ initial import",
-    )
+
+    async def start_initial_import(_hass: core.HomeAssistant) -> None:
+        entry.async_create_background_task(
+            hass, coordinator.async_request_refresh(), "EKZ initial import"
+        )
+
+    entry.async_on_unload(async_at_started(hass, start_initial_import))
     return True
 
 
