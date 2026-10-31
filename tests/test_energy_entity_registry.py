@@ -1,16 +1,22 @@
 """External statistics migration with real recorder history."""
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from homeassistant.components.recorder.models import StatisticData
-from homeassistant.components.recorder.statistics import get_metadata, statistics_during_period
+from homeassistant.components.recorder.statistics import (
+    get_last_statistics,
+    get_metadata,
+    statistics_during_period,
+)
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
+from custom_components.ekz_ha.api.models import ConsumptionData
 from custom_components.ekz_ha.const import DOMAIN
 from custom_components.ekz_ha.coordinator import EkzCoordinator
 from custom_components.ekz_ha.sensor import EkzMetaEntity
@@ -27,6 +33,7 @@ from custom_components.ekz_ha.statistics.migration import (
 )
 from custom_components.ekz_ha.statistics.prediction_manager import _async_get_prediction_service
 from custom_components.ekz_ha.statistics.recorder import (
+    _async_clear_statistics,
     _async_wait_for_statistics,
     _async_write_statistics,
     _energy_statistic_id,
@@ -565,3 +572,156 @@ async def test_beta1_progress_without_tail_revalidates_the_previous_boundary(rec
         await async_migrate_statistics(coordinator, "170579", kind)
     assert not state["complete"]
     assert await history(recorder_mock, coordinator.hass, target, start=boundary) == []
+
+
+async def test_beta1_prefix_checks_earlier_batch_joins_before_completing(recorder_mock, energy):
+    coordinator, kind, source, target = energy
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    boundary = epoch + timedelta(days=366)
+    state = coordinator._external_migrations[target]
+    state.pop("tail")
+    state["cursor"] = (boundary + timedelta(days=367)).isoformat()
+    state["end"] = state["cursor"]
+    other = next(value for value in state["sources"] if value != source)
+    first = StatisticData(start=boundary - timedelta(hours=1), state=2.0, sum=100.0)
+    second = StatisticData(start=boundary, state=3.0, sum=3.0)
+    later = StatisticData(start=boundary + timedelta(days=366), state=2.0, sum=5.0)
+    for statistic_id, rows in (
+        (source, [first]),
+        (other, [second, later]),
+        (target, [first, second, later]),
+    ):
+        _async_write_statistics(coordinator.hass, _make_stat_meta(statistic_id), rows)
+    await recorder_mock.async_add_executor_job(recorder_mock.block_till_done)
+    with pytest.raises(UpdateFailed, match="Incompatible cumulative history join"):
+        await async_migrate_statistics(coordinator, "170579", kind)
+    assert not coordinator._external_migrations[target]["complete"]
+
+
+async def test_statistics_clear_waits_for_verified_deletion(recorder_mock, energy):
+    coordinator, _, source, target = energy
+    await seed(recorder_mock, coordinator.hass, source)
+    await seed(recorder_mock, coordinator.hass, target)
+    assert await _async_clear_statistics(coordinator.hass, [source, target])
+    metadata = await recorder_mock.async_add_executor_job(
+        partial(get_metadata, coordinator.hass, statistic_ids={source, target})
+    )
+    assert metadata == {}
+    assert await history(recorder_mock, coordinator.hass, target) == []
+
+
+async def test_statistics_clear_refuses_success_when_metadata_remains(energy, monkeypatch):
+    coordinator, _, _, target = energy
+    recorder = Mock(
+        async_add_executor_job=AsyncMock(return_value={target: (1, _make_stat_meta(target))})
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.recorder.get_recorder_instance", lambda _hass: recorder
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.recorder._async_wait_for_statistics", AsyncMock()
+    )
+    with pytest.raises(UpdateFailed, match="Statistics reset did not remove metadata"):
+        await _async_clear_statistics(coordinator.hass, [target])
+
+
+async def test_statistics_clear_does_not_finish_before_recorder_barrier(energy, monkeypatch):
+    coordinator, _, _, target = energy
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    started = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def wait(_hass, _statistic_id):
+        started.set()
+        await completed.wait()
+
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.recorder.get_recorder_instance",
+        lambda _hass: recorder,
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.recorder._async_wait_for_statistics", wait
+    )
+    task = asyncio.create_task(_async_clear_statistics(coordinator.hass, [target]))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert not task.done()
+        recorder.async_add_executor_job.assert_not_awaited()
+    finally:
+        completed.set()
+        await task
+    assert task.result()
+
+
+async def test_statistics_clear_propagates_recorder_errors(energy, monkeypatch):
+    coordinator, _, _, target = energy
+    recorder = Mock(async_clear_statistics=Mock(side_effect=RuntimeError("recorder unavailable")))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.recorder.get_recorder_instance",
+        lambda _hass: recorder,
+    )
+    with pytest.raises(RuntimeError, match="recorder unavailable"):
+        await _async_clear_statistics(coordinator.hass, [target])
+
+
+@pytest.mark.parametrize("kind", ["consumption", "production"])
+async def test_reset_reimports_from_contract_start_not_old_recorder_tail(
+    recorder_mock, hass, monkeypatch, kind
+):
+    from custom_components.ekz_ha import async_setup_entry
+    from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
+    from custom_components.ekz_ha.statistics.production import ProductionImporter
+
+    coordinators = []
+    api = Mock(get_production_installations=AsyncMock(return_value=Mock(contracts=[])))
+    monkeypatch.setattr("custom_components.ekz_ha.EkzApiClient", Mock(return_value=api))
+    monkeypatch.setattr("custom_components.ekz_ha.async_at_started", Mock(return_value=Mock()))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.async_track_time_change", Mock(return_value=Mock())
+    )
+    entry = Mock(entry_id=f"reset-recorder-{kind}", data={"user": "test", "password": "test"})
+
+    async def discover(coordinator):
+        coordinators.append(coordinator)
+        coordinator.installations = (
+            {"825821": {"contract_start": "2024-03-10"}} if kind == "consumption" else {}
+        )
+        coordinator.production_installations = (
+            {"825821": {"contract_start": "2024-03-10"}} if kind == "production" else {}
+        )
+
+    async def forward(_entry, _platforms):
+        await setup_sensors(hass, entry, Mock())
+
+    monkeypatch.setattr(EkzCoordinator, "async_config_entry_first_refresh", discover)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(hass.config_entries, "async_forward_entry_setups", forward)
+        assert await async_setup_entry(hass, entry)
+    coordinator = coordinators[0]
+    target = _energy_statistic_id(hass, "825821", kind)
+    await seed(recorder_mock, hass, target, total=5177.964)
+    meta = (
+        coordinator.meta_entities if kind == "consumption" else coordinator.production_meta_entities
+    )["825821"]
+    meta.set_contract_start(date(2024, 3, 10))
+    meta.set_last_import(date(2026, 10, 30))
+    meta._last_successful_import = START
+    coordinator._import_checkpoints[target] = {"history_cursor": "2026-10-30"}
+    fetch = AsyncMock(return_value=ConsumptionData())
+    monkeypatch.setattr(
+        ConsumptionImporter if kind == "consumption" else ProductionImporter, "fetch_data", fetch
+    )
+
+    async def refreshed():
+        assert (
+            await recorder_mock.async_add_executor_job(
+                get_last_statistics, hass, 1, target, True, {"sum"}
+            )
+            == {}
+        )
+        await coordinator._do_update_data()
+
+    monkeypatch.setattr(coordinator, "async_request_refresh", refreshed)
+    await hass.services.async_call(DOMAIN, "reset_statistics", {}, blocking=True)
+    assert fetch.await_args.args[1].date() == date(2024, 3, 10)
+    assert meta._last_import != date(2026, 10, 30)

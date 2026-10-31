@@ -164,6 +164,8 @@ On upgrade, existing hourly statistics are copied locally using Home Assistant's
 
 **Upgrade action:** A Repairs notice lists the new statistics. Replace the old EKZ selections in **Energy Dashboard → ⋮ → Energy configuration**, including optional production and prediction entries. Dashboard selections are not changed automatically. The old energy sensor entities are removed, but their historical statistics are retained. Those old statistics may still show warnings in **Developer Tools → Statistics**; the new external selections avoid the missing-current-state warning. Do not delete or reset statistics to perform this upgrade.
 
+> **Spook / orphaned-statistics cleanup:** The old consumption, production and prediction sensor entities are removed during upgrade, before the history migration necessarily finishes. Warnings about these missing entities are expected. Do not delete their statistics through Spook, Developer Tools or other cleanup tools while migration is pending or has failed: those statistics are still needed as the migration source. Before considering any cleanup, confirm successful migration, check the historical data under the new `ekz_ha:...` statistics, update all Energy Dashboard selections and create a backup. Removing old entity references from the dashboard is not the same as deleting their historical data.
+
 > **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
 
 ### Prediction statistics (gap filling)
@@ -211,6 +213,7 @@ If your statistics are incorrect (e.g. after a timezone fix or a reinstall), you
 
 ### What it does
 1. Deletes all EKZ statistics from the Home Assistant database (consumption, predictions, production), including retained pre-0.3.0 history
+   and verifies completion before clearing import state or starting a new import
 2. Resets the in-memory import state
 3. Immediately starts a fresh re-import from your contract start date
 

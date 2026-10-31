@@ -162,7 +162,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 meta.set_pending(None)
 
         # Lock released — now it's safe to schedule the re-import
-        _LOGGER.info("EKZ statistics reset complete — re-import will start on next poll")
+        _LOGGER.info("EKZ statistics deletion verified — requesting re-import from contract start")
         await coordinator.async_request_refresh()
 
     hass.services.async_register(DOMAIN, "reset_statistics", handle_reset_statistics)

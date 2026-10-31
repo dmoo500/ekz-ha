@@ -201,32 +201,9 @@ async def async_migrate_statistics(
         if not active_sources:
             start = end
         elif "tail" not in state:
-            boundary = start
-            epoch = datetime(1970, 1, 1, tzinfo=UTC)
-            while boundary > epoch:
-                previous_start = max(epoch, boundary - timedelta(days=366))
-                previous_rows = await recorder.async_add_executor_job(
-                    statistics_during_period,
-                    coordinator.hass,
-                    previous_start,
-                    boundary,
-                    set(sources) | {target},
-                    "hour",
-                    None,
-                    {"state", "sum"},
-                )
-                tail = _validate_history_joins(
-                    target,
-                    {
-                        source: _statistics_by_start(source, rows)
-                        for source, rows in previous_rows.items()
-                    },
-                    None,
-                )
-                if tail is not None:
-                    state = {**state, "tail": tail}
-                    break
-                boundary = previous_start
+            # Beta 1 did not track joins: revalidate its copied prefix in chronological order.
+            start = datetime(1970, 1, 1, tzinfo=UTC)
+            state = {**state, "cursor": start.isoformat(), "tail": None}
         while start < end:
             stop = min(start + timedelta(days=366), end)
             rows_by_id = await recorder.async_add_executor_job(

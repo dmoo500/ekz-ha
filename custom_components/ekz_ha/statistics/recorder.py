@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
+from functools import partial
 from typing import Literal, cast
 
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     async_import_statistics,
+    get_metadata,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -25,8 +26,6 @@ try:
     MEAN_TYPE_NONE = StatisticMeanType.NONE
 except ImportError:
     MEAN_TYPE_NONE = None  # type: ignore[assignment]
-
-_LOGGER = logging.getLogger(__name__)
 
 
 def _make_stat_meta(statistic_id: str) -> StatisticMetaData:
@@ -113,27 +112,27 @@ async def _async_wait_for_statistics(hass: HomeAssistant, statistic_id: str) -> 
 
 
 async def _async_clear_statistics(hass: HomeAssistant, statistic_ids: list[str]) -> bool:
-    try:
-        from homeassistant.components.recorder import statistics as recorder_statistics
+    from homeassistant.components.recorder import statistics as recorder_statistics
 
-        clear_fn = getattr(recorder_statistics, "async_clear_statistics", None)
-        if clear_fn is not None:
-            result = clear_fn(hass, statistic_ids)
-            if inspect.isawaitable(result):
-                await result
-            return True
-    except Exception as err:
-        _LOGGER.debug("Module-level async_clear_statistics failed: %s", err)
-
-    try:
-        recorder = get_recorder_instance(hass)
+    recorder = get_recorder_instance(hass)
+    clear_fn = getattr(recorder_statistics, "async_clear_statistics", None)
+    if clear_fn is not None:
+        result = clear_fn(hass, statistic_ids)
+    else:
         clear_fn = getattr(recorder, "async_clear_statistics", None)
-        if clear_fn is not None:
-            result = clear_fn(statistic_ids)
-            if inspect.isawaitable(result):
-                await result
-            return True
-    except Exception as err:
-        _LOGGER.debug("Recorder instance async_clear_statistics failed: %s", err)
-
-    return False
+        if clear_fn is None:
+            return False
+        result = clear_fn(statistic_ids)
+    if inspect.isawaitable(result):
+        await result
+    if statistic_ids:
+        await _async_wait_for_statistics(hass, statistic_ids[0])
+        metadata = await recorder.async_add_executor_job(
+            partial(get_metadata, hass, statistic_ids=set(statistic_ids))
+        )
+        if metadata:
+            raise UpdateFailed(
+                f"Statistics reset did not remove metadata for {', '.join(sorted(metadata))}. "
+                "Import state has not been reset."
+            )
+    return True

@@ -29,15 +29,23 @@ def test_prediction_statistic_id_uses_registered_entity_id(monkeypatch):
 
 
 async def test_clear_statistics_uses_recorder_instance_fallback(monkeypatch):
-    recorder = Mock(async_clear_statistics=AsyncMock())
+    recorder = Mock(
+        async_clear_statistics=AsyncMock(), async_add_executor_job=AsyncMock(return_value={})
+    )
+    wait = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.recorder._async_wait_for_statistics", wait
+    )
     monkeypatch.setattr(
         "custom_components.ekz_ha.statistics.recorder.get_recorder_instance", lambda hass: recorder
     )
     statistic_ids = ["sensor.electricity_consumption_ekz_825821_prediction"]
+    hass = object()
 
-    assert await _async_clear_statistics(object(), statistic_ids)
+    assert await _async_clear_statistics(hass, statistic_ids)
 
     recorder.async_clear_statistics.assert_awaited_once_with(statistic_ids)
+    wait.assert_awaited_once_with(hass, statistic_ids[0])
 
 
 @pytest.mark.parametrize("shared_meter", [False, True])
