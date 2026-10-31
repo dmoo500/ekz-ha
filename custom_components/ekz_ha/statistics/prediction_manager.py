@@ -10,14 +10,13 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.recorder.models import StatisticData
 from homeassistant.components.recorder.statistics import (
-    async_import_statistics,
     get_last_statistics,
     statistics_during_period,
 )
 
 from .prediction import PredictionService
 from .recorder import (
-    _async_clear_statistics,
+    _async_write_statistics,
     _energy_statistic_id,
     _make_stat_meta,
     _prediction_statistic_id,
@@ -144,6 +143,12 @@ async def async_extend_predictions(coordinator: EkzCoordinator, now: datetime) -
     if coordinator._reset_lock.locked():
         return
     async with coordinator._reset_lock:
+        if any(state.get("reset_pending") for state in coordinator._external_migrations.values()):
+            _LOGGER.error(
+                "Prediction extension blocked: statistics reset is incomplete. "
+                "Resolve the recorder/storage error and retry ekz_ha.reset_statistics."
+            )
+            return
         now = now.astimezone(UTC)
         for key in coordinator.installations or {}:
             if coordinator.catching_up.get(key, True):
@@ -177,7 +182,7 @@ async def async_extend_predictions(coordinator: EkzCoordinator, now: datetime) -
                     continue
                 predictions = service.generate_predictions(last_start, now, initial_total=last_sum)
                 if predictions:
-                    async_import_statistics(
+                    _async_write_statistics(
                         coordinator.hass,
                         _make_stat_meta(statistic_id),
                         [
@@ -208,39 +213,6 @@ async def async_update_predictions(
         _LOGGER.debug(f"Updated prediction averages for {key}: {len(averages)} month-hour buckets")
 
     prediction_statistic_id = _prediction_statistic_id(coordinator.hass, key)
-    legacy_prediction_statistic_id = f"sensor.electricity_consumption_ekz_{key}_prediction"
-    if (
-        prediction_statistic_id is not None
-        and prediction_statistic_id != legacy_prediction_statistic_id
-        and key not in coordinator.migrated_prediction_statistics
-    ):
-        try:
-            old_stats = await get_recorder_instance(coordinator.hass).async_add_executor_job(
-                get_last_statistics,
-                coordinator.hass,
-                1,
-                legacy_prediction_statistic_id,
-                True,
-                {"sum"},
-            )
-            if old_stats and legacy_prediction_statistic_id in old_stats:
-                if not await _async_clear_statistics(
-                    coordinator.hass, [legacy_prediction_statistic_id]
-                ):
-                    raise RuntimeError("No compatible statistics clearing API found")
-                _LOGGER.info(
-                    "Cleared outdated prediction statistics for %s (%s)",
-                    key,
-                    legacy_prediction_statistic_id,
-                )
-            coordinator.migrated_prediction_statistics.add(key)
-        except Exception as e:
-            _LOGGER.warning(
-                "Could not migrate outdated prediction statistics for %s: %s",
-                key,
-                e,
-            )
-
     # Generate predictions only when caught up (gap fills the recent EKZ delay)
     if result.get("statistics") and not still_catching_up:
         predictions = []
@@ -303,7 +275,7 @@ async def async_update_predictions(
                     f"gap coverage {result['statistics'][-1]['start'].date()} → {datetime.now(tz=UTC).date()}"
                 )
                 try:
-                    async_import_statistics(
+                    _async_write_statistics(
                         coordinator.hass,
                         _make_stat_meta(prediction_statistic_id),
                         [

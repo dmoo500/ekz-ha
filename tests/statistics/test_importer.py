@@ -406,7 +406,7 @@ async def test_corrected_daily_fallback_with_partial_quarter_hours(
     meta.set_last_import(local_day)
     meta._daily_statistics = {local_day.isoformat()}
     meta._recent_statistics = [] if flushed else existing
-    statistic_id = "sensor.electricity_consumption_ekz_825821"
+    statistic_id = "ekz_ha:electricity_consumption_825821"
     recorder = Mock(
         async_add_executor_job=AsyncMock(return_value={statistic_id: existing} if flushed else {})
     )
@@ -528,7 +528,7 @@ async def test_issue20_daily_values_do_not_feed_prediction(monkeypatch, mixed):
 
 @pytest.mark.parametrize("entity_type", ["consumption", "production"])
 async def test_issue20_running_sum_survives_long_data_gap(monkeypatch, entity_type):
-    statistic_id = f"sensor.electricity_{entity_type}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{entity_type}_825821"
     import_day = date(2026, 10, 17)
     previous_start = datetime(2026, 8, 21, tzinfo=UTC)
 
@@ -556,7 +556,7 @@ async def test_issue20_running_sum_survives_long_data_gap(monkeypatch, entity_ty
 
 @pytest.mark.parametrize("entity_type", ["consumption", "production"])
 async def test_issue20_missing_recorder_rows_do_not_discard_known_sum(monkeypatch, entity_type):
-    statistic_id = f"sensor.electricity_{entity_type}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{entity_type}_825821"
     recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
     for module in (
         "coordinator",
@@ -600,7 +600,7 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
 ):
     freezer.move_to("2026-10-18 12:00:00+00:00")
     installation_id = "825821"
-    statistic_id = f"sensor.electricity_{entity_type}_ekz_{installation_id}"
+    statistic_id = f"ekz_ha:electricity_{entity_type}_{installation_id}"
     first_day = date(2026, 8, 1) if history_gap else date(2026, 10, 15)
     meta = SimpleNamespace(_last_import=first_day, _contract_start=first_day)
     info = {installation_id: {"contract_start": first_day.isoformat()}}
@@ -656,7 +656,7 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         )
     monkeypatch.setattr(
         "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
-        lambda hass, key: f"sensor.electricity_consumption_ekz_{key}_prediction",
+        lambda hass, key: f"ekz_ha:electricity_consumption_{key}_prediction",
     )
     queued_imports = []
 
@@ -668,10 +668,10 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
             persisted_rows.extend(statistics)
 
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue_statistics
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", enqueue_statistics
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics",
         enqueue_statistics,
     )
     second_day_start = datetime(2026, 10, 16, tzinfo=ZRH).astimezone(UTC)
@@ -958,7 +958,7 @@ async def test_daily_fallback_preserves_existing_hourly_rows(
         {"start": start + timedelta(hours=1), "state": 2.0, "sum": 103.0},
     ]
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
     recorder = Mock(
         async_add_executor_job=AsyncMock(
             return_value={statistic_id: existing} if recorder_flushed else {}
@@ -1019,7 +1019,7 @@ async def test_single_midnight_row_preserves_known_hourly_resolution(monkeypatch
     start = datetime(2026, 10, 15, tzinfo=ZRH).astimezone(UTC)
     end = start + timedelta(hours=1) if known_hourly else start + timedelta(days=1)
     row = {"start": start, "end": end, "state": 1.0, "sum": 101.0}
-    statistic_id = "sensor.electricity_consumption_ekz_825821"
+    statistic_id = "ekz_ha:electricity_consumption_825821"
     recorder = Mock(async_add_executor_job=AsyncMock(return_value={statistic_id: [row]}))
     monkeypatch.setattr(
         "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
@@ -1049,7 +1049,7 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
     from custom_components.ekz_ha.statistics.checkpoint import _persist_source_resolution
 
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
     local_start = datetime(2026, 10, 15, tzinfo=ZRH)
     start = local_start.astimezone(UTC)
     daily = api_series("DAY", [(start.isoformat(), 6.0, "VALID")])
@@ -1060,6 +1060,7 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
     await _persist_source_resolution(before_restart, statistic_id, first["statistics"])
 
     after_restart = SimpleNamespace(
+        _external_migration_store=Mock(async_load=AsyncMock(return_value={})),
         _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
         _source_resolution_store=Store(hass, 1, key),
         api_client=Mock(
@@ -1112,7 +1113,7 @@ async def test_daily_reconciliation_conserves_energy_on_dst_days(
         {"start": start, "state": 1.0, "sum": 101.0},
         {"start": start + timedelta(hours=1), "state": 2.0, "sum": 103.0},
     ]
-    statistic_id = "sensor.electricity_consumption_ekz_825821"
+    statistic_id = "ekz_ha:electricity_consumption_825821"
     recorder = Mock(async_add_executor_job=AsyncMock(return_value={statistic_id: existing}))
     monkeypatch.setattr(
         "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda hass: recorder
@@ -1161,7 +1162,7 @@ async def test_daily_source_waits_for_complete_quarter_hour_backfill(
         for index in range(hours if reconciled else 1)
     ]
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
     persisted = [
         {
             "start": row["start"].timestamp(),
@@ -1262,7 +1263,7 @@ async def test_source_resolution_requires_exact_hourly_grid(local_day, shifted):
         }
         for index in range(hours)
     ]
-    statistic_id = "sensor.electricity_consumption_ekz_test"
+    statistic_id = "ekz_ha:electricity_consumption_test"
     coordinator = SimpleNamespace(_daily_statistics={statistic_id: [local_day.isoformat()]})
 
     await _persist_source_resolution(coordinator, statistic_id, rows)
@@ -1300,7 +1301,7 @@ async def test_missing_response_day_preserves_recorded_energy(
     else:
         existing = [{"start": missing_start, "state": 6.0, "sum": 107.0}]
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
     recorder = Mock(
         async_add_executor_job=AsyncMock(return_value={} if queued else {statistic_id: existing})
     )
@@ -1352,7 +1353,7 @@ async def test_recorded_hour_is_replaced_only_by_complete_hour(
     freezer.move_to("2026-10-20 12:00:00+00:00")
     start = datetime(2026, 10, 16, 12, tzinfo=ZRH).astimezone(UTC)
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
     recorded = [{"start": start, "state": 6.0, "sum": 107.0}]
     recorder = Mock(
         async_add_executor_job=AsyncMock(return_value={} if queued else {statistic_id: recorded})
@@ -1400,7 +1401,7 @@ async def test_end_date_values_include_existing_statistics(
         for index in range(2 if daily_response else 24)
     ]
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
 
     async def query(function, hass, begin, end, *args):
         return (
@@ -1447,7 +1448,7 @@ async def test_fuller_partial_hour_adds_backfilled_slots(monkeypatch, importer_t
     start = datetime(2026, 10, 16, 12, tzinfo=ZRH).astimezone(UTC)
     hour_key = start.strftime("%Y%m%d%H%M%S")
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
     existing = [{"start": start, "state": 0.5, "sum": 100.5}]
     recorder = Mock(
         async_add_executor_job=AsyncMock(return_value={} if queued else {statistic_id: existing})
@@ -1516,9 +1517,7 @@ async def test_checkpoint_restores_sum_across_history_gap_longer_than_recorder_l
         _restore_import_checkpoint,
     )
 
-    statistic_id = (
-        f"sensor.electricity_{importer_type(Mock()).get_data_type_name().lower()}_ekz_825821"
-    )
+    statistic_id = f"ekz_ha:electricity_{importer_type(Mock()).get_data_type_name().lower()}_825821"
     old_meta = EkzMetaEntity(Mock(), "825821")
     old_meta.set_history_cursor(date(2026, 8, 30))
     old = SimpleNamespace()
@@ -1554,7 +1553,7 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
     start = datetime(2026, 10, 16, 12, tzinfo=ZRH).astimezone(UTC)
     hour = start.strftime("%Y%m%d%H%M%S")
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
     key = f"ekz_ha.test.{importer.get_data_type_name()}.checkpoint"
     old_meta = EkzMetaEntity(Mock(), "825821")
     old_meta.set_history_cursor(date(2000, 1, 31))
@@ -1564,6 +1563,7 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
     rows = [{"start": start, "state": 0.5, "sum": 100.5, "slots": {hour: 0.5}}]
     await _persist_import_checkpoint(old, statistic_id, old_meta, rows)
     fresh = SimpleNamespace(
+        _external_migration_store=Mock(async_load=AsyncMock(return_value={})),
         _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
         _import_checkpoint_store=Store(hass, 1, key),
         api_client=Mock(
@@ -1636,7 +1636,7 @@ async def test_restored_slots_are_hourly_for_every_response_level(
     hour = start.strftime("%Y%m%d%H%M%S")
     slot = (start + timedelta(minutes=15)).strftime("%Y%m%d%H%M%S")
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
     rows = [{"start": start, "state": 0.5, "sum": 100.5}] if recorded_row else []
     recorder = Mock(
         async_add_executor_job=AsyncMock(return_value={} if queued else {statistic_id: rows})
@@ -1684,7 +1684,7 @@ async def test_own_review_checkpoint_replays_unflushed_chunk(
     local_start = datetime(2026, 10, 16, tzinfo=ZRH)
     start = local_start.astimezone(UTC)
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{importer.get_data_type_name().lower()}_825821"
     rows = [
         {
             "start": start,

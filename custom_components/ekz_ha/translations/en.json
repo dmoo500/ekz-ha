@@ -1,4 +1,10 @@
 {
+  "issues": {
+    "external_statistics": {
+      "title": "Select the new EKZ energy statistics",
+      "description": "EKZ now uses external statistics instead of energy sensor entities. Existing history is copied automatically; the old history is retained. The old consumption, production and prediction sensor entities are removed during upgrade, before migration necessarily finishes. Diagnostic sensors remain available. In the Energy Dashboard, open the three-dot menu > Energy configuration (/config/energy), then replace each old EKZ consumption, production and prediction selection with its new EKZ statistic: {statistics}. Warnings about missing old sensor entities in Spook or Developer Tools > Statistics are expected. Do not reset or delete their statistics while migration is pending or has failed: they are still needed as the migration source. Before any cleanup, confirm successful migration, verify the history under the new statistics, update all Energy Dashboard selections and create a backup."
+    }
+  },
   "entity": {
     "sensor": {
       "import_status_consumption": {

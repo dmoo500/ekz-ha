@@ -204,6 +204,7 @@ async def test_empty_discovery_is_retryable_and_production_only_is_supported():
         contracts=[InstallationContract("", "", "", "solar", "", einzdat="2026-01-01")]
     )
     coordinator = SimpleNamespace(
+        _external_migration_store=Mock(async_load=AsyncMock(return_value={})),
         _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
         api_client=SimpleNamespace(
             get_consumption_installations=AsyncMock(return_value=InstallationSelectionData()),
@@ -293,10 +294,10 @@ async def test_production_only_update_imports_without_consumption_metadata(
         )
     import_statistics = Mock()
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", import_statistics
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", import_statistics
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics",
         import_statistics,
     )
     fetch = AsyncMock(
@@ -364,7 +365,7 @@ async def test_production_failures_do_not_abort_other_installations(
     failed_meta._empty_search_from = date(2026, 10, 25)
     failed_meta._empty_search_days = 30
     failed_meta._pending_sum_offset = 100.0
-    failed_id = "sensor.electricity_production_ekz_failed"
+    failed_id = "ekz_ha:electricity_production_failed"
     coordinator.last_production_sums = {"failed": 100.0}
     recorder = Mock(
         async_add_executor_job=AsyncMock(return_value={}),
@@ -380,10 +381,10 @@ async def test_production_failures_do_not_abort_other_installations(
             f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
         )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", Mock()
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", Mock()
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", Mock()
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics", Mock()
     )
     monkeypatch.setattr(
         "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
@@ -414,34 +415,26 @@ async def test_production_failures_do_not_abort_other_installations(
 
     monkeypatch.setattr(ProductionImporter, "import_statistics", production_import)
     if failure in ("metadata", "prepare_barrier", "prepare_auth"):
-        from homeassistant.helpers import entity_registry as er
-
-        er.async_get(hass).async_update_entity(
-            failed_id, new_entity_id="sensor.renamed_failed_production"
-        )
         preparation_failed = False
 
-        async def query_metadata(function, *args):
+        from custom_components.ekz_ha.statistics.migration import _async_prepare_energy_statistic
+
+        original_prepare = _async_prepare_energy_statistic
+
+        async def prepare(coordinator, key, kind):
             nonlocal preparation_failed
-            if (
-                failure in ("metadata", "prepare_auth")
-                and not preparation_failed
-                and getattr(function, "keywords", {}).get("statistic_ids")
-                == {failed_id, "sensor.renamed_failed_production"}
-            ):
+            if key == "failed" and not preparation_failed:
                 preparation_failed = True
                 if failure == "prepare_auth":
                     raise EkzAuthenticationError("rejected during preparation")
+                if failure == "prepare_barrier":
+                    raise OSError("recorder unavailable")
                 raise OSError("metadata unavailable")
-            return {}
+            return await original_prepare(coordinator, key, kind)
 
-        recorder.async_add_executor_job.side_effect = query_metadata
-        if failure == "prepare_barrier":
-            recorder.async_block_till_done.side_effect = (
-                [None, OSError("recorder unavailable"), None]
-                if consumption_available
-                else [OSError("recorder unavailable"), None]
-            )
+        monkeypatch.setattr(
+            "custom_components.ekz_ha.coordinator._async_prepare_energy_statistic", prepare
+        )
     if failure == "replay":
         failed_meta._checkpoint_needs_replay = True
         failed_meta._recent_statistics = [
@@ -519,14 +512,14 @@ async def test_production_failures_do_not_abort_other_installations(
         assert failed_meta._import_status.state == "current"
         assert failed_meta._import_status.error_type is None
         assert not failed_meta._checkpoint_needs_replay
-        recovered_id = coordinator._statistic_ids["production:failed"]
+        recovered_id = failed_id
         assert coordinator._import_checkpoints[recovered_id]["import_status"]["state"] == "current"
 
 
 @pytest.mark.parametrize("mean_type", [None, 0])
 def test_statistic_metadata_matches_home_assistant_version(monkeypatch, mean_type):
     monkeypatch.setattr("custom_components.ekz_ha.statistics.recorder.MEAN_TYPE_NONE", mean_type)
-    metadata = _make_stat_meta("sensor.electricity_consumption_ekz_test")
+    metadata = _make_stat_meta("ekz_ha:electricity_consumption_test")
     if mean_type is None:
         assert metadata["has_mean"] is False
         assert "mean_type" not in metadata
@@ -550,7 +543,7 @@ async def test_daily_import_clears_whole_day_before_predicting(
         service.merge_raw_accumulator({end.month * 100 + hour: (1.0, 4) for hour in range(24)})
         service.calculate_averages()
     key = "825821"
-    prediction_id = f"sensor.electricity_consumption_ekz_{key}_prediction"
+    prediction_id = f"ekz_ha:electricity_consumption_{key}_prediction"
     metadata = SimpleNamespace(_last_import=local_day, _contract_start=local_day)
     coordinator = SimpleNamespace(
         hass=Mock(),
@@ -598,11 +591,11 @@ async def test_daily_import_clears_whole_day_before_predicting(
     monkeypatch.setattr(ConsumptionImporter, "import_statistics", AsyncMock(return_value=result))
     imported = {}
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics",
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics",
         lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics",
         lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
     )
 
@@ -633,7 +626,7 @@ async def test_partial_last_hour_is_completed_by_prediction(
     service.merge_raw_accumulator({1010: (2.0, 4), 1011: (1.0, 4), 1012: (3.0, 4)})
     service.calculate_averages()
     key = "825821"
-    prediction_id = f"sensor.electricity_consumption_ekz_{key}_prediction"
+    prediction_id = f"ekz_ha:electricity_consumption_{key}_prediction"
     local_day = date(2026, 10, 26)
     metadata = SimpleNamespace(_last_import=local_day, _contract_start=local_day)
     coordinator = SimpleNamespace(
@@ -693,11 +686,11 @@ async def test_partial_last_hour_is_completed_by_prediction(
     monkeypatch.setattr(ConsumptionImporter, "import_statistics", AsyncMock(return_value=result))
     imported = {}
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics",
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics",
         lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics",
         lambda hass, metadata, rows: imported.update({metadata["statistic_id"]: rows}),
     )
 
@@ -726,7 +719,7 @@ async def test_failed_write_does_not_advance_import_state(
 
     key = "825821"
     first_day = date(2026, 8, 1)
-    statistic_id = f"sensor.electricity_{entity_type}_ekz_{key}"
+    statistic_id = f"ekz_ha:electricity_{entity_type}_{key}"
     meta = EkzMetaEntity(Mock(), key)
     meta.set_contract_start(first_day)
     meta.set_last_import(first_day)
@@ -783,11 +776,11 @@ async def test_failed_write_does_not_advance_import_state(
             f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
         )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics",
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics",
         Mock(side_effect=ValueError("recorder failure") if failure == "recorder" else None),
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics",
         Mock(side_effect=ValueError("recorder failure") if failure == "recorder" else None),
     )
     monkeypatch.setattr(
@@ -862,7 +855,7 @@ async def test_restart_replays_unflushed_historical_checkpoint(
 
     freezer.move_to("2026-10-28 12:00:00+00:00")
     key = "825821"
-    statistic_id = f"sensor.electricity_{entity_type}_ekz_{key}"
+    statistic_id = f"ekz_ha:electricity_{entity_type}_{key}"
     first_day = date(2026, 8, 1)
     old_meta = EkzMetaEntity(Mock(), key)
     old_meta.set_history_cursor(date(2026, 8, 30))
@@ -913,10 +906,10 @@ async def test_restart_replays_unflushed_historical_checkpoint(
             f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
         )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", enqueue
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics", enqueue
     )
     monkeypatch.setattr(
         "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
@@ -984,12 +977,14 @@ async def test_restart_replays_unflushed_historical_checkpoint(
 async def test_checkpoint_replay_is_idempotent_in_real_recorder(
     recorder_mock, hass, entity_type, already_flushed
 ):
-    from homeassistant.components.recorder.statistics import async_import_statistics as enqueue
+    from homeassistant.components.recorder.statistics import (
+        async_add_external_statistics as enqueue,
+    )
     from homeassistant.components.recorder.statistics import statistics_during_period
 
     from custom_components.ekz_ha.statistics.checkpoint import _async_replay_import_checkpoint
 
-    statistic_id = f"sensor.electricity_{entity_type}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{entity_type}_825821"
     start = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0) - timedelta(days=5)
     rows = [
         {"start": start + timedelta(hours=1), "state": 2.0, "sum": 102.0},
@@ -1041,10 +1036,10 @@ async def test_checkpoint_replay_failure_remains_retryable(monkeypatch):
         )
     enqueue = Mock()
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", enqueue
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics", enqueue
     )
     coordinator = SimpleNamespace(hass=Mock())
     with pytest.raises(UpdateFailed, match="Checkpoint replay failed"):
@@ -1096,10 +1091,10 @@ async def test_previous_chunk_is_committed_before_checkpoint_replacement(monkeyp
             f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
         )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.checkpoint._async_write_statistics", enqueue
     )
     monkeypatch.setattr(
-        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+        "custom_components.ekz_ha.statistics.prediction_manager._async_write_statistics", enqueue
     )
     meta = EkzMetaEntity(Mock(), "825821")
     meta.set_last_import(start.date())
@@ -1108,7 +1103,7 @@ async def test_previous_chunk_is_committed_before_checkpoint_replacement(monkeyp
     )
     importer_type = ConsumptionImporter if entity_type == "consumption" else ProductionImporter
     importer = importer_type(Mock())
-    statistic_id = f"sensor.electricity_{entity_type}_ekz_825821"
+    statistic_id = f"ekz_ha:electricity_{entity_type}_825821"
     for index in range(2):
         row = {"start": start + timedelta(days=index), "state": 1.0, "sum": float(index + 1)}
         monkeypatch.setattr(

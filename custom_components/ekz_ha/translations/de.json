@@ -1,4 +1,10 @@
 {
+  "issues": {
+    "external_statistics": {
+      "title": "Neue EKZ-Energiestatistiken auswählen",
+      "description": "EKZ verwendet jetzt externe Statistiken statt Energie-Sensorentitäten. Die vorhandene Historie wird automatisch kopiert; die alten Daten bleiben erhalten. Die bisherigen Sensorentitäten für Verbrauch, Produktion und Prognose werden beim Upgrade entfernt, bevor die Migration zwingend abgeschlossen ist. Diagnose-Sensoren bleiben verfügbar. Ersetze im Energie-Dashboard über das Drei-Punkte-Menü > Energie konfigurieren (/config/energy) jede bisherige EKZ-Auswahl für Verbrauch, Produktion und Prognose durch die passende neue EKZ-Statistik: {statistics}. Warnungen über fehlende alte Sensorentitäten in Spook oder unter Entwicklerwerkzeuge > Statistik sind zu erwarten. Setze ihre Statistiken nicht zurück und lösche sie nicht, solange die Migration aussteht oder fehlgeschlagen ist: Sie werden noch als Quelle für die Migration benötigt. Prüfe vor jeder Bereinigung den erfolgreichen Abschluss der Migration und die Historie in den neuen Statistiken, aktualisiere alle Auswahlen im Energie-Dashboard und erstelle ein Backup."
+    }
+  },
   "entity": {
     "sensor": {
       "import_status_consumption": {

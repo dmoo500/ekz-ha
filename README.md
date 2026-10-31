@@ -148,23 +148,37 @@ After the first update determines the import status, the integration switches to
 
 #### Energy Dashboard
 
-After the first chunk is imported, you can add the sensor to the Energy Dashboard:
-1. Go to **Settings → Energy → Electricity grid → Add consumption sensor**
-2. Select `sensor.electricity_consumption_ekz_<installationId>` for "Energy imported from grid"
-3. (Optional) Select `sensor.electricity_production_ekz_<installationId>` for "Energy exported to grid"
+After the first chunk is imported, you can add the external statistic to the Energy Dashboard:
+1. Go to **Energy Dashboard → ⋮ → Energy configuration → Electricity grid → Add consumption sensor**
+2. Select **EKZ \<installationId\> Electricity consumption** (`ekz_ha:electricity_consumption_<installationId>`) for "Energy imported from grid"
+3. (Optional) Select **EKZ \<installationId\> Electricity production** (`ekz_ha:electricity_production_<installationId>`) for "Energy exported to grid"
 4. Historical data already imported will appear immediately; remaining chunks will appear as each update cycle completes.
 
-The entity IDs shown here are examples derived from the entity names. Home Assistant may use a different ID if an entity was renamed or an existing entity ID was already registered; in that case, select the corresponding EKZ sensor shown in the entity picker. Consumption and production imports use the actual registered entity IDs for both reading and writing statistics, including prediction learning and checkpoint recovery.
+Starting with 0.3.0, consumption, production and prediction use stable external statistics, not sensor entities with an `unknown` state. Renaming diagnostic sensors does not affect these IDs. All diagnostic and import-status sensors remain available.
 
-On upgrade, existing statistics under the integration's former fixed IDs are moved to the registered entity IDs without re-importing or resetting their history. Later entity-ID changes are tracked across restarts as well. If an ID changes, check the selection in your Energy Dashboard. If both the old and new IDs already have statistics metadata, the affected import stops with an explicit error rather than overwriting either history; do not delete statistics to resolve this without first checking which history should be retained.
+Open **Energy** in the sidebar, then **⋮ → Energy configuration** (direct URL:
+`/config/energy`). This is the Energy Dashboard's configuration, not a separate
+Energy item in the general Settings menu.
+
+On upgrade, existing hourly statistics are copied locally using Home Assistant's supported external-statistics API, preserving timestamps, states and cumulative sums. Renamed sensor IDs, import checkpoints and prediction learning are retained. The first import is scheduled after Home Assistant has started so the recorder can process its queue. Migration runs before new imports, in bounded batches, and resumes after a restart. Fresh installations without legacy statistics skip the historical scan. Conflicting histories, including incompatible cumulative baselines where separate series join, stop the affected import with an explicit error rather than overwriting data. Ambiguous joins across gaps are not automatically rebased.
+
+If an old EKZ entity ID is now registered to a different entity, migration and statistics reset refuse to use that ID and report an ownership error. This protects the other entity's history from being copied or deleted. Resolve the entity-ID collision before retrying; do not delete the unrelated statistics.
+
+Completed beta-1 migrations without saved cumulative-join checks are revalidated against retained legacy history in resumable batches. This validation does not overwrite the external series or compare later corrected imports against old source rows. Incompatible joins stop the affected import with an explicit error.
+
+Do not rename the old energy entities after migration preparation. If a retry discovers a newly renamed legacy entity, migration stops with an explicit error rather than skipping its history; restore the previously captured entity ID before retrying.
+
+**Upgrade action:** A Repairs notice lists the new statistics. Replace the old EKZ selections in **Energy Dashboard → ⋮ → Energy configuration**, including optional production and prediction entries. Dashboard selections are not changed automatically. The old energy sensor entities are removed, but their historical statistics are retained. Those old statistics may still show warnings in **Developer Tools → Statistics**; the new external selections avoid the missing-current-state warning. Do not delete or reset statistics to perform this upgrade.
+
+> **Spook / orphaned-statistics cleanup:** The old consumption, production and prediction sensor entities are removed during upgrade, before the history migration necessarily finishes. Warnings about these missing entities are expected. Do not delete their statistics through Spook, Developer Tools or other cleanup tools while migration is pending or has failed: those statistics are still needed as the migration source. Before considering any cleanup, confirm successful migration, check the historical data under the new `ekz_ha:...` statistics, update all Energy Dashboard selections and create a backup. Removing old entity references from the dashboard is not the same as deleting their historical data.
 
 > **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
 
-### Prediction sensor (gap filling)
+### Prediction statistics (gap filling)
 
-EKZ delivers consumption data with a delay of approximately 7–10 days. To fill this gap in the Energy Dashboard, the integration provides a **prediction sensor**:
+EKZ delivers consumption data with a delay of approximately 7–10 days. To fill this gap in the Energy Dashboard, the integration provides **prediction statistics**:
 
-`sensor.electricity_consumption_ekz_<installationId>_prediction`
+`ekz_ha:electricity_consumption_<installationId>_prediction`
 
 **How it works:**
 - While importing historical data, the integration accumulates **hourly consumption averages** per UTC month+hour bucket from the raw 15-minute slots.
@@ -176,22 +190,22 @@ EKZ delivers consumption data with a delay of approximately 7–10 days. To fill
 - Resetting statistics also clears the saved learning profile. Existing historical measurements do not need to be deleted to recover predictions after a normal restart.
 - The predictions are written as HA statistics — the Energy Dashboard will show them as an estimate for the recent gap.
 
-**Adding the prediction sensor to the Energy Dashboard:**
-1. Go to **Settings → Energy → Electricity grid → Add consumption sensor**
-2. Select `sensor.electricity_consumption_ekz_<installationId>_prediction`
-3. The sensor will remain empty during catch-up and fill in automatically once up-to-date.
+**Adding prediction statistics to the Energy Dashboard:**
+1. Go to **Energy Dashboard → ⋮ → Energy configuration → Electricity grid → Add consumption sensor**
+2. Select **EKZ \<installationId\> Electricity consumption prediction** (`ekz_ha:electricity_consumption_<installationId>_prediction`)
+3. Predictions are generated once catch-up completes. Existing prediction history is preserved on upgrade.
 
 > **Note:** Predictions are based on historical averages per hour and month. They become more accurate the more historical data has been imported. The predictions are automatically overwritten by real data as EKZ delivers it.
 
 ## Solar production data
 
-If you have one or more EKZ solar installations (feed-in / Einspeisung), the integration automatically detects them and imports your production history into Home Assistant long-term statistics. Accounts with production contracts but no consumption contract are supported as well; in that case, only production entities are created.
+If you have one or more EKZ solar installations (feed-in / Einspeisung), the integration automatically detects them and imports your production history into Home Assistant long-term statistics. Accounts with production contracts but no consumption contract are supported as well; in that case, only production statistics and diagnostic entities are created.
 
 Add production data to the Energy Dashboard:
-1. Go to **Settings → Energy → Solar panels → Add solar production**
-2. Select `sensor.electricity_production_ekz_<installationId>`
+1. Go to **Energy Dashboard → ⋮ → Energy configuration → Solar panels → Add solar production**
+2. Select **EKZ \<installationId\> Electricity production** (`ekz_ha:electricity_production_<installationId>`)
 
-Production entities are grouped under a device for the relevant EKZ installation.
+Production diagnostic entities are grouped under a device for the relevant EKZ installation.
 
 A failed production import or checkpoint replay is logged and marked `failed` for that installation, but does not stop imports for other production installations or make successfully updated consumption unavailable. Its safe import position is retained for the next retry. A successful request with no new readings also counts as a completed update. If every attempted import fails on a production-only account, the coordinator reports an update failure. Authentication failures still trigger Home Assistant's reauthentication flow immediately.
 
@@ -204,7 +218,8 @@ A failed production import or checkpoint replay is logged and marked `failed` fo
 If your statistics are incorrect (e.g. after a timezone fix or a reinstall), you can trigger a full re-import using the built-in reset service.
 
 ### What it does
-1. Deletes all EKZ statistics from the Home Assistant database (consumption, predictions, production)
+1. Deletes all EKZ statistics from the Home Assistant database (consumption, predictions, production), including retained pre-0.3.0 history
+   and verifies completion before clearing import state or starting a new import
 2. Resets the in-memory import state
 3. Immediately starts a fresh re-import from your contract start date
 
@@ -214,6 +229,25 @@ If your statistics are incorrect (e.g. after a timezone fix or a reinstall), you
 3. Select your entry (if you have multiple EKZ config entries) and press **Perform action**
 
 > **Warning:** This permanently deletes all previously imported EKZ statistics. The re-import will start automatically but takes multiple poll cycles to complete (depending on how much history needs to be re-fetched).
+
+If recorder deletion or a storage write fails during reset, the error is reported and a saved pending-reset marker blocks imports and prediction extensions, including after restart. Resolve the reported error and retry `ekz_ha.reset_statistics` to complete the reset. If the marker cannot be saved initially, statistics are not deleted.
+
+## Reporting a problem
+
+Use the [bug-report form](https://github.com/dmoo500/ekz-ha/issues/new?template=bug_report.yml).
+Include your exact EKZ integration version (including any beta suffix), Home Assistant version,
+steps to reproduce, import-status attributes, actual selected statistic IDs and any warning text.
+
+To collect debug logs, open **Settings → Devices & services → Integrations → EKZ**,
+select **Enable debug logging** in the three-dot menu, reproduce the problem, then select
+**Disable debug logging** to download the captured log file. For an import failure, reload
+the integration once and wait for an update attempt. The issue form also explains how to
+enable logging through `configuration.yaml` if the integration cannot load.
+
+Inspect and sanitize logs before attaching them: remove passwords, TOTP secrets/codes,
+cookies, tokens, e-mail addresses and other personal data. Debug logs may contain API
+responses and energy readings. Preserve timestamps and tracebacks, and replace installation
+IDs consistently when masking them. Do not reset or delete statistics just to collect logs.
 
 ---
 
