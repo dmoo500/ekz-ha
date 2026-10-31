@@ -268,7 +268,14 @@ async def test_fresh_installation_does_not_require_energy_entities(recorder_mock
 
 
 async def test_energy_dashboard_does_not_require_a_current_sensor_state(recorder_mock, energy):
-    from homeassistant.components.energy.validate import _async_validate_stat_common
+    from homeassistant.components.energy import validate
+
+    validate_stat = getattr(
+        validate,
+        "_async_validate_stat_common",
+        getattr(validate, "_async_validate_usage_stat", None),
+    )
+    assert validate_stat is not None, "Home Assistant energy statistic validator was not found"
 
     coordinator, kind, source, target = energy
     await seed(recorder_mock, coordinator.hass, source)
@@ -278,7 +285,7 @@ async def test_energy_dashboard_does_not_require_a_current_sensor_state(recorder
     )
     issues = Mock()
     assert coordinator.hass.states.get(target) is None
-    _async_validate_stat_common(
+    validate_stat(
         coordinator.hass,
         metadata,
         target,
