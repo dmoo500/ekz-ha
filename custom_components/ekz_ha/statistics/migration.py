@@ -29,6 +29,7 @@ from .recorder import (
     _legacy_prediction_statistic_id,
     _make_stat_meta,
     _prediction_statistic_id,
+    _validate_legacy_statistic_ids,
 )
 
 if TYPE_CHECKING:
@@ -116,6 +117,12 @@ async def async_initialize_migration(coordinator: EkzCoordinator) -> None:
                 sources.add(registered)
                 legacy_entities.append(registered)
             previous = states.get(target)
+            _validate_legacy_statistic_ids(
+                coordinator.hass,
+                target,
+                sources | set(previous["sources"] if previous else []),
+                coordinator.config.entry_id,
+            )
             if previous is None:
                 states[target] = {
                     "sources": sorted(sources - {target}),
@@ -168,13 +175,16 @@ async def async_migrate_statistics(
     if state is None:
         await async_initialize_migration(coordinator)
         state = coordinator._external_migrations[target]
-    if state["complete"]:
+    if state["complete"] and "tail" in state:
         return
     recorder = get_recorder_instance(coordinator.hass)
     start = datetime.fromisoformat(state["cursor"])
     end = datetime.fromisoformat(state["end"])
     sources = state["sources"]
     try:
+        _validate_legacy_statistic_ids(
+            coordinator.hass, target, sources, coordinator.config.entry_id
+        )
         _LOGGER.info("Migrating retained EKZ history to %s from %s", target, sources)
         await _async_wait_for_statistics(coordinator.hass, target)
         metadata = await recorder.async_add_executor_job(
@@ -187,6 +197,57 @@ async def async_migrate_statistics(
                 or not meta["has_sum"]
             ):
                 raise UpdateFailed(f"Incompatible statistics metadata for {statistic_id}")
+        if state["complete"]:
+            # Later imports may correct the target. Validate retained migration sources only.
+            boundary = datetime.fromisoformat(
+                state.get("validation_cursor", "1970-01-01T00:00:00+00:00")
+            )
+            previous = state.get("validation_tail")
+            if not any(source in metadata for source in sources):
+                _LOGGER.warning(
+                    "No retained legacy statistics available to revalidate completed "
+                    "beta-1 migration for %s",
+                    target,
+                )
+                boundary = end
+            while boundary < end:
+                stop = min(boundary + timedelta(days=366), end)
+                rows = await recorder.async_add_executor_job(
+                    statistics_during_period,
+                    coordinator.hass,
+                    boundary,
+                    stop,
+                    set(sources),
+                    "hour",
+                    None,
+                    {"state", "sum"},
+                )
+                previous = _validate_history_joins(
+                    target,
+                    {
+                        source: _statistics_by_start(source, values)
+                        for source, values in rows.items()
+                    },
+                    previous,
+                )
+                state = {
+                    **state,
+                    "validation_cursor": stop.isoformat(),
+                    "validation_tail": previous,
+                }
+                updated = {**coordinator._external_migrations, target: state}
+                await coordinator._external_migration_store.async_save(updated)
+                coordinator._external_migrations = updated
+                boundary = stop
+            state = {**state, "tail": previous}
+            state.pop("validation_cursor", None)
+            state.pop("validation_tail", None)
+            updated = {**coordinator._external_migrations, target: state}
+            await coordinator._external_migration_store.async_save(updated)
+            coordinator._external_migrations = updated
+            _LOGGER.info("Completed beta-1 migration source joins revalidated for %s", target)
+            return
+        for statistic_id in metadata:
             if statistic_id in sources or statistic_id == target:
                 latest = await recorder.async_add_executor_job(
                     get_last_statistics, coordinator.hass, 1, statistic_id, True, {"sum"}

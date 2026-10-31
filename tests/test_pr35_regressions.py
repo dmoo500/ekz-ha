@@ -107,8 +107,8 @@ async def test_empty_response_preserved_energy_is_offset_of_next_nonempty_chunk(
     statistic_id = f"ekz_ha:electricity_{kind}_test"
     coordinator = EkzCoordinator(hass, Mock(), timedelta(hours=4), Mock(entry_id=f"offset-{kind}"))
     coordinator._external_migrations = {
-        statistic_id: {"complete": True},
-        "ekz_ha:electricity_consumption_test_prediction": {"complete": True},
+        statistic_id: {"complete": True, "tail": None},
+        "ekz_ha:electricity_consumption_test_prediction": {"complete": True, "tail": None},
     }
     info = {"test": {"contract_start": start.isoformat()}}
     coordinator.installations = info if kind == "consumption" else {}

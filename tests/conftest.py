@@ -33,10 +33,15 @@ def register_energy_entities(hass):
                     suggested_object_id=f"electricity_{kind}_ekz_{key}",
                 )
                 target = f"ekz_ha:electricity_{kind}_{key}"
-                coordinator._external_migrations[target] = {"complete": True, "sources": []}
+                coordinator._external_migrations[target] = {
+                    "complete": True,
+                    "sources": [],
+                    "tail": None,
+                }
                 if kind == "consumption":
                     coordinator._external_migrations[f"{target}_prediction"] = {
                         "complete": True,
+                        "tail": None,
                         "sources": [],
                     }
 

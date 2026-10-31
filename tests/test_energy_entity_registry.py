@@ -15,6 +15,7 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ekz_ha.api.models import ConsumptionData
 from custom_components.ekz_ha.const import DOMAIN
@@ -87,6 +88,81 @@ async def seed(recorder, hass, statistic_id, total=12.0, count=2):
     await recorder.async_add_executor_job(recorder.block_till_done)
 
 
+async def test_migration_rejects_legacy_id_reused_by_unrelated_entity(recorder_mock, energy):
+    coordinator, kind, _, target = energy
+    alias = next(
+        value
+        for value in coordinator._external_migrations[target]["sources"]
+        if value.startswith("sensor.electricity_")
+    )
+    er.async_get(coordinator.hass).async_get_or_create(
+        "sensor", "other_integration", "unrelated_energy", suggested_object_id=alias[7:]
+    )
+    await seed(recorder_mock, coordinator.hass, alias)
+    with pytest.raises(UpdateFailed, match="owned by another entity"):
+        await async_migrate_statistics(coordinator, "170579", kind)
+    assert await history(recorder_mock, coordinator.hass, target) == []
+    assert len(await history(recorder_mock, coordinator.hass, alias)) == 2
+
+
+@pytest.mark.parametrize("ownership", ["unique_id", "config_entry"])
+async def test_initialization_rejects_reused_legacy_id(energy, ownership):
+    coordinator, _, _, target = energy
+    other_entry = None
+    if ownership == "config_entry":
+        other_entry = MockConfigEntry(domain=DOMAIN, entry_id="different-entry")
+        other_entry.add_to_hass(coordinator.hass)
+    alias = next(
+        value
+        for value in coordinator._external_migrations[target]["sources"]
+        if value.startswith("sensor.electricity_")
+    )
+    er.async_get(coordinator.hass).async_get_or_create(
+        "sensor",
+        DOMAIN,
+        "different_ekz_installation"
+        if ownership == "unique_id"
+        else f"ekz_{target.partition(':')[2]}",
+        suggested_object_id=alias[7:],
+        config_entry=other_entry,
+    )
+    coordinator._external_migrations.pop(target)
+    with pytest.raises(UpdateFailed, match="owned by another entity"):
+        await async_initialize_migration(coordinator)
+    assert target not in coordinator._external_migrations
+
+
+@pytest.mark.parametrize("compatible", [False, True])
+async def test_completed_beta1_migration_validates_legacy_joins_without_overwriting_imports(
+    recorder_mock, energy, compatible
+):
+    coordinator, kind, source, target = energy
+    state = coordinator._external_migrations[target]
+    other = next(value for value in state["sources"] if value != source)
+    state.pop("tail")
+    state.update(complete=True, cursor=END.isoformat())
+    first = StatisticData(start=START, state=2.0, sum=100.0)
+    second = StatisticData(
+        start=START + timedelta(hours=1), state=3.0, sum=103.0 if compatible else 3.0
+    )
+    for statistic_id, rows in ((source, [first]), (other, [second])):
+        _async_write_statistics(coordinator.hass, _make_stat_meta(statistic_id), rows)
+    # A later normal import may correct old rows and extend the target beyond migration.
+    await seed(recorder_mock, coordinator.hass, target, total=200.0, count=4)
+    before = await history(recorder_mock, coordinator.hass, target, end=END + timedelta(hours=2))
+    if compatible:
+        await async_migrate_statistics(coordinator, "170579", kind)
+        assert "tail" in coordinator._external_migrations[target]
+    else:
+        with pytest.raises(UpdateFailed, match="Incompatible cumulative history join"):
+            await async_migrate_statistics(coordinator, "170579", kind)
+        assert "tail" not in coordinator._external_migrations[target]
+    assert (
+        await history(recorder_mock, coordinator.hass, target, end=END + timedelta(hours=2))
+        == before
+    )
+
+
 @pytest.mark.parametrize("source_kind", ["renamed", "fixed", "stored", "old_consumption"])
 async def test_migration_preserves_exact_history_and_restart_state(
     recorder_mock, energy, source_kind, monkeypatch
@@ -137,6 +213,44 @@ async def test_migration_preserves_exact_history_and_restart_state(
     await async_migrate_statistics(restarted, "170579", kind)
     assert await history(recorder_mock, coordinator.hass, target) == before
     assert restarted._import_checkpoints == {target: checkpoint}
+
+
+async def test_completed_beta1_validation_resumes_across_batch_boundary(
+    recorder_mock, energy, monkeypatch
+):
+    coordinator, kind, source, target = energy
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    boundary = epoch + timedelta(days=366)
+    state = coordinator._external_migrations[target]
+    other = next(value for value in state["sources"] if value != source)
+    state.pop("tail")
+    state.update(complete=True, cursor=END.isoformat())
+    for statistic_id, row in (
+        (source, StatisticData(start=boundary - timedelta(hours=1), state=2.0, sum=100.0)),
+        (other, StatisticData(start=boundary, state=3.0, sum=3.0)),
+    ):
+        _async_write_statistics(coordinator.hass, _make_stat_meta(statistic_id), [row])
+    await recorder_mock.async_add_executor_job(recorder_mock.block_till_done)
+
+    def interrupted(hass, start, *args):
+        if start == boundary:
+            raise RuntimeError("validation interrupted")
+        return statistics_during_period(hass, start, *args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "custom_components.ekz_ha.statistics.migration.statistics_during_period",
+            interrupted,
+        )
+        with pytest.raises(UpdateFailed, match="validation interrupted"):
+            await async_migrate_statistics(coordinator, "170579", kind)
+    saved = await coordinator._external_migration_store.async_load()
+    assert saved[target]["validation_cursor"] == boundary.isoformat()
+    assert saved[target]["validation_tail"]["sum"] == 100.0
+    coordinator._external_migrations = saved
+    with pytest.raises(UpdateFailed, match="Incompatible cumulative history join"):
+        await async_migrate_statistics(coordinator, "170579", kind)
+    assert "tail" not in coordinator._external_migrations[target]
 
 
 async def test_partial_copy_is_resumable(recorder_mock, energy):
@@ -665,8 +779,9 @@ async def test_statistics_clear_propagates_recorder_errors(energy, monkeypatch):
 
 
 @pytest.mark.parametrize("kind", ["consumption", "production"])
+@pytest.mark.parametrize("collision", [None, "fixed", "stored", "migration"])
 async def test_reset_reimports_from_contract_start_not_old_recorder_tail(
-    recorder_mock, hass, monkeypatch, kind
+    recorder_mock, hass, monkeypatch, kind, collision
 ):
     from custom_components.ekz_ha import async_setup_entry
     from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
@@ -722,6 +837,28 @@ async def test_reset_reimports_from_contract_start_not_old_recorder_tail(
         await coordinator._do_update_data()
 
     monkeypatch.setattr(coordinator, "async_request_refresh", refreshed)
+    if collision:
+        alias = (
+            f"sensor.electricity_{kind}_ekz_825821"
+            if collision == "fixed"
+            else f"sensor.previous_{kind}"
+        )
+        if collision == "stored":
+            coordinator._statistic_ids[f"{kind}:825821"] = alias
+        elif collision == "migration":
+            coordinator._external_migrations[target]["sources"].append(alias)
+        er.async_get(hass).async_get_or_create(
+            "sensor", "other_integration", "unrelated_energy", suggested_object_id=alias[7:]
+        )
+        await seed(recorder_mock, hass, alias)
+        with pytest.raises(UpdateFailed, match="owned by another entity"):
+            await hass.services.async_call(DOMAIN, "reset_statistics", {}, blocking=True)
+        assert len(await history(recorder_mock, hass, alias)) == 2
+        assert len(await history(recorder_mock, hass, target)) == 2
+        assert coordinator._import_checkpoints[target] == {"history_cursor": "2026-10-30"}
+        assert meta._last_import == date(2026, 10, 30)
+        fetch.assert_not_awaited()
+        return
     await hass.services.async_call(DOMAIN, "reset_statistics", {}, blocking=True)
     assert fetch.await_args.args[1].date() == date(2024, 3, 10)
     assert meta._last_import != date(2026, 10, 30)

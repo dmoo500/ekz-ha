@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import Iterable
 from functools import partial
 from typing import Literal, cast
 
@@ -79,6 +80,27 @@ def _energy_statistic_id(
     hass: HomeAssistant, installation_id: str, kind: Literal["consumption", "production"]
 ) -> str:
     return f"{DOMAIN}:electricity_{kind}_{installation_id}"
+
+
+def _validate_legacy_statistic_ids(
+    hass: HomeAssistant, target: str, sources: Iterable[str], entry_id: str
+) -> None:
+    """Refuse IDs now registered to a different entity, even on the EKZ platform."""
+    registry = er.async_get(hass)
+    expected_unique_id = f"ekz_{target.partition(':')[2]}"
+    for source in sources:
+        if source == target:
+            continue
+        entity = registry.async_get(source)
+        if entity is not None and (
+            entity.platform != DOMAIN
+            or entity.unique_id != expected_unique_id
+            or (entity.config_entry_id is not None and entity.config_entry_id != entry_id)
+        ):
+            raise UpdateFailed(
+                f"Legacy statistic ID {source} is owned by another entity; "
+                f"refusing to migrate or delete its history for {target}."
+            )
 
 
 def _async_write_statistics(

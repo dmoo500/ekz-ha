@@ -1,6 +1,7 @@
 """Integration setup, service registration and teardown."""
 
 import logging
+from typing import Literal
 
 from homeassistant import core
 from homeassistant.config_entries import ConfigEntry
@@ -21,6 +22,7 @@ from .statistics.recorder import (
     _legacy_energy_statistic_id,
     _legacy_prediction_statistic_id,
     _prediction_statistic_id,
+    _validate_legacy_statistic_ids,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,41 +76,55 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
 
     async def handle_reset_statistics(call):
         """Delete all EKZ statistics from the DB and reset in-memory state so a full re-import starts."""
-        statistic_ids = []
-        for key in coordinator.installations:
-            statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}")
-            consumption_id = _energy_statistic_id(hass, key, "consumption")
-            legacy_id = _legacy_energy_statistic_id(hass, key, "consumption")
-            if legacy_id is not None:
-                statistic_ids.append(legacy_id)
-            if consumption_id is not None:
-                statistic_ids.append(consumption_id)
-            statistic_ids.append(f"sensor.electricity_consumption_ekz_{key}_prediction")
-            prediction_statistic_id = _prediction_statistic_id(hass, key)
-            legacy_prediction_id = _legacy_prediction_statistic_id(hass, key)
-            if legacy_prediction_id is not None:
-                statistic_ids.append(legacy_prediction_id)
-            if prediction_statistic_id is not None:
-                statistic_ids.append(prediction_statistic_id)
-        for key in coordinator.production_installations:
-            statistic_ids.append(f"sensor.electricity_production_ekz_{key}")
-            production_id = _energy_statistic_id(hass, key, "production")
-            legacy_id = _legacy_energy_statistic_id(hass, key, "production")
-            if legacy_id is not None:
-                statistic_ids.append(legacy_id)
-            if production_id is not None:
-                statistic_ids.append(production_id)
-        statistic_ids.extend(coordinator._statistic_ids.values())
-        for target, migration in coordinator._external_migrations.items():
-            statistic_ids.append(target)
-            statistic_ids.extend(migration["sources"])
-        statistic_ids = list(dict.fromkeys(statistic_ids))
-
-        _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
-
         # Hold the reset lock so any in-progress _async_update_data finishes first,
         # and new updates are blocked until the state is fully cleared.
         async with coordinator._reset_lock:
+            candidates = {
+                target: set(migration["sources"])
+                for target, migration in coordinator._external_migrations.items()
+            }
+            kinds: tuple[Literal["consumption", "prediction", "production"], ...] = (
+                "consumption",
+                "prediction",
+                "production",
+            )
+            for kind in kinds:
+                installations = (
+                    coordinator.production_installations
+                    if kind == "production"
+                    else coordinator.installations
+                )
+                for key in installations:
+                    if kind == "prediction":
+                        target = _prediction_statistic_id(hass, key)
+                        registered = _legacy_prediction_statistic_id(hass, key)
+                        fixed = f"sensor.electricity_consumption_ekz_{key}_prediction"
+                    else:
+                        target = _energy_statistic_id(hass, key, kind)
+                        registered = _legacy_energy_statistic_id(hass, key, kind)
+                        fixed = f"sensor.electricity_{kind}_ekz_{key}"
+                    sources = candidates.setdefault(target, set())
+                    sources.add(fixed)
+                    if registered:
+                        sources.add(registered)
+            for saved_key, source in coordinator._statistic_ids.items():
+                saved_kind, key = saved_key.split(":", 1)
+                target = (
+                    _prediction_statistic_id(hass, key)
+                    if saved_kind == "prediction"
+                    else f"{DOMAIN}:electricity_{saved_kind}_{key}"
+                )
+                candidates.setdefault(target, set()).add(source)
+            for target, sources in candidates.items():
+                _validate_legacy_statistic_ids(hass, target, sources, entry.entry_id)
+            statistic_ids = sorted(
+                {
+                    statistic_id
+                    for target, sources in candidates.items()
+                    for statistic_id in sources | {target}
+                }
+            )
+            _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
             if not await _async_clear_statistics(hass, statistic_ids):
                 _LOGGER.error("Cannot clear statistics: no compatible API found in this HA version")
                 return
@@ -123,7 +139,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator._import_checkpoints = {}
             await coordinator._import_checkpoint_store.async_save({})
             coordinator._external_migrations = {
-                target: {**state, "complete": True}
+                target: {**state, "complete": True, "tail": None}
                 for target, state in coordinator._external_migrations.items()
             }
             await coordinator._external_migration_store.async_save(coordinator._external_migrations)

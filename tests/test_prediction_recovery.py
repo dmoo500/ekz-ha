@@ -40,8 +40,8 @@ def prediction(hass, monkeypatch, freezer):
     )
     coordinator.installations = {"test": {"contract_start": "2026-01-01"}}
     coordinator._external_migrations = {
-        "ekz_ha:electricity_consumption_test": {"complete": True},
-        "ekz_ha:electricity_consumption_test_prediction": {"complete": True},
+        "ekz_ha:electricity_consumption_test": {"complete": True, "tail": None},
+        "ekz_ha:electricity_consumption_test_prediction": {"complete": True, "tail": None},
     }
     coordinator.catching_up = {"test": False}
     meta = EkzMetaEntity(coordinator, "test")
