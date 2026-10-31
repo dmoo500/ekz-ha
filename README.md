@@ -10,7 +10,7 @@
 [![GitHub watchers](https://img.shields.io/github/watchers/dmoo500/ekz-ha)](https://github.com/dmoo500/ekz-ha/watchers)
 [![GitHub last commit](https://img.shields.io/github/last-commit/dmoo500/ekz-ha)](https://github.com/dmoo500/ekz-ha/commits)
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/dmoo500/ekz-ha)
-[![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
 This integration allows you to import and analyze EKZ electricity meter data directly in Home Assistant. It is installable via [HACS](https://hacs.xyz/) and supports automatic assignment of devices and entities per installation ID.
 
