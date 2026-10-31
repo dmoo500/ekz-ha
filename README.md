@@ -10,7 +10,7 @@
 [![GitHub watchers](https://img.shields.io/github/watchers/dmoo500/ekz-ha)](https://github.com/dmoo500/ekz-ha/watchers)
 [![GitHub last commit](https://img.shields.io/github/last-commit/dmoo500/ekz-ha)](https://github.com/dmoo500/ekz-ha/commits)
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/dmoo500/ekz-ha)
-[![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
 This integration allows you to import and analyze EKZ electricity meter data directly in Home Assistant. It is installable via [HACS](https://hacs.xyz/) and supports automatic assignment of devices and entities per installation ID.
 
@@ -60,7 +60,9 @@ EKZ requires 2FA on login. The integration supports **authenticator app (TOTP)**
 
 ### Historical data backfill & chunk imports
 
-On first setup (or after a re-installation), the integration starts looking for historical data at your contract start date. If the initial 30-day window has no readings, it progressively extends the search window until data is found or the present is reached. Once data is available, it imports **30-day chunks** directly into the Home Assistant statistics database. There is no fixed ten-year history cutoff.
+On first setup (or after a re-installation), the integration starts looking for historical data at your contract start date. If the initial 30-day window has no readings, it advances past the successfully checked empty period and progressively increases the next search window until data is found or the present is reached. Each API request covers at most **360 days**. The search position is saved across restarts; failed requests do not advance it. The actual contract start date remains unchanged. Once data is available, it imports **30-day chunks** directly into the Home Assistant statistics database. There is no fixed ten-year history cutoff. After reaching the present, regular updates recheck the recent period for delayed readings. Resetting statistics also resets the historical search position.
+
+If slicing or a bounded refetch moves the import start forward, existing recorder or checkpoint contributions in the skipped interval remain included in the cumulative sum. This applies to both consumption and production.
 
 The import progress is exposed by each installation's **Last Import** meta sensor, which stores the date of the last successfully imported data. After a Home Assistant restart, the import automatically resumes from where it left off. The last checkpoint's statistics are replayed into the recorder before either consumption or production imports resume, so queued readings are recovered even if Home Assistant stopped before writing them to its database.
 
@@ -130,7 +132,7 @@ Do not reset statistics solely because a historical period is empty.
 
 Consumption is fetched at 15-minute resolution where available. If a day has no quarter-hour readings, the integration uses EKZ's daily total for that day instead. Within the most recent 30 days, daily-fallback and incomplete days are revisited so corrected daily totals can be imported. For consumption days already represented by a daily fallback, the latest daily total is fetched even when some quarter-hour readings are available. Only a complete set of quarter-hour readings replaces a daily fallback; partial readings retain the latest available daily total. This reconciliation also applies to production imports.
 
-When EKZ supplies separate high- and low-tariff series (HT/NT), only timestamps with readings in both supplied series are imported. A missing tariff reading is not assumed to be zero and cannot make an incomplete day replace a daily fallback. This applies to consumption and production; single-series and TOTAL responses remain supported.
+When EKZ supplies separate high- and low-tariff series (HT/NT), each timestamp must have either a valid reading or an explicit inactive zero (`NOT_AVAILABLE` with value `0`) in each supplied tariff. This supports alternating HT/NT periods without discarding the active tariff's measurement. `MISSING`, absent timestamps and nonzero `NOT_AVAILABLE` entries do not count as coverage; incomplete tariff data cannot replace a daily fallback. Inactive entries never create measurements on their own. This applies to consumption and production; single-series and TOTAL responses remain supported.
 
 #### Adaptive polling interval
 
@@ -152,7 +154,9 @@ After the first chunk is imported, you can add the sensor to the Energy Dashboar
 3. (Optional) Select `sensor.electricity_production_ekz_<installationId>` for "Energy exported to grid"
 4. Historical data already imported will appear immediately; remaining chunks will appear as each update cycle completes.
 
-The entity IDs shown here are the defaults derived from the entity names. Home Assistant may use a different ID if an entity was renamed or an existing entity ID was already registered; in that case, select the corresponding EKZ sensor shown in the entity picker.
+The entity IDs shown here are examples derived from the entity names. Home Assistant may use a different ID if an entity was renamed or an existing entity ID was already registered; in that case, select the corresponding EKZ sensor shown in the entity picker. Consumption and production imports use the actual registered entity IDs for both reading and writing statistics, including prediction learning and checkpoint recovery.
+
+On upgrade, existing statistics under the integration's former fixed IDs are moved to the registered entity IDs without re-importing or resetting their history. Later entity-ID changes are tracked across restarts as well. If an ID changes, check the selection in your Energy Dashboard. If both the old and new IDs already have statistics metadata, the affected import stops with an explicit error rather than overwriting either history; do not delete statistics to resolve this without first checking which history should be retained.
 
 > **Note:** The Energy Dashboard shows the current period by default. Use the `<` arrow to navigate back to earlier months to verify historical data.
 
@@ -165,7 +169,11 @@ EKZ delivers consumption data with a delay of approximately 7–10 days. To fill
 **How it works:**
 - While importing historical data, the integration accumulates **hourly consumption averages** per UTC month+hour bucket from the raw 15-minute slots.
 - Historical contributions remain in these aggregate buckets. Individual slots are retained only for the latest 32 days of imported data to handle repeated readings and corrections within the 30-day import lookback. Older slots are frozen in the aggregates and ignored if returned again, keeping prediction memory bounded.
+- The learned profile and recent correction bookkeeping are saved across Home Assistant restarts. On upgrade, if no saved profile exists, the integration rebuilds it from up to 400 days of real hourly consumption statistics. Daily-total days, gaps and negative consumption differences are excluded. Later raw imports replace overlapping seeded hours rather than counting them twice.
+- If loading or rebuilding the profile temporarily fails, consumption imports continue, but learning from their raw readings is deferred until recovery succeeds. Incomplete profiles are not saved over existing history; profile recovery is retried on subsequent updates.
 - Once the historical import is complete (catch-up mode ends), each update cycle generates predicted hourly values from the last real data point up to the current time.
+- Between EKZ updates, predictions extend locally at one minute past each hour, without additional EKZ API calls. Extensions pause during imports, catch-up and statistics resets, and stop if the latest real measurement is more than **14 days** old. Fresh predictions do not extend that limit.
+- Resetting statistics also clears the saved learning profile. Existing historical measurements do not need to be deleted to recover predictions after a normal restart.
 - The predictions are written as HA statistics — the Energy Dashboard will show them as an estimate for the recent gap.
 
 **Adding the prediction sensor to the Energy Dashboard:**
@@ -184,6 +192,8 @@ Add production data to the Energy Dashboard:
 2. Select `sensor.electricity_production_ekz_<installationId>`
 
 Production entities are grouped under a device for the relevant EKZ installation.
+
+A failed production import or checkpoint replay is logged and marked `failed` for that installation, but does not stop imports for other production installations or make successfully updated consumption unavailable. Its safe import position is retained for the next retry. A successful request with no new readings also counts as a completed update. If every attempted import fails on a production-only account, the coordinator reports an update failure. Authentication failures still trigger Home Assistant's reauthentication flow immediately.
 
 > **Note:** As with consumption, the initial import works through your full history in 30-day chunks. Navigate back in the Energy Dashboard to verify historical production data.
 

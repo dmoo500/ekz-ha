@@ -9,21 +9,29 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from custom_components.ekz_ha import (
-    EkzCoordinator,
+from custom_components.ekz_ha.api.models import ConsumptionData
+from custom_components.ekz_ha.coordinator import EkzCoordinator
+from custom_components.ekz_ha.import_status import ImportStatus, get_import_status
+from custom_components.ekz_ha.sensor import EkzImportStatusEntity, EkzMetaEntity
+from custom_components.ekz_ha.statistics.checkpoint import (
     _async_import_chunk,
     _persist_import_checkpoint,
     _restore_import_checkpoint,
 )
-from custom_components.ekz_ha.api.models import ConsumptionData
-from custom_components.ekz_ha.import_status import ImportStatus, get_import_status
-from custom_components.ekz_ha.sensor import EkzImportStatusEntity, EkzMetaEntity
 from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
 from custom_components.ekz_ha.statistics.importer import ZRH
 from custom_components.ekz_ha.statistics.production import ProductionImporter
+
+
+@pytest.fixture
+def prediction_timer(monkeypatch):
+    timer = Mock(return_value=Mock())
+    monkeypatch.setattr("custom_components.ekz_ha.async_track_time_change", timer)
+    return timer
 
 
 @pytest.fixture(params=["consumption", "production"])
@@ -50,10 +58,20 @@ def installation(request, monkeypatch):
         async_add_executor_job=AsyncMock(return_value={}),
         async_block_till_done=AsyncMock(),
     )
-    for module in ("custom_components.ekz_ha", "custom_components.ekz_ha.statistics.importer"):
+    for module in (
+        "custom_components.ekz_ha.coordinator",
+        "custom_components.ekz_ha.statistics.checkpoint",
+        "custom_components.ekz_ha.statistics.prediction_manager",
+        "custom_components.ekz_ha.statistics.importer",
+    ):
         monkeypatch.setattr(f"{module}.get_recorder_instance", lambda _hass: recorder)
     enqueue = Mock()
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", enqueue)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", enqueue
+    )
     return SimpleNamespace(
         coordinator=coordinator,
         meta=meta,
@@ -163,12 +181,14 @@ async def test_empty_initial_search_expands_without_fake_last_import(
     fetch = AsyncMock(return_value=ConsumptionData())
     monkeypatch.setattr(installation.importer, "fetch_data", fetch)
     start = datetime(2000, 1, 1, tzinfo=ZRH)
+    next_start = start.date()
     for days in (30, 60):
         await import_chunk(installation, start)
         attributes = installation.sensor.extra_state_attributes
         assert installation.sensor.native_value == "searching"
-        assert attributes["requested_from"] == "2000-01-01"
-        assert attributes["requested_to"] == (start.date() + timedelta(days=days)).isoformat()
+        assert attributes["requested_from"] == next_start.isoformat()
+        next_start += timedelta(days=days)
+        assert attributes["requested_to"] == next_start.isoformat()
         assert attributes["last_result"] == "no_data"
         assert attributes["error_type"] is None
         assert attributes["last_attempt"] == "2026-10-28T12:00:00+00:00"
@@ -280,10 +300,12 @@ async def test_failure_metadata_write_error_preserves_original_error_and_retry(
 
 
 @pytest.mark.parametrize("first_kind", ["consumption", "production"])
-async def test_all_checkpoints_restored_before_first_installation_fails(monkeypatch, first_kind):
+async def test_all_checkpoints_restored_before_first_installation_fails(
+    hass, monkeypatch, first_kind
+):
     timestamp = datetime(2026, 8, 2, tzinfo=UTC)
     coordinator = SimpleNamespace(
-        hass=Mock(),
+        hass=hass,
         api_client=Mock(),
         installations={"first": {"contract_start": "2026-01-01"}}
         if first_kind == "consumption"
@@ -295,6 +317,8 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
         meta_entities={},
         production_meta_entities={},
         _import_checkpoints={},
+        _statistic_ids={},
+        _statistic_id_store=Mock(async_save=AsyncMock()),
         _get_running_sum_before=AsyncMock(return_value=0.0),
         last_sums={},
         last_production_sums={},
@@ -305,6 +329,12 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
         ("production", coordinator.production_installations, coordinator.production_meta_entities),
     ):
         for key in installations:
+            er.async_get(hass).async_get_or_create(
+                "sensor",
+                "ekz_ha",
+                f"ekz_electricity_{kind}_{key}",
+                suggested_object_id=f"electricity_{kind}_ekz_{key}",
+            )
             meta = EkzMetaEntity(Mock(), key)
             meta._last_successful_import = timestamp
             meta._import_status.begin(timestamp, timestamp + timedelta(days=30), False)
@@ -318,15 +348,32 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
         async_block_till_done=AsyncMock(), async_add_executor_job=AsyncMock(return_value={})
     )
     replay = Mock()
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder)
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", replay)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
+        )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", replay
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics", replay
+    )
+
+    attempts = 0
 
     async def fail(*args):
-        assert replay.call_count == 1
-        recorder.async_block_till_done.assert_awaited_once()
+        nonlocal attempts
+        attempts += 1
+        assert replay.call_count == attempts
+        assert recorder.async_block_till_done.await_count == attempts
         raise UpdateFailed("first installation failed")
 
-    monkeypatch.setattr("custom_components.ekz_ha._async_import_chunk", fail)
+    monkeypatch.setattr("custom_components.ekz_ha.coordinator._async_import_chunk", fail)
     with pytest.raises(UpdateFailed):
         await EkzCoordinator._do_update_data(coordinator)
     all_metas = [
@@ -337,7 +384,10 @@ async def test_all_checkpoints_restored_before_first_installation_fails(monkeypa
         assert meta.native_value == timestamp
         assert meta._import_status.last_result == "imported"
         assert meta._import_status.requested_from == timestamp.date()
-    assert coordinator.production_meta_entities["last"]._checkpoint_needs_replay
+    assert coordinator.production_meta_entities["last"]._checkpoint_needs_replay == (
+        first_kind == "consumption"
+    )
+    assert attempts == (1 if first_kind == "consumption" else 2)
 
 
 async def test_failed_attempt_retains_range_and_last_success(installation, monkeypatch, freezer):
@@ -474,9 +524,11 @@ async def test_sensor_setup_creates_separate_import_statuses(hass, consumption):
     from custom_components.ekz_ha.sensor import async_setup_entry
 
     coordinator = Mock(
+        hass=hass,
         installations={"825821": {}} if consumption else {},
         production_installations={"825821": {}},
         _import_checkpoints={},
+        _statistic_ids={},
     )
     hass.data[DOMAIN] = {"coordinator": coordinator}
     add = Mock()
@@ -516,7 +568,7 @@ def test_status_round_trip_and_translation_states(installation):
 
 
 async def test_setup_returns_with_registered_sensors_while_initial_import_is_blocked(
-    hass, monkeypatch
+    hass, monkeypatch, prediction_timer
 ):
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -566,10 +618,78 @@ async def test_setup_returns_with_registered_sensors_while_initial_import_is_blo
             await task
 
 
+async def test_statistics_reset_clears_empty_history_cursor_for_both_import_types(
+    hass, monkeypatch, prediction_timer
+):
+    from custom_components.ekz_ha import async_setup_entry
+    from custom_components.ekz_ha.const import DOMAIN
+    from custom_components.ekz_ha.sensor import async_setup_entry as setup_sensors
+
+    entry = Mock(entry_id="reset-empty-history", data={"user": "test", "password": "test"})
+    entry.async_create_background_task.side_effect = lambda _hass, coroutine, _name: (
+        coroutine.close()
+    )
+    coordinators = []
+
+    async def discover(coordinator):
+        coordinators.append(coordinator)
+        coordinator.installations = {"test": {"contract_start": "2000-01-01"}}
+        coordinator.production_installations = {"solar": {"contract_start": "2005-01-01"}}
+
+    async def forward(_entry, _platforms):
+        await setup_sensors(hass, entry, Mock())
+
+    monkeypatch.setattr("custom_components.ekz_ha.EkzApiClient", Mock())
+    clear = AsyncMock(return_value=True)
+    monkeypatch.setattr("custom_components.ekz_ha._async_clear_statistics", clear)
+    monkeypatch.setattr(EkzCoordinator, "async_config_entry_first_refresh", discover)
+    refresh = AsyncMock()
+    monkeypatch.setattr(EkzCoordinator, "async_request_refresh", refresh)
+    with patch.object(hass.config_entries, "async_forward_entry_setups", side_effect=forward):
+        assert await async_setup_entry(hass, entry)
+    coordinator = coordinators[0]
+    registry = er.async_get(hass)
+    registered_ids = []
+    for kind, key in (("consumption", "test"), ("production", "solar")):
+        registered_ids.append(
+            registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                f"ekz_electricity_{kind}_{key}",
+                suggested_object_id=f"renamed_{kind}",
+            ).entity_id
+        )
+    coordinator._statistic_ids = {"consumption:test": "sensor.previous_consumption_name"}
+    metas = [
+        *coordinator.meta_entities.values(),
+        *coordinator.production_meta_entities.values(),
+    ]
+    for meta in metas:
+        meta._empty_search_from = date(2015, 1, 1)
+        meta._empty_search_days = 1920
+    coordinator._prediction_states = {"test": {"old": True}}
+    coordinator._prediction_initialized.add("test")
+    await coordinator._prediction_store.async_save(coordinator._prediction_states)
+    await hass.services.async_call(DOMAIN, "reset_statistics", {}, blocking=True)
+    assert set(registered_ids + ["sensor.previous_consumption_name"]).issubset(
+        clear.await_args.args[1]
+    )
+    for meta in metas:
+        assert meta._empty_search_from is None
+        assert meta._empty_search_days is None
+        assert meta._history_cursor is None
+        assert meta._last_import is None
+    assert coordinator._import_checkpoints == {}
+    assert coordinator._prediction_states == {}
+    assert coordinator._prediction_initialized == set()
+    assert await coordinator._prediction_store.async_load() == {}
+    refresh.assert_awaited_once()
+
+
 @pytest.mark.parametrize("kind", ["consumption", "production", "both"])
 @pytest.mark.parametrize("changed", [False, True])
 async def test_offline_restart_registers_saved_diagnostics_and_retries_discovery(
-    hass, monkeypatch, kind, changed
+    hass, monkeypatch, kind, changed, prediction_timer
 ):
     from custom_components.ekz_ha import async_setup_entry
     from custom_components.ekz_ha.const import DOMAIN
@@ -715,6 +835,144 @@ async def test_empty_historical_search_remains_searching_with_recorded_rows(
     assert installation.meta._empty_search_days == 60
     assert installation.sensor.native_value == "searching"
     assert installation.sensor.extra_state_attributes["last_result"] == "no_data"
+
+
+async def test_empty_history_cursor_survives_restart_and_retries_failed_range(
+    installation, monkeypatch, freezer, hass
+):
+    freezer.move_to("2026-10-28 12:00:00+00:00")
+    start = datetime(2000, 1, 1, tzinfo=ZRH)
+    store = Store(hass, 1, f"ekz_ha.test.empty_cursor.{installation.statistic_id}")
+    installation.coordinator._import_checkpoint_store = store
+    fetch = AsyncMock(return_value=ConsumptionData())
+    monkeypatch.setattr(installation.importer, "fetch_data", fetch)
+    await import_chunk(installation, start)
+    next_start = start.date() + timedelta(days=30)
+    assert installation.meta._empty_search_from == next_start
+    assert installation.meta._last_import is None
+    assert installation.meta.native_value is None
+
+    saved = await store.async_load()
+    restored = EkzMetaEntity(installation.coordinator, "825821")
+    _restore_import_checkpoint(
+        SimpleNamespace(_import_checkpoints=saved), installation.statistic_id, restored
+    )
+    assert restored._empty_search_from == next_start
+    assert restored.extra_state_attributes["empty_search_from"] == next_start.isoformat()
+    installation.meta = restored
+    fetch.side_effect = TimeoutError("temporary")
+    with pytest.raises(UpdateFailed):
+        await import_chunk(installation, start)
+    assert fetch.await_args.args[1].date() == next_start
+    assert restored._empty_search_from == next_start
+    assert restored._empty_search_days == 60
+
+    fetch.side_effect = None
+    await import_chunk(installation, start)
+    assert fetch.await_args.args[1].date() == next_start
+    assert restored._empty_search_from == next_start + timedelta(days=60)
+
+
+async def test_empty_history_cursor_rolls_back_if_checkpoint_save_fails(
+    installation, monkeypatch, freezer
+):
+    freezer.move_to("2026-10-28 12:00:00+00:00")
+    start = datetime(2000, 1, 1, tzinfo=ZRH)
+    installation.meta._empty_search_from = date(2005, 1, 1)
+    installation.meta._empty_search_days = 960
+    monkeypatch.setattr(
+        installation.importer, "fetch_data", AsyncMock(return_value=ConsumptionData())
+    )
+    installation.coordinator._import_checkpoint_store.async_save.side_effect = OSError("disk")
+    with pytest.raises(UpdateFailed):
+        await import_chunk(installation, start)
+    assert installation.meta._empty_search_from == date(2005, 1, 1)
+    assert installation.meta._empty_search_days == 960
+
+
+@pytest.mark.parametrize("fail_second_slice", [False, True])
+async def test_empty_history_slices_are_contiguous_and_only_commit_on_success(
+    installation, monkeypatch, freezer, fail_second_slice
+):
+    freezer.move_to("2026-10-28 12:00:00+00:00")
+    start = datetime(2000, 1, 1, tzinfo=ZRH)
+    cursor = datetime(2005, 1, 1, tzinfo=ZRH)
+    installation.meta._empty_search_from = cursor.date()
+    installation.meta._empty_search_days = 960
+    fetch = AsyncMock(
+        side_effect=[
+            ConsumptionData(),
+            TimeoutError("temporary") if fail_second_slice else ConsumptionData(),
+            ConsumptionData(),
+        ]
+    )
+    monkeypatch.setattr(installation.importer, "fetch_data", fetch)
+    if fail_second_slice:
+        with pytest.raises(UpdateFailed):
+            await import_chunk(installation, start)
+        assert installation.meta._empty_search_from == cursor.date()
+        assert installation.meta._empty_search_days == 960
+    else:
+        result = await import_chunk(installation, start)
+        assert result["from_date"] == cursor.date()
+        assert result["to_date"] == cursor.date() + timedelta(days=960)
+        assert installation.meta._empty_search_from == result["to_date"]
+        assert installation.meta._empty_search_days == 1920
+    requests = [(call.args[1], call.args[2]) for call in fetch.await_args_list]
+    assert requests == [
+        (cursor, cursor + timedelta(days=360)),
+        (cursor + timedelta(days=360), cursor + timedelta(days=720)),
+        *(
+            [(cursor + timedelta(days=720), cursor + timedelta(days=960))]
+            if not fail_second_slice
+            else []
+        ),
+    ]
+
+
+async def test_empty_history_reaches_present_then_rechecks_recent_window(
+    installation, monkeypatch, freezer
+):
+    freezer.move_to("2026-10-28 12:00:00+00:00")
+    start = datetime(2000, 1, 1, tzinfo=ZRH)
+    installation.meta._empty_search_from = date(2026, 10, 1)
+    installation.meta._empty_search_days = 960
+    fetch = AsyncMock(return_value=ConsumptionData())
+    monkeypatch.setattr(installation.importer, "fetch_data", fetch)
+    await import_chunk(installation, start)
+    assert fetch.await_args.args[1].date() == date(2026, 10, 1)
+    assert fetch.await_args.args[2].date() == date(2026, 10, 29)
+    assert installation.meta._empty_search_from is None
+    assert installation.meta._empty_search_days is None
+    assert installation.sensor.native_value == "current"
+    assert installation.meta.native_value is None
+    await import_chunk(installation, start)
+    assert fetch.await_args.args[1].date() == date(2026, 9, 29)
+
+
+async def test_empty_bounded_refetch_does_not_skip_discovered_history(
+    installation, monkeypatch, freezer
+):
+    freezer.move_to("2026-10-28 12:00:00+00:00")
+    start = datetime(2000, 1, 1, tzinfo=ZRH)
+    cursor = date(2005, 1, 1)
+    installation.meta._empty_search_from = cursor
+    installation.meta._empty_search_days = 960
+    data = ConsumptionData.from_dict(
+        {
+            "level": "DAY",
+            "series": {"values": [{"timestamp": "2006-01-01T00:00:00+01:00", "value": 1.0}]},
+        }
+    )
+    monkeypatch.setattr(
+        installation.importer,
+        "fetch_data",
+        AsyncMock(side_effect=[ConsumptionData(), data, ConsumptionData()]),
+    )
+    await import_chunk(installation, start)
+    assert installation.meta._empty_search_from == cursor
+    assert installation.meta._empty_search_days == 960
+    assert installation.meta._last_import is None
 
 
 @pytest.mark.parametrize("recorded_daily", [False, True])

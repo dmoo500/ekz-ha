@@ -1,8 +1,38 @@
 """Common test fixtures for EKZ integration tests."""
 
+from unittest.mock import AsyncMock, Mock
+
 import pytest
+from homeassistant.helpers import entity_registry as er
 
 from custom_components.ekz_ha.api.models import ApiValue
+
+
+@pytest.fixture
+def register_energy_entities(hass):
+    """Supply entity registration omitted by lightweight coordinator test doubles."""
+
+    def register(coordinator):
+        coordinator.hass = hass
+        coordinator._statistic_ids = {}
+        coordinator._statistic_id_store = Mock(async_save=AsyncMock())
+        for attribute in ("_import_checkpoints", "_daily_statistics", "_sum_offsets"):
+            if not isinstance(getattr(coordinator, attribute, None), dict):
+                setattr(coordinator, attribute, {})
+        for kind, installations in (
+            ("consumption", coordinator.installations),
+            ("production", coordinator.production_installations),
+        ):
+            for key in installations:
+                entity = er.async_get(hass).async_get_or_create(
+                    "sensor",
+                    "ekz_ha",
+                    f"ekz_electricity_{kind}_{key}",
+                    suggested_object_id=f"electricity_{kind}_ekz_{key}",
+                )
+                coordinator._statistic_ids[f"{kind}:{key}"] = entity.entity_id
+
+    return register
 
 
 @pytest.fixture

@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN
 from .import_status import ImportStatus, get_import_status
+from .statistics.checkpoint import _restore_energy_import_checkpoints
 
 
 def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> None:
@@ -30,8 +31,6 @@ def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EKZ sensors from a config entry."""
-    from . import _restore_import_checkpoint
-
     coordinator = hass.data[DOMAIN]["coordinator"]
     _migrate_production_meta_entities(hass, coordinator)
     meta_entities = {}
@@ -63,13 +62,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         sensors.append(EkzImportStatusEntity(coordinator, prod_meta, "production"))
     coordinator.production_meta_entities = production_meta_entities
 
-    for kind, entities in (
-        ("consumption", meta_entities),
-        ("production", production_meta_entities),
-    ):
-        for key, meta in entities.items():
-            _restore_import_checkpoint(coordinator, f"sensor.electricity_{kind}_ekz_{key}", meta)
-
+    _restore_energy_import_checkpoints(coordinator)
     async_add_entities(sensors, False)
 
 
@@ -163,6 +156,7 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
         self._diagnostic_coordinator_error: object = object()
         self._history_cursor: date | None = None
         self._empty_search_days: int | None = None
+        self._empty_search_from: date | None = None
         self._recent_statistics: list[dict[str, Any]] = []
         self._daily_statistics: set[str] = set()
         self._hourly_slots: dict[str, dict[str, float]] = {}
@@ -210,6 +204,9 @@ class EkzMetaEntity(CoordinatorEntity, SensorEntity):
             "contract_start": self._contract_start.isoformat() if self._contract_start else None,
             "last_import_date": self._last_import.isoformat() if self._last_import else None,
             "history_cursor": self._history_cursor.isoformat() if self._history_cursor else None,
+            "empty_search_from": (
+                self._empty_search_from.isoformat() if self._empty_search_from else None
+            ),
             "last_run_datetime": self._last_run_date.isoformat() if self._last_run_date else None,
             "pending_from": self._pending_from.isoformat() if self._pending_from else None,
         }

@@ -59,6 +59,7 @@ class SeriesData:
 
     values: list[ApiValue] = field(default_factory=list)
     level: str = "UNKNOWN"  # DAY, QUARTER_HOUR, etc.
+    inactive_timestamps: set[str] = field(default_factory=set)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], tariff: str = "TOTAL") -> "SeriesData":
@@ -68,7 +69,16 @@ class SeriesData:
             for v in data.get("values", [])
             if v.get("status") not in ("NOT_AVAILABLE", "MISSING")
         ]
-        return cls(values=values, level=data.get("level", "UNKNOWN"))
+        inactive_timestamps = {
+            ApiValue.from_dict(v, tariff=tariff).timestamp
+            for v in data.get("values", [])
+            if v.get("status") == "NOT_AVAILABLE" and v.get("value") == 0
+        }
+        return cls(
+            values=values,
+            level=data.get("level", "UNKNOWN"),
+            inactive_timestamps=inactive_timestamps,
+        )
 
 
 @dataclass
@@ -130,13 +140,16 @@ class ConsumptionData:
         return not self.get_all_values()
 
     def get_import_values(self) -> list[ApiValue]:
-        """Return only timestamps covered by every supplied split-tariff series."""
+        """Require a reading or explicit inactive zero in every supplied tariff."""
         values = self.get_all_values()
         split_series = [series for series in (self.series_ht, self.series_nt) if series is not None]
         if len(split_series) < 2 or not any(series.values for series in split_series):
             return values
         covered = set.intersection(
-            *({value.timestamp for value in series.values} for series in split_series)
+            *(
+                {value.timestamp for value in series.values} | series.inactive_timestamps
+                for series in split_series
+            )
         )
         import_values = [value for value in values if value.timestamp in covered]
         if len(import_values) != len(values):

@@ -10,11 +10,12 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.ekz_ha import EkzCoordinator, _async_import_chunk
 from custom_components.ekz_ha.api.models import InstallationContract, InstallationSelectionData
 from custom_components.ekz_ha.api.session import EkzAuthenticationError
 from custom_components.ekz_ha.const import DOMAIN
+from custom_components.ekz_ha.coordinator import EkzCoordinator
 from custom_components.ekz_ha.sensor import EkzMetaEntity
+from custom_components.ekz_ha.statistics.checkpoint import _async_import_chunk
 from custom_components.ekz_ha.statistics.production import ProductionImporter
 
 
@@ -42,9 +43,15 @@ async def test_authentication_errors_trigger_ha_auth_failure(hass, monkeypatch, 
         importer = ProductionImporter(client)
         meta = EkzMetaEntity(coordinator, "test")
         recorder = Mock(async_block_till_done=AsyncMock())
-        monkeypatch.setattr(
-            "custom_components.ekz_ha.get_recorder_instance", lambda _hass: recorder
-        )
+        for module in (
+            "coordinator",
+            "statistics.checkpoint",
+            "statistics.prediction_manager",
+            "statistics.recorder",
+        ):
+            monkeypatch.setattr(
+                f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda _hass: recorder
+            )
         with pytest.raises(ConfigEntryAuthFailed) as raised:
             await _async_import_chunk(
                 coordinator,

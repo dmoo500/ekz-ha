@@ -7,10 +7,18 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeassistant.components.recorder.statistics import statistics_during_period
 
-from custom_components.ekz_ha import EkzCoordinator, statistics_during_period
-from custom_components.ekz_ha.api.models import ApiValue, ConsumptionData, SeriesData, ValueOrigin
+from custom_components.ekz_ha.api.models import (
+    ApiValue,
+    ConsumptionData,
+    InstallationContract,
+    InstallationSelectionData,
+    SeriesData,
+    ValueOrigin,
+)
 from custom_components.ekz_ha.const import NORMAL_SCAN_INTERVAL
+from custom_components.ekz_ha.coordinator import EkzCoordinator
 from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
 from custom_components.ekz_ha.statistics.importer import ZRH, BaseImporter
 from custom_components.ekz_ha.statistics.prediction import PredictionService
@@ -23,6 +31,61 @@ class StubImporter(BaseImporter):
 
     def get_data_type_name(self):
         return "Stub"
+
+
+@pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
+@pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 10, 25), date(2026, 10, 27)])
+async def test_complementary_inactive_tariffs_replace_daily_fallback(
+    monkeypatch, freezer, importer_type, local_day
+):
+    from custom_components.ekz_ha.data.validator import day_slots
+    from custom_components.ekz_ha.sensor import EkzMetaEntity
+
+    start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH)
+    freezer.move_to(start + timedelta(days=2))
+    slots = day_slots(local_day.isoformat())
+    response = {}
+    for tariff in ("HT", "NT"):
+        response[f"series{tariff.title()}"] = {
+            "level": "QUARTER_HOUR",
+            "values": [
+                {
+                    "timestamp": slot.isoformat(),
+                    "value": 0.1
+                    if (7 <= slot.astimezone(ZRH).hour < 20) == (tariff == "HT")
+                    else 0,
+                    "status": "VALID"
+                    if (7 <= slot.astimezone(ZRH).hour < 20) == (tariff == "HT")
+                    else "NOT_AVAILABLE",
+                }
+                for slot in slots
+            ],
+        }
+    data = ConsumptionData.from_dict(response)
+    api = Mock(
+        get_consumption_15min=AsyncMock(return_value=data),
+        get_consumption_daily=AsyncMock(return_value=ConsumptionData()),
+        get_production_15min=AsyncMock(return_value=data),
+    )
+    meta = EkzMetaEntity(Mock(), "test")
+    meta.set_last_import(local_day)
+    meta._daily_statistics = {local_day.isoformat()}
+    meta._recent_statistics = [{"start": start.astimezone(UTC), "state": 40.0, "sum": 140.0}]
+    recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.importer.get_recorder_instance", lambda _hass: recorder
+    )
+    importer = (
+        ConsumptionImporter(api, daily_fallback_days=meta._daily_statistics)
+        if importer_type is ConsumptionImporter
+        else ProductionImporter(api)
+    )
+    result = await importer.import_statistics(Mock(), "test", start, meta, 100.0)
+    assert len(result["raw_values"]) == len(slots)
+    assert sum(row["state"] for row in result["statistics"]) == pytest.approx(len(slots) * 0.1)
+    assert result["statistics"][-1]["sum"] == pytest.approx(100.0 + len(slots) * 0.1)
+    assert all(row["source_resolution"] == "hour" for row in result["statistics"])
+    assert meta._pending_from is None
 
 
 @pytest.mark.parametrize("importer_type", [ConsumptionImporter, ProductionImporter])
@@ -111,6 +174,111 @@ def test_calculate_date_range_preserves_contract_start_before_ten_years():
     assert to_date.date() == contract_start + timedelta(days=30)
 
 
+async def test_fetch_in_slices_returns_first_non_empty_window():
+    importer = StubImporter(None)
+    start = date(2024, 1, 1)
+    end = start + timedelta(days=700)
+    requests = []
+
+    async def fetch_data(_installation_id, date_from, date_to):
+        requests.append((date_from.date(), date_to.date()))
+        if date_from.date() == start and date_to.date() == start + timedelta(days=360):
+            return ConsumptionData()
+        return api_series(
+            "DAY",
+            [
+                (
+                    datetime.combine(end - timedelta(days=1), datetime.min.time(), tzinfo=ZRH)
+                    .astimezone(UTC)
+                    .strftime("%Y%m%d%H%M%S"),
+                    1.0,
+                    "VALID",
+                )
+            ],
+        )
+
+    importer.fetch_data = fetch_data
+
+    result, from_date, to_date = await importer._fetch_in_slices(
+        "825821",
+        datetime.combine(start, datetime.min.time(), tzinfo=ZRH),
+        datetime.combine(end, datetime.min.time(), tzinfo=ZRH),
+    )
+
+    assert requests[0] == (start, start + timedelta(days=360))
+    assert requests[1] == (start + timedelta(days=360), end)
+    assert not result.is_empty()
+    assert from_date.date() == start + timedelta(days=360)
+    assert to_date.date() == end
+
+
+async def test_history_slices_skip_unimportable_tariff_readings(monkeypatch):
+    importer = StubImporter(None)
+    start = datetime(2000, 1, 1, tzinfo=ZRH)
+    partial = ConsumptionData.from_dict(
+        {
+            "level": "QUARTER_HOUR",
+            "seriesHt": {"values": [{"timestamp": start.isoformat(), "value": 1.0}]},
+            "seriesNt": {"values": []},
+        }
+    )
+    first = start + timedelta(days=400)
+    data = api_series("DAY", [(first.isoformat(), 2.0, "VALID")])
+    fetch = AsyncMock(side_effect=[partial, data])
+    monkeypatch.setattr(importer, "fetch_data", fetch)
+    result, date_from, date_to = await importer._fetch_in_slices(
+        "825821", start, start + timedelta(days=960)
+    )
+    assert result is data
+    assert date_from == start + timedelta(days=360)
+    assert date_to == start + timedelta(days=720)
+    assert fetch.await_count == 2
+
+
+async def test_discovery_skips_shared_supply_point_with_production_contract():
+    api_client = SimpleNamespace(
+        get_consumption_installations=AsyncMock(
+            return_value=InstallationSelectionData(
+                contracts=[
+                    InstallationContract(
+                        gpart="g",
+                        vkonto="k",
+                        vertrag="v",
+                        anlage="729431",
+                        vstelle="2738118",
+                        einzdat="2009-06-01",
+                    )
+                ]
+            )
+        ),
+        get_production_installations=AsyncMock(
+            return_value=InstallationSelectionData(
+                contracts=[
+                    InstallationContract(
+                        gpart="g",
+                        vkonto="k",
+                        vertrag="v",
+                        anlage="899575",
+                        vstelle="2738118",
+                        einzdat="2026-01-01",
+                    )
+                ]
+            )
+        ),
+        get_production_15min=AsyncMock(return_value=ConsumptionData()),
+    )
+    coordinator = SimpleNamespace(api_client=api_client)
+    coordinator._installation_store = None
+    coordinator._async_discover_installations = MethodType(
+        EkzCoordinator._async_discover_installations, coordinator
+    )
+
+    await coordinator._async_discover_installations()
+
+    api_client.get_production_15min.assert_not_awaited()
+    assert coordinator.production_installations == {"899575": {"contract_start": "2026-01-01"}}
+
+
 async def test_empty_initial_windows_expand_and_import_first_available_chunk(freezer, monkeypatch):
     freezer.move_to("2026-10-26 12:00:00+00:00")
     contract_start = date(2000, 1, 1)
@@ -131,10 +299,11 @@ async def test_empty_initial_windows_expand_and_import_first_available_chunk(fre
 
     async def fetch_data(_installation_id, date_from, date_to):
         requests.append((date_from.date(), date_to.date()))
-        if date_from.date() == contract_start and date_to.date() <= first_available:
+        if date_to.date() <= first_available:
             return ConsumptionData()
+        assert date_from.date() <= first_available < date_to.date()
         timestamp = datetime.combine(first_available, datetime.min.time(), tzinfo=ZRH)
-        return api_series("DAY", [(timestamp.strftime("%Y%m%d%H%M%S"), 8.0, "VALID")])
+        return api_series("DAY", [(timestamp.isoformat(), 8.0, "VALID")])
 
     monkeypatch.setattr(importer, "fetch_data", fetch_data)
 
@@ -151,10 +320,14 @@ async def test_empty_initial_windows_expand_and_import_first_available_chunk(fre
     assert result["from_date"] == first_available
     assert result["to_date"] == first_available + timedelta(days=30)
     assert requests[0] == (contract_start, contract_start + timedelta(days=30))
-    assert requests[1][0] == contract_start
-    assert requests[1][1] == contract_start + timedelta(days=60)
+    assert requests[1][0] == contract_start + timedelta(days=30)
+    assert requests[1][1] == contract_start + timedelta(days=90)
+    for previous, following in zip(requests[:-2], requests[1:-1], strict=True):
+        assert previous[1] == following[0]
+    assert all((end - start).days <= 360 for start, end in requests)
     assert requests[-1] == (first_available, first_available + timedelta(days=30))
     assert metadata._empty_search_days is None
+    assert metadata._empty_search_from is None
 
 
 def api_series(level, entries):
@@ -365,7 +538,15 @@ async def test_issue20_running_sum_survives_long_data_gap(monkeypatch, entity_ty
         return {}
 
     recorder = Mock(async_add_executor_job=AsyncMock(side_effect=query_statistics))
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     coordinator = SimpleNamespace(hass=Mock())
 
     offset = await EkzCoordinator._get_running_sum_before(coordinator, statistic_id, import_day)
@@ -377,7 +558,15 @@ async def test_issue20_running_sum_survives_long_data_gap(monkeypatch, entity_ty
 async def test_issue20_missing_recorder_rows_do_not_discard_known_sum(monkeypatch, entity_type):
     statistic_id = f"sensor.electricity_{entity_type}_ekz_825821"
     recorder = Mock(async_add_executor_job=AsyncMock(return_value={}))
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     coordinator = SimpleNamespace(hass=Mock())
 
     offset = await EkzCoordinator._get_running_sum_before(
@@ -407,7 +596,7 @@ async def test_issue20_real_daily_fixture_preserves_api_timestamp(monkeypatch):
 @pytest.mark.parametrize("recorder_flushed", [False, True])
 @pytest.mark.parametrize("history_gap", [False, True])
 async def test_issue20_consecutive_updates_do_not_read_stale_offset(
-    monkeypatch, freezer, entity_type, recorder_flushed, history_gap
+    monkeypatch, freezer, entity_type, recorder_flushed, history_gap, register_energy_entities
 ):
     freezer.move_to("2026-10-18 12:00:00+00:00")
     installation_id = "825821"
@@ -433,6 +622,7 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         update_interval=NORMAL_SCAN_INTERVAL,
         _daily_statistics={statistic_id: [first_day.isoformat()]},
     )
+    register_energy_entities(coordinator)
     coordinator._get_running_sum_before = MethodType(
         EkzCoordinator._get_running_sum_before, coordinator
     )
@@ -455,9 +645,17 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         async_add_executor_job=AsyncMock(side_effect=recorder_query),
         async_block_till_done=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    for module in (
+        "coordinator",
+        "statistics.checkpoint",
+        "statistics.prediction_manager",
+        "statistics.recorder",
+    ):
+        monkeypatch.setattr(
+            f"custom_components.ekz_ha.{module}.get_recorder_instance", lambda hass: recorder
+        )
     monkeypatch.setattr(
-        "custom_components.ekz_ha._prediction_statistic_id",
+        "custom_components.ekz_ha.statistics.prediction_manager._prediction_statistic_id",
         lambda hass, key: f"sensor.electricity_consumption_ekz_{key}_prediction",
     )
     queued_imports = []
@@ -469,11 +667,19 @@ async def test_issue20_consecutive_updates_do_not_read_stale_offset(
         if recorder_flushed:
             persisted_rows.extend(statistics)
 
-    monkeypatch.setattr("custom_components.ekz_ha.async_import_statistics", enqueue_statistics)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.checkpoint.async_import_statistics", enqueue_statistics
+    )
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.prediction_manager.async_import_statistics",
+        enqueue_statistics,
+    )
     second_day_start = datetime(2026, 10, 16, tzinfo=ZRH).astimezone(UTC)
     call_count = 0
 
-    async def import_chunk(self, hass, key, contract_start, metadata, running_sum_offset):
+    async def import_chunk(
+        self, hass, key, contract_start, metadata, running_sum_offset, *, statistic_id
+    ):
         nonlocal call_count
         if entity_type == "consumption":
             assert self.daily_fallback_days == metadata._daily_statistics
@@ -839,8 +1045,8 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
 ):
     from homeassistant.helpers.storage import Store
 
-    from custom_components.ekz_ha import _persist_source_resolution
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import _persist_source_resolution
 
     importer = importer_type(Mock())
     statistic_id = f"sensor.electricity_{importer.get_data_type_name().lower()}_ekz_825821"
@@ -854,11 +1060,12 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
     await _persist_source_resolution(before_restart, statistic_id, first["statistics"])
 
     after_restart = SimpleNamespace(
+        _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
         _source_resolution_store=Store(hass, 1, key),
         api_client=Mock(
             get_consumption_installations=AsyncMock(
                 return_value=SimpleNamespace(
-                    contracts=[SimpleNamespace(anlage="825821", einzdat="2026-10-15", auszdat=None)]
+                    contracts=[InstallationContract("", "", "", "825821", "", einzdat="2026-10-15")]
                 )
             ),
             get_production_installations=AsyncMock(return_value=SimpleNamespace(contracts=[])),
@@ -935,8 +1142,8 @@ async def test_daily_reconciliation_conserves_energy_on_dst_days(
 async def test_daily_source_waits_for_complete_quarter_hour_backfill(
     monkeypatch, freezer, importer_type, local_day, reconciled, queued
 ):
-    from custom_components.ekz_ha import _persist_source_resolution
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import _persist_source_resolution
 
     local_start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH)
     start = local_start.astimezone(UTC)
@@ -1041,7 +1248,7 @@ async def test_daily_source_waits_for_complete_quarter_hour_backfill(
 @pytest.mark.parametrize("local_day", [date(2026, 3, 29), date(2026, 7, 15), date(2026, 10, 25)])
 @pytest.mark.parametrize("shifted", [False, True])
 async def test_source_resolution_requires_exact_hourly_grid(local_day, shifted):
-    from custom_components.ekz_ha import _persist_source_resolution
+    from custom_components.ekz_ha.statistics.checkpoint import _persist_source_resolution
 
     start = datetime.combine(local_day, datetime.min.time(), tzinfo=ZRH).astimezone(UTC)
     end = datetime.combine(
@@ -1303,8 +1510,11 @@ async def test_fuller_partial_hour_adds_backfilled_slots(monkeypatch, importer_t
 async def test_checkpoint_restores_sum_across_history_gap_longer_than_recorder_lookback(
     importer_type,
 ):
-    from custom_components.ekz_ha import _persist_import_checkpoint, _restore_import_checkpoint
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import (
+        _persist_import_checkpoint,
+        _restore_import_checkpoint,
+    )
 
     statistic_id = (
         f"sensor.electricity_{importer_type(Mock()).get_data_type_name().lower()}_ekz_825821"
@@ -1334,8 +1544,11 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
 ):
     from homeassistant.helpers.storage import Store
 
-    from custom_components.ekz_ha import _persist_import_checkpoint, _restore_import_checkpoint
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import (
+        _persist_import_checkpoint,
+        _restore_import_checkpoint,
+    )
 
     freezer.move_to("2026-10-20 12:00:00+00:00")
     start = datetime(2026, 10, 16, 12, tzinfo=ZRH).astimezone(UTC)
@@ -1351,11 +1564,12 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
     rows = [{"start": start, "state": 0.5, "sum": 100.5, "slots": {hour: 0.5}}]
     await _persist_import_checkpoint(old, statistic_id, old_meta, rows)
     fresh = SimpleNamespace(
+        _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
         _import_checkpoint_store=Store(hass, 1, key),
         api_client=Mock(
             get_consumption_installations=AsyncMock(
                 return_value=SimpleNamespace(
-                    contracts=[SimpleNamespace(anlage="825821", einzdat="2026-10-01", auszdat=None)]
+                    contracts=[InstallationContract("", "", "", "825821", "", einzdat="2026-10-01")]
                 )
             ),
             get_production_installations=AsyncMock(return_value=SimpleNamespace(contracts=[])),
@@ -1460,8 +1674,11 @@ async def test_own_review_checkpoint_replays_unflushed_chunk(
 ):
     from homeassistant.helpers.storage import Store
 
-    from custom_components.ekz_ha import _persist_import_checkpoint, _restore_import_checkpoint
     from custom_components.ekz_ha.sensor import EkzMetaEntity
+    from custom_components.ekz_ha.statistics.checkpoint import (
+        _persist_import_checkpoint,
+        _restore_import_checkpoint,
+    )
 
     freezer.move_to("2026-10-20 12:00:00+00:00")
     local_start = datetime(2026, 10, 16, tzinfo=ZRH)

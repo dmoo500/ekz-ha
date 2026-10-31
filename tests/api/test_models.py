@@ -77,6 +77,23 @@ class TestSeriesData:
         assert series.values[1].value == 1.5
         assert series.level == "QUARTER_HOUR"
 
+    def test_inactive_tariff_coverage_is_normalized_without_creating_measurements(self):
+        series = SeriesData.from_dict(
+            {
+                "values": [
+                    {
+                        "timestamp": "2026-10-27T00:00:00+01:00",
+                        "value": 0,
+                        "status": "NOT_AVAILABLE",
+                    },
+                    {"timestamp": "20261027000000", "value": 0, "status": "MISSING"},
+                    {"timestamp": "20261027010000", "value": 1, "status": "NOT_AVAILABLE"},
+                ]
+            }
+        )
+        assert series.values == []
+        assert series.inactive_timestamps == {"20261026230000"}
+
 
 class TestConsumptionData:
     """Tests for ConsumptionData dataclass."""
@@ -114,6 +131,38 @@ class TestConsumptionData:
         assert {value.timestamp for value in imported} == {"20260715000000"}
         assert sum(value.value for value in imported) == 1.0
         assert len(data.get_all_values()) == 3
+
+    @pytest.mark.parametrize("level", ["DAY", "QUARTER_HOUR"])
+    @pytest.mark.parametrize("active_tariff", ["seriesHt", "seriesNt"])
+    @pytest.mark.parametrize(
+        ("status", "value", "accepted"),
+        [("NOT_AVAILABLE", 0.0, True), ("MISSING", 0.0, False), ("NOT_AVAILABLE", 1.0, False)],
+    )
+    def test_import_values_distinguish_inactive_and_missing_tariffs(
+        self, level, active_tariff, status, value, accepted
+    ):
+        inactive_tariff = "seriesNt" if active_tariff == "seriesHt" else "seriesHt"
+        data = ConsumptionData.from_dict(
+            {
+                "level": level,
+                active_tariff: {"values": [{"timestamp": "20261027060000", "value": 0.04}]},
+                inactive_tariff: {
+                    "values": [{"timestamp": "20261027060000", "value": value, "status": status}]
+                },
+            }
+        )
+        imported = data.get_import_values()
+        assert len(imported) == int(accepted)
+        if accepted:
+            assert imported[0].value == 0.04
+
+    def test_two_inactive_tariffs_do_not_create_zero_measurements(self):
+        inactive = {
+            "values": [{"timestamp": "20261027060000", "value": 0, "status": "NOT_AVAILABLE"}]
+        }
+        data = ConsumptionData.from_dict({"seriesHt": inactive, "seriesNt": inactive})
+        assert data.get_all_values() == []
+        assert data.get_import_values() == []
 
     def test_import_values_do_not_use_total_to_mask_empty_split_tariff(self):
         data = ConsumptionData.from_dict(

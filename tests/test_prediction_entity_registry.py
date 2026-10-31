@@ -4,16 +4,21 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from homeassistant.helpers import entity_registry as er
 
-from custom_components.ekz_ha import _async_clear_statistics, _prediction_statistic_id
 from custom_components.ekz_ha.const import DOMAIN
 from custom_components.ekz_ha.sensor import _migrate_production_meta_entities
+from custom_components.ekz_ha.statistics.recorder import (
+    _async_clear_statistics,
+    _prediction_statistic_id,
+)
 
 
 def test_prediction_statistic_id_uses_registered_entity_id(monkeypatch):
     registered_id = "sensor.electricity_consumption_prediction_ekz_825821"
     registry = Mock()
     registry.async_get_entity_id.return_value = registered_id
-    monkeypatch.setattr("custom_components.ekz_ha.er.async_get", lambda hass: registry)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.recorder.er.async_get", lambda hass: registry
+    )
 
     result = _prediction_statistic_id(object(), "825821")
 
@@ -25,7 +30,9 @@ def test_prediction_statistic_id_uses_registered_entity_id(monkeypatch):
 
 async def test_clear_statistics_uses_recorder_instance_fallback(monkeypatch):
     recorder = Mock(async_clear_statistics=AsyncMock())
-    monkeypatch.setattr("custom_components.ekz_ha.get_recorder_instance", lambda hass: recorder)
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.recorder.get_recorder_instance", lambda hass: recorder
+    )
     statistic_ids = ["sensor.electricity_consumption_ekz_825821_prediction"]
 
     assert await _async_clear_statistics(object(), statistic_ids)
