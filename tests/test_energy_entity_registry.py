@@ -132,6 +132,17 @@ async def test_initialization_rejects_reused_legacy_id(energy, ownership):
     assert target not in coordinator._external_migrations
 
 
+@pytest.mark.parametrize("complete", [False, True])
+async def test_migration_retry_refuses_silently_omitting_new_registered_source(energy, complete):
+    coordinator, _, source, target = energy
+    registry = er.async_get(coordinator.hass)
+    registry.async_update_entity(source, new_entity_id="sensor.renamed_again")
+    coordinator._external_migrations[target]["complete"] = complete
+    with pytest.raises(UpdateFailed, match="Legacy entity ID changed"):
+        await async_initialize_migration(coordinator)
+    assert "sensor.renamed_again" not in coordinator._external_migrations[target]["sources"]
+
+
 @pytest.mark.parametrize("compatible", [False, True])
 async def test_completed_beta1_migration_validates_legacy_joins_without_overwriting_imports(
     recorder_mock, energy, compatible
@@ -779,9 +790,13 @@ async def test_statistics_clear_propagates_recorder_errors(energy, monkeypatch):
 
 
 @pytest.mark.parametrize("kind", ["consumption", "production"])
-@pytest.mark.parametrize("collision", [None, "fixed", "stored", "migration"])
+@pytest.mark.parametrize(
+    ("collision", "save_failure"),
+    [(collision, None) for collision in (None, "fixed", "stored", "migration")]
+    + [(None, failure) for failure in ("initial", "source", "checkpoint", "prediction", "final")],
+)
 async def test_reset_reimports_from_contract_start_not_old_recorder_tail(
-    recorder_mock, hass, monkeypatch, kind, collision
+    recorder_mock, hass, monkeypatch, kind, collision, save_failure
 ):
     from custom_components.ekz_ha import async_setup_entry
     from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
@@ -837,6 +852,53 @@ async def test_reset_reimports_from_contract_start_not_old_recorder_tail(
         await coordinator._do_update_data()
 
     monkeypatch.setattr(coordinator, "async_request_refresh", refreshed)
+    if save_failure and not collision:
+        store = {
+            "initial": coordinator._external_migration_store,
+            "source": coordinator._source_resolution_store,
+            "checkpoint": coordinator._import_checkpoint_store,
+            "prediction": coordinator._prediction_store,
+            "final": coordinator._external_migration_store,
+        }[save_failure]
+        original_save = store.async_save
+        calls = 0
+
+        async def failing_save(data):
+            nonlocal calls
+            calls += 1
+            if save_failure != "final" or calls == 2:
+                raise OSError("reset storage failure")
+            await original_save(data)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "async_save", failing_save)
+            with pytest.raises(OSError, match="reset storage failure"):
+                await hass.services.async_call(DOMAIN, "reset_statistics", {}, blocking=True)
+        saved = await coordinator._external_migration_store.async_load()
+        if save_failure == "initial":
+            assert not saved[target].get("reset_pending")
+            assert len(await history(recorder_mock, hass, target)) == 2
+            assert meta._last_import == date(2026, 10, 30)
+        else:
+            assert saved[target]["reset_pending"]
+            with pytest.raises(UpdateFailed, match="Statistics reset is incomplete"):
+                await coordinator._do_update_data()
+            restarted = EkzCoordinator(hass, api, timedelta(hours=4), entry)
+            with monkeypatch.context() as patch:
+                patch.setattr(restarted, "_async_discover_installations", AsyncMock())
+                await restarted._async_setup()
+            with pytest.raises(UpdateFailed, match="Statistics reset is incomplete"):
+                await restarted._do_update_data()
+            coordinator.catching_up = {"825821": False}
+            prediction_service = AsyncMock()
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    "custom_components.ekz_ha.statistics.prediction_manager._async_get_prediction_service",
+                    prediction_service,
+                )
+                await coordinator.async_extend_predictions(datetime.now(UTC))
+            prediction_service.assert_not_awaited()
+        fetch.assert_not_awaited()
     if collision:
         alias = (
             f"sensor.electricity_{kind}_ekz_825821"

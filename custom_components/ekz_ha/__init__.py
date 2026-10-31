@@ -9,6 +9,7 @@ from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.start import async_at_started
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .api.client import EkzApiClient
 from .api.session import EkzAuthenticationError
@@ -125,9 +126,16 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 }
             )
             _LOGGER.info("Resetting EKZ statistics for: %s", statistic_ids)
+            pending_reset = {
+                target: {**state, "reset_pending": True}
+                for target, state in coordinator._external_migrations.items()
+            }
+            await coordinator._external_migration_store.async_save(pending_reset)
+            coordinator._external_migrations = pending_reset
             if not await _async_clear_statistics(hass, statistic_ids):
-                _LOGGER.error("Cannot clear statistics: no compatible API found in this HA version")
-                return
+                raise UpdateFailed(
+                    "Cannot clear statistics: no compatible API found in this HA version"
+                )
 
             # Reset in-memory tracking so the next poll starts from contract_start
             coordinator.last_sums = {}
@@ -138,11 +146,6 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             await coordinator._source_resolution_store.async_save({})
             coordinator._import_checkpoints = {}
             await coordinator._import_checkpoint_store.async_save({})
-            coordinator._external_migrations = {
-                target: {**state, "complete": True, "tail": None}
-                for target, state in coordinator._external_migrations.items()
-            }
-            await coordinator._external_migration_store.async_save(coordinator._external_migrations)
             coordinator.catching_up = {}
             coordinator.consumption_averages_raw = {}
             # Reset all prediction services
@@ -176,6 +179,16 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 meta._hourly_slots = {}
                 meta._checkpoint_restored = False
                 meta.set_pending(None)
+            completed_reset = {
+                target: {
+                    **{key: value for key, value in state.items() if key != "reset_pending"},
+                    "complete": True,
+                    "tail": None,
+                }
+                for target, state in coordinator._external_migrations.items()
+            }
+            await coordinator._external_migration_store.async_save(completed_reset)
+            coordinator._external_migrations = completed_reset
 
         # Lock released — now it's safe to schedule the re-import
         _LOGGER.info("EKZ statistics deletion verified — requesting re-import from contract start")

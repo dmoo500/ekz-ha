@@ -286,6 +286,11 @@ class EkzCoordinator(DataUpdateCoordinator):
         This is the place to pre-process the data to lookup tables
         so entities can quickly look up their data.
         """
+        if any(state.get("reset_pending") for state in self._external_migrations.values()):
+            raise UpdateFailed(
+                "Statistics reset is incomplete. Resolve the recorder/storage error and "
+                "retry ekz_ha.reset_statistics before imports resume."
+            )
         _restore_energy_import_checkpoints(self)
 
         if self.installations is None or self.installations == []:

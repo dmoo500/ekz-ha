@@ -117,6 +117,12 @@ async def async_initialize_migration(coordinator: EkzCoordinator) -> None:
                 sources.add(registered)
                 legacy_entities.append(registered)
             previous = states.get(target)
+            if previous is not None and registered and registered not in previous["sources"]:
+                raise UpdateFailed(
+                    f"Legacy entity ID changed to {registered} after migration preparation "
+                    f"for {target}. Restore its previously captured entity ID before retrying; "
+                    "history will not be silently omitted."
+                )
             _validate_legacy_statistic_ids(
                 coordinator.hass,
                 target,

@@ -166,6 +166,8 @@ If an old EKZ entity ID is now registered to a different entity, migration and s
 
 Completed beta-1 migrations without saved cumulative-join checks are revalidated against retained legacy history in resumable batches. This validation does not overwrite the external series or compare later corrected imports against old source rows. Incompatible joins stop the affected import with an explicit error.
 
+Do not rename the old energy entities after migration preparation. If a retry discovers a newly renamed legacy entity, migration stops with an explicit error rather than skipping its history; restore the previously captured entity ID before retrying.
+
 **Upgrade action:** A Repairs notice lists the new statistics. Replace the old EKZ selections in **Energy Dashboard → ⋮ → Energy configuration**, including optional production and prediction entries. Dashboard selections are not changed automatically. The old energy sensor entities are removed, but their historical statistics are retained. Those old statistics may still show warnings in **Developer Tools → Statistics**; the new external selections avoid the missing-current-state warning. Do not delete or reset statistics to perform this upgrade.
 
 > **Spook / orphaned-statistics cleanup:** The old consumption, production and prediction sensor entities are removed during upgrade, before the history migration necessarily finishes. Warnings about these missing entities are expected. Do not delete their statistics through Spook, Developer Tools or other cleanup tools while migration is pending or has failed: those statistics are still needed as the migration source. Before considering any cleanup, confirm successful migration, check the historical data under the new `ekz_ha:...` statistics, update all Energy Dashboard selections and create a backup. Removing old entity references from the dashboard is not the same as deleting their historical data.
@@ -227,6 +229,8 @@ If your statistics are incorrect (e.g. after a timezone fix or a reinstall), you
 3. Select your entry (if you have multiple EKZ config entries) and press **Perform action**
 
 > **Warning:** This permanently deletes all previously imported EKZ statistics. The re-import will start automatically but takes multiple poll cycles to complete (depending on how much history needs to be re-fetched).
+
+If recorder deletion or a storage write fails during reset, the error is reported and a saved pending-reset marker blocks imports and prediction extensions, including after restart. Resolve the reported error and retry `ekz_ha.reset_statistics` to complete the reset. If the marker cannot be saved initially, statistics are not deleted.
 
 ## Reporting a problem
 

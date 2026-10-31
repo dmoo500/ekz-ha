@@ -43,6 +43,7 @@ async def test_supply_point_failure_leaves_production_rediscovery_retryable():
     )
     coordinator = SimpleNamespace(
         api_client=api,
+        _external_migrations={},
         installations={key: {"contract_start": "2026-01-01"} for key in ("covered", "uncovered")},
         production_installations={},
     )

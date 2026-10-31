@@ -143,6 +143,12 @@ async def async_extend_predictions(coordinator: EkzCoordinator, now: datetime) -
     if coordinator._reset_lock.locked():
         return
     async with coordinator._reset_lock:
+        if any(state.get("reset_pending") for state in coordinator._external_migrations.values()):
+            _LOGGER.error(
+                "Prediction extension blocked: statistics reset is incomplete. "
+                "Resolve the recorder/storage error and retry ekz_ha.reset_statistics."
+            )
+            return
         now = now.astimezone(UTC)
         for key in coordinator.installations or {}:
             if coordinator.catching_up.get(key, True):
