@@ -238,8 +238,8 @@ If recorder deletion or a storage write fails during reset, the error is reporte
 
 The integration reads saved progress back from disk before removing old entities,
 deleting statistics or finishing a reset. If saved progress cannot be loaded at
-startup, setup stops without replacing it; fixing the storage error allows a safe
-retry.
+startup, including an invalid or empty saved document, setup stops without
+replacing it; fixing the storage error allows a safe retry.
 
 ## Reporting a problem
 

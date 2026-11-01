@@ -11,6 +11,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_release_job_has_permissions_for_release_notes_and_publication():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+    permissions = workflow["jobs"]["release"]["permissions"]
+    assert permissions["contents"] == "write"
+    assert permissions.get("pull-requests") == "read"
+
+
 def execute_script(script, setup):
     node = shutil.which("node")
     if node is None:

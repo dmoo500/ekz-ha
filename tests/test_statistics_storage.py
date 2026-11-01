@@ -35,6 +35,23 @@ async def test_corrupt_state_is_not_renamed_or_replaced(hass, tmp_path, monkeypa
     assert path.read_text(encoding="utf-8") == "{broken progress"
 
 
+@pytest.mark.parametrize("document", ["null", "[]", '""', "{}"])
+async def test_invalid_storage_document_is_not_treated_as_missing(
+    hass, tmp_path, monkeypatch, document
+):
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.storage._read_saved_document", _read_saved_document
+    )
+    monkeypatch.setattr(hass.config, "config_dir", str(tmp_path))
+    store = Store(hass, 1, "invalid-document")
+    path = tmp_path / ".storage" / store.key
+    path.parent.mkdir()
+    path.write_text(document, encoding="utf-8")
+    with pytest.raises(UpdateFailed, match="Invalid saved statistics state"):
+        await async_load_verified(hass, store)
+    assert path.read_text(encoding="utf-8") == document
+
+
 @pytest.mark.parametrize("payload", [None, [], "invalid"])
 async def test_invalid_saved_payload_cannot_become_empty_migration_state(
     hass, hass_storage, payload

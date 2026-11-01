@@ -45,14 +45,12 @@ async def async_load_verified[T: Mapping[str, Any]](
     try:
         document = await hass.async_add_executor_job(_read_saved_document, store.path)
     except FileNotFoundError:
-        document = None
+        return None
     except (OSError, ValueError) as err:
         raise UpdateFailed(f"Could not read saved statistics state in {store.key}: {err}") from err
-    if document is not None and (
-        not isinstance(document, dict) or not isinstance(document.get("data"), dict)
-    ):
+    if not isinstance(document, dict) or not isinstance(document.get("data"), dict):
         raise UpdateFailed(f"Invalid saved statistics state in {store.key}")
     data: T | None = await store.async_load()
-    if document is not None and data is None:
+    if data is None:
         raise UpdateFailed(f"Saved statistics state could not be restored from {store.key}")
     return data
