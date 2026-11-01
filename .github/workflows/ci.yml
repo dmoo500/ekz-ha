@@ -36,11 +36,15 @@ jobs:
         continue-on-error: true
 
   test:
-    name: Tests (Python ${{ matrix.python-version }})
+    name: Tests (Python ${{ matrix.python-version }}, HA ${{ matrix.homeassistant || 'compatible' }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.12", "3.13"]
+        include:
+          - python-version: "3.12"
+          - python-version: "3.13"
+          - python-version: "3.12"
+            homeassistant: "2024.10.0"
     steps:
       - uses: actions/checkout@v7
 
@@ -52,7 +56,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          if [ -n "${{ matrix.homeassistant }}" ]; then
+            pip install -e ".[dev]" -c tests/ha-minimum-constraints.txt
+          else
+            pip install -e ".[dev]"
+          fi
 
       - name: Run tests with coverage
         run: |
@@ -86,6 +94,10 @@ jobs:
           project = tomllib.loads(Path('pyproject.toml').read_text())['project']
           if manifest['version'] != project['version']:
               raise SystemExit('Manifest and package versions do not match')
+          minimum_ha = json.loads(Path('hacs.json').read_text())['homeassistant']
+          constraints = Path('tests/ha-minimum-constraints.txt').read_text().splitlines()
+          if f'homeassistant=={minimum_ha}' not in constraints:
+              raise SystemExit('HACS minimum and minimum-version test constraints do not match')
           print(f"Integration version: {manifest['version']}")
         shell: python
 

@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.recorder.models import StatisticData
-from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
@@ -20,7 +19,7 @@ from ..import_status import ImportStatus, get_import_status, publish_import_stat
 from .consumption import ConsumptionImporter
 from .importer import get_import_start
 from .production import ProductionImporter
-from .recorder import _energy_statistic_id, _make_stat_meta
+from .recorder import _async_write_statistics, _energy_statistic_id, _make_stat_meta
 
 if TYPE_CHECKING:
     from ..coordinator import EkzCoordinator
@@ -89,8 +88,24 @@ def _restore_energy_import_checkpoints(coordinator: EkzCoordinator) -> None:
         for key, meta in (entities or {}).items():
             statistic_id = _energy_statistic_id(coordinator.hass, key, kind)
             if statistic_id not in coordinator._import_checkpoints:
-                statistic_id = coordinator._statistic_ids.get(
-                    f"{kind}:{key}", f"sensor.electricity_{kind}_ekz_{key}"
+                sources = (
+                    getattr(coordinator, "_external_migrations", {})
+                    .get(statistic_id, {})
+                    .get("sources", [])
+                )
+                candidates = [
+                    coordinator._statistic_ids.get(
+                        f"{kind}:{key}", f"sensor.electricity_{kind}_ekz_{key}"
+                    ),
+                    *sources,
+                ]
+                statistic_id = next(
+                    (
+                        candidate
+                        for candidate in candidates
+                        if candidate in coordinator._import_checkpoints
+                    ),
+                    statistic_id,
                 )
             _restore_import_checkpoint(coordinator, statistic_id, meta)
 
@@ -98,7 +113,8 @@ def _restore_energy_import_checkpoints(coordinator: EkzCoordinator) -> None:
 def _restore_import_checkpoint(coordinator: EkzCoordinator, statistic_id: str, meta: Any) -> None:
     if getattr(meta, "_checkpoint_restored", False):
         return
-    state = getattr(coordinator, "_import_checkpoints", {}).get(statistic_id, {})
+    checkpoints = getattr(coordinator, "_import_checkpoints", {})
+    state = checkpoints.get(statistic_id, {})
     meta._hourly_slots = state.get("slots", {})
     meta._recent_statistics = [
         {
@@ -135,7 +151,7 @@ def _restore_import_checkpoint(coordinator: EkzCoordinator, statistic_id: str, m
         if not hasattr(coordinator, "_sum_offsets"):
             coordinator._sum_offsets = {}
         coordinator._sum_offsets.setdefault(statistic_id, {})[pending_date] = pending_offset
-    meta._checkpoint_restored = True
+    meta._checkpoint_restored = statistic_id in checkpoints
     meta._checkpoint_needs_replay = bool(meta._recent_statistics)
 
 
@@ -145,7 +161,7 @@ async def _async_replay_import_checkpoint(
     if not getattr(meta, "_checkpoint_needs_replay", False):
         return
     try:
-        async_import_statistics(
+        _async_write_statistics(
             coordinator.hass,
             _make_stat_meta(statistic_id),
             [
@@ -218,6 +234,7 @@ async def _persist_import_checkpoint(
             await store.async_save(checkpoints)
         coordinator._import_checkpoints = checkpoints
     meta._hourly_slots = slots
+    meta._checkpoint_restored = True
 
 
 async def _async_import_chunk(
@@ -280,7 +297,7 @@ async def _async_import_chunk(
             await _persist_source_resolution(coordinator, statistic_id, statistics)
         await _persist_import_checkpoint(coordinator, statistic_id, meta, statistics)
         if statistics:
-            async_import_statistics(
+            _async_write_statistics(
                 coordinator.hass,
                 _make_stat_meta(statistic_id),
                 [

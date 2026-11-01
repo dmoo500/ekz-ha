@@ -1,6 +1,6 @@
 # EKZ Home Assistant Integration - Clean Architecture
 
-This document describes the refactored architecture (v0.2.x) with improved code organization and maintainability.
+This document describes the integration architecture (v0.3.x).
 
 ## Architecture Overview
 
@@ -90,11 +90,16 @@ Orchestrates data import workflows.
 - **`prediction_manager.py`**: Profile persistence and recorder-based recovery,
   learning after imports, replacement of estimates with real readings and hourly
   local extension within the 14-day measurement-age limit
-- **`recorder.py`**: Shared statistic metadata, registered prediction entity IDs
-  and Home Assistant statistics-clearing compatibility
+- **`recorder.py`**: Stable external statistic IDs, legacy entity-ID lookup,
+  shared metadata, statistics writes, recorder synchronization and clearing compatibility
+- **`migration.py`**: One-time, resumable migration of retained recorder history
+  to external statistics, overlap verification and checkpoint/source-resolution rekeying
 
-The extracted modules retain the existing storage keys and formats; this
-separation does not require a statistics reset or data migration.
+Existing import and prediction stores retain their formats. The external-statistics
+migration has its own progress store and runs before imports resume. Historical
+timestamps, states and cumulative sums are preserved, and old statistics remain
+available. Users must select the new external statistics in the Energy Dashboard;
+no statistics reset is required.
 
 ## Usage Example
 

@@ -1,0 +1,3 @@
+# HA 2024.10's ACME dependency uses APIs removed in josepy 2.
+homeassistant==2024.10.0
+josepy<2

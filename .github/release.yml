@@ -1,0 +1,26 @@
+changelog:
+  exclude:
+    labels:
+      - skip-release-notes
+  categories:
+    - title: "Important changes"
+      labels:
+        - "type: breaking-change"
+    - title: "New features"
+      labels:
+        - "type: feature"
+    - title: "Improvements"
+      labels:
+        - "type: enhancement"
+    - title: "Bug fixes"
+      labels:
+        - "type: bugfix"
+    - title: "Maintenance"
+      labels:
+        - "type: documentation"
+        - "type: maintenance"
+        - "type: ci"
+        - "type: dependencies"
+    - title: "Other changes"
+      labels:
+        - "*"

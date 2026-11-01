@@ -302,7 +302,7 @@ class BaseImporter(ABC):
         """
         data_type = self.get_data_type_name()
         if statistic_id is None:
-            statistic_id = f"sensor.electricity_{data_type.lower()}_ekz_{installation_id}"
+            statistic_id = f"ekz_ha:electricity_{data_type.lower()}_{installation_id}"
         _LOGGER.debug(
             "[%s] Starting import: installation=%s, contract_start=%s",
             data_type,

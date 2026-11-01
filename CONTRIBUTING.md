@@ -65,6 +65,19 @@ SKIP=mypy git commit -m "message"
 
 ## 🧪 Tests
 
+The minimum Home Assistant version for 0.3.0 is **2024.10.0**, declared in
+[`hacs.json`](hacs.json). Keep the minimum-version test job aligned with it;
+Python-version jobs alone do not prove compatibility with the oldest supported HA.
+Use a separate Python 3.12 environment for the minimum-version check:
+
+```bash
+pip install -e ".[dev]" -c tests/ha-minimum-constraints.txt
+pytest -q --tb=short
+```
+
+The constraints retain the older HA release's compatible ACME dependency. Do not
+apply them to the regular development environment.
+
 ```bash
 # Run all tests
 pytest
@@ -125,6 +138,21 @@ git checkout -b refactor/clean-architecture
 ```
 
 ## 📤 Pull Requests
+
+Use the short PR template and select exactly one **Type of change**. The labeler
+keeps the matching `type: ...` label in sync; file-area and size labels remain
+independent. Missing or multiple categories fail the label check.
+
+Write the PR title and **Release note** for users: describe what improves and any
+upgrade steps or limitations. Keep test commands and results in **How was this
+checked?**, preferably in collapsed details.
+
+Stable release notes are generated from merged PR titles, grouped by their type
+labels using [.github/release.yml](.github/release.yml). Beta releases use the
+**Release note** from the single open PR whose head matches the tag commit. An
+empty note or ambiguous/missing PR stops publication rather than publishing
+internal commit messages or an empty changelog. Prepare that section before
+pushing a beta tag. Existing published releases are not regenerated.
 
 ### Creating a PR
 

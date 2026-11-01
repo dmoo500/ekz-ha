@@ -64,41 +64,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Generate changelog
-        id: changelog
-        run: |
-          # Get previous tag
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          CURRENT_TAG=${GITHUB_REF#refs/tags/}
-
-          echo "# Changelog" > CHANGELOG.md
-          echo "" >> CHANGELOG.md
-
-          if [ -n "$PREV_TAG" ]; then
-            echo "Changes from $PREV_TAG to $CURRENT_TAG:" >> CHANGELOG.md
-            echo "" >> CHANGELOG.md
-
-            # Group commits by type
-            echo "## 🐛 Bug Fixes" >> CHANGELOG.md
-            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --grep="fix:" --grep="bug:" >> CHANGELOG.md || true
-            echo "" >> CHANGELOG.md
-            echo "" >> CHANGELOG.md
-
-            echo "## ✨ Features" >> CHANGELOG.md
-            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --grep="feat:" --grep="feature:" >> CHANGELOG.md || true
-            echo "" >> CHANGELOG.md
-            echo "" >> CHANGELOG.md
-
-            echo "## 🔧 Other Changes" >> CHANGELOG.md
-            git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --invert-grep --grep="fix:" --grep="bug:" --grep="feat:" --grep="feature:" >> CHANGELOG.md || true
-          else
-            echo "Initial release" >> CHANGELOG.md
-          fi
 
       - name: Detect pre-release
         id: prerelease
@@ -113,13 +83,49 @@ jobs:
             echo "✓ Detected stable release: $TAG_NAME"
           fi
 
+      - name: Write release notes
+        uses: actions/github-script@v9
+        env:
+          IS_PRERELEASE: ${{ steps.prerelease.outputs.is_prerelease }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const repo = { owner: context.repo.owner, repo: context.repo.repo };
+            let notes;
+            if (process.env.IS_PRERELEASE === 'true') {
+              const prs = await github.paginate(
+                github.rest.repos.listPullRequestsAssociatedWithCommit,
+                { ...repo, commit_sha: context.sha },
+              );
+              const candidates = prs.filter(pr => pr.state === 'open' && pr.head.sha === context.sha);
+              if (candidates.length !== 1) {
+                throw new Error('A beta needs exactly one open PR at this commit with a Release note section.');
+              }
+              const pr = candidates[0];
+              const section = (pr.body || '').split(/^## Release note[ \t]*\r?$/m)[1]
+                ?.split(/^## /m)[0];
+              const summary = section?.replace(/<!--[\s\S]*?-->/g, '').trim();
+              if (!summary) {
+                throw new Error(`Add a user-facing Release note to PR #${pr.number} before publishing a beta.`);
+              }
+              notes = `${summary}\n\nThis is a beta release. See [the changes](${pr.html_url}).\n`;
+            } else {
+              const response = await github.rest.repos.generateReleaseNotes({
+                ...repo, tag_name: context.ref.replace('refs/tags/', ''),
+                target_commitish: context.sha,
+                configuration_file_path: '.github/release.yml',
+              });
+              notes = response.data.body;
+            }
+            fs.writeFileSync('RELEASE_NOTES.md', notes);
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          body_path: CHANGELOG.md
+          body_path: RELEASE_NOTES.md
           draft: false
           prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}
-          generate_release_notes: true
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

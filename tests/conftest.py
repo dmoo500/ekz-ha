@@ -1,11 +1,28 @@
 """Common test fixtures for EKZ integration tests."""
 
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.ekz_ha.api.models import ApiValue
+
+
+@pytest.fixture(autouse=True)
+def verified_storage_disk(hass_storage, monkeypatch):
+    """Mirror the HA fixture's disk documents without consulting Store's memory cache."""
+
+    def read_document(path):
+        key = Path(path).name
+        if key not in hass_storage:
+            raise FileNotFoundError(path)
+        return deepcopy(hass_storage[key])
+
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.storage._read_saved_document", read_document
+    )
 
 
 @pytest.fixture
@@ -16,6 +33,8 @@ def register_energy_entities(hass):
         coordinator.hass = hass
         coordinator._statistic_ids = {}
         coordinator._statistic_id_store = Mock(async_save=AsyncMock())
+        coordinator._external_migrations = {}
+        coordinator._external_migration_store = Mock(async_save=AsyncMock())
         for attribute in ("_import_checkpoints", "_daily_statistics", "_sum_offsets"):
             if not isinstance(getattr(coordinator, attribute, None), dict):
                 setattr(coordinator, attribute, {})
@@ -24,13 +43,24 @@ def register_energy_entities(hass):
             ("production", coordinator.production_installations),
         ):
             for key in installations:
-                entity = er.async_get(hass).async_get_or_create(
+                er.async_get(hass).async_get_or_create(
                     "sensor",
                     "ekz_ha",
                     f"ekz_electricity_{kind}_{key}",
                     suggested_object_id=f"electricity_{kind}_ekz_{key}",
                 )
-                coordinator._statistic_ids[f"{kind}:{key}"] = entity.entity_id
+                target = f"ekz_ha:electricity_{kind}_{key}"
+                coordinator._external_migrations[target] = {
+                    "complete": True,
+                    "sources": [],
+                    "tail": None,
+                }
+                if kind == "consumption":
+                    coordinator._external_migrations[f"{target}_prediction"] = {
+                        "complete": True,
+                        "tail": None,
+                        "sources": [],
+                    }
 
     return register
 

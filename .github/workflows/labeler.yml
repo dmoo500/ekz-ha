@@ -35,19 +35,15 @@ jobs:
             const title = pr.title || '';
             const labels = [];
 
-            // Auto-detect type from PR template checkboxes
-            if (body.includes('[x] 🐛 Bug fix')) labels.push('bug', 'fix');
-            if (body.includes('[x] ✨ New feature')) labels.push('enhancement', 'feature');
-            if (body.includes('[x] 💥 Breaking change')) labels.push('breaking-change');
-            if (body.includes('[x] 📚 Documentation')) labels.push('documentation');
-            if (body.includes('[x] 🧹 Refactoring')) labels.push('refactor');
-            if (body.includes('[x] ⚡ Performance')) labels.push('performance');
-            if (body.includes('[x] ✅ Tests')) labels.push('tests');
-
-            // Auto-detect from title
-            if (title.toLowerCase().includes('[bug]')) labels.push('bug');
-            if (title.toLowerCase().includes('[feature]')) labels.push('enhancement');
-            if (title.toLowerCase().includes('breaking')) labels.push('breaking-change');
+            const categories = [
+              'bugfix', 'feature', 'enhancement', 'breaking-change',
+              'documentation', 'maintenance', 'ci', 'dependencies',
+            ];
+            const selected = [...body.matchAll(/^- \[[xX]\].*`(type: [a-z-]+)`\s*$/gm)]
+              .map(match => match[1]);
+            const valid = selected.length === 1 &&
+              categories.includes(selected[0].slice('type: '.length));
+            if (valid) labels.push(selected[0]);
 
             // Add size label based on changes
             const changedFiles = pr.changed_files;
@@ -67,7 +63,8 @@ jobs:
               issue_number: pr.number,
             });
             for (const label of currentLabels) {
-              if (label.name.startsWith('size/') && !labels.includes(label.name)) {
+              if ((label.name.startsWith('size/') || label.name.startsWith('type: ')) &&
+                  !labels.includes(label.name)) {
                 await github.rest.issues.removeLabel({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -79,12 +76,29 @@ jobs:
 
             // Apply labels
             if (labels.length > 0) {
+              for (const name of labels.filter(name => name.startsWith('type: '))) {
+                try {
+                  await github.rest.issues.getLabel({
+                    owner: context.repo.owner, repo: context.repo.repo, name,
+                  });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner, repo: context.repo.repo, name,
+                    color: '1D76DB',
+                    description: 'PR category used to group release notes',
+                  });
+                }
+              }
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pr.number,
                 labels: labels
               });
+            }
+            if (!valid) {
+              core.setFailed('Select exactly one Type of change checkbox in the PR template.');
             }
 
   label-issue:

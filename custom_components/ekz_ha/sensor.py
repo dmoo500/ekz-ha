@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import (
@@ -14,6 +14,21 @@ from homeassistant.helpers.update_coordinator import (
 from .const import DOMAIN
 from .import_status import ImportStatus, get_import_status
 from .statistics.checkpoint import _restore_energy_import_checkpoints
+
+
+def _remove_legacy_energy_entities(hass: HomeAssistant, coordinator: Any) -> None:
+    """Remove obsolete entities only after their statistic IDs have been saved."""
+    registry = er.async_get(hass)
+    unique_ids = {
+        f"ekz_electricity_consumption_{key}{suffix}"
+        for key in coordinator.installations
+        for suffix in ("", "_prediction")
+    } | {f"ekz_electricity_production_{key}" for key in coordinator.production_installations}
+    for migration in coordinator._external_migrations.values():
+        for entity_id in migration["sources"]:
+            entity = registry.async_get(entity_id)
+            if entity is not None and entity.platform == DOMAIN and entity.unique_id in unique_ids:
+                registry.async_remove(entity_id)
 
 
 def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> None:
@@ -32,14 +47,10 @@ def _migrate_production_meta_entities(hass: HomeAssistant, coordinator: Any) -> 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up EKZ sensors from a config entry."""
     coordinator = hass.data[DOMAIN]["coordinator"]
+    _remove_legacy_energy_entities(hass, coordinator)
     _migrate_production_meta_entities(hass, coordinator)
     meta_entities = {}
-    sensors: list[SensorEntity] = [
-        EkzEntity(coordinator, installationId) for installationId in coordinator.installations
-    ] + [
-        EkzPredictionEntity(coordinator, installationId)
-        for installationId in coordinator.installations
-    ]
+    sensors: list[SensorEntity] = []
 
     # Create meta entities and contract-start entities per consumption installation
     for installationId in coordinator.installations:
@@ -55,7 +66,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
     # Production (solar feed-in) entities
     production_meta_entities = {}
     for installationId in getattr(coordinator, "production_installations", {}):
-        sensors.append(EkzProductionEntity(coordinator, installationId))
         prod_meta = EkzMetaEntity(coordinator, installationId, model="Solar Meter")
         production_meta_entities[installationId] = prod_meta
         sensors.append(prod_meta)
@@ -64,68 +74,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     _restore_energy_import_checkpoints(coordinator)
     async_add_entities(sensors, False)
-
-
-class EkzEntity(CoordinatorEntity, SensorEntity):
-    """Represents the electricity consumption of an EKZ installation."""
-
-    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
-        super().__init__(coordinator)
-        self.installation_id = installationId
-        self._attr_device_class = SensorDeviceClass.ENERGY
-        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
-        self._attr_native_unit_of_measurement = "kWh"
-        self._attr_unique_id = f"ekz_electricity_consumption_{installationId}"
-        self._attr_name = f"Electricity consumption EKZ {installationId}"
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
-            "name": f"EKZ {self.installation_id}",
-            "manufacturer": "EKZ",
-            "model": "Electricity Meter",
-        }
-
-    @property
-    def native_value(self):
-        """Statistics are imported directly; sensor state is intentionally always None."""
-        return None
-
-    @property
-    def icon(self) -> str:
-        """Icon to use in the frontend."""
-        return "mdi:lightning-bolt"
-
-
-class EkzPredictionEntity(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator: DataUpdateCoordinator[str], installationId: str) -> None:
-        super().__init__(coordinator)
-        self.installation_id = installationId
-        self._attr_device_class = SensorDeviceClass.ENERGY
-        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
-        self._attr_native_unit_of_measurement = "kWh"
-        self._attr_unique_id = f"ekz_electricity_consumption_{installationId}_prediction"
-        self._attr_name = f"Electricity consumption EKZ {installationId} prediction"
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
-            "name": f"EKZ {self.installation_id}",
-            "manufacturer": "EKZ",
-            "model": "Electricity Meter",
-        }
-
-    @property
-    def native_value(self):
-        """Statistics are imported directly; sensor state is intentionally always None."""
-        return None
-
-    @property
-    def icon(self) -> str:
-        """Icon to use in the frontend."""
-        return "mdi:lightning-bolt"
 
 
 # Tracks import progress and shows the last successfully imported timestamp as sensor state
@@ -311,37 +259,6 @@ class EkzContractStartEntity(CoordinatorEntity, SensorEntity):
         if meta is None:
             return None
         return meta._contract_start
-
-
-class EkzProductionEntity(CoordinatorEntity, SensorEntity):
-    """Represents the solar/feed-in production of an EKZ installation."""
-
-    def __init__(self, coordinator: DataUpdateCoordinator, installationId: str) -> None:
-        super().__init__(coordinator)
-        self.installation_id = installationId
-        self._attr_device_class = SensorDeviceClass.ENERGY
-        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
-        self._attr_native_unit_of_measurement = "kWh"
-        self._attr_unique_id = f"ekz_electricity_production_{installationId}"
-        self._attr_name = f"Electricity production EKZ {installationId}"
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, f"ekz_{self.installation_id}")},
-            "name": f"EKZ {self.installation_id}",
-            "manufacturer": "EKZ",
-            "model": "Solar Meter",
-        }
-
-    @property
-    def native_value(self):
-        """Statistics are imported directly; sensor state is intentionally always None."""
-        return None
-
-    @property
-    def icon(self) -> str:
-        return "mdi:solar-power"
 
 
 class EkzNextSyncEntity(CoordinatorEntity, SensorEntity):
