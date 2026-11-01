@@ -1,49 +1,37 @@
-## Description
+## What changes for users?
 
-<!-- Describe your changes in detail -->
+<!-- Briefly explain the improvement, fix, or known limitation in plain language. -->
 
-## Type of Change
+## Related issue
 
-<!-- Please check the relevant options -->
+<!-- Link an issue if applicable, e.g. Fixes #123. -->
 
-- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)
-- [ ] ✨ New feature (non-breaking change that adds functionality)
-- [ ] 💥 Breaking change (change that modifies existing functionality)
-- [ ] 📚 Documentation (documentation changes only)
-- [ ] 🧹 Refactoring (code change without new features or bug fixes)
-- [ ] ⚡ Performance improvement
-- [ ] ✅ Tests (new or improved tests)
+## Type of change
 
-## Related Issues
+<!-- Select exactly one. The matching label groups this PR in release notes. -->
 
-<!-- Link related issues, e.g.: Fixes #123, Closes #456 -->
+- [ ] Bug fix — `type: bugfix`
+- [ ] New feature — `type: feature`
+- [ ] Improvement — `type: enhancement`
+- [ ] Breaking change — `type: breaking-change`
+- [ ] Documentation only — `type: documentation`
+- [ ] Maintenance / refactoring / tests — `type: maintenance`
+- [ ] CI / workflows — `type: ci`
+- [ ] Dependencies — `type: dependencies`
 
-Fixes #
+## Release note
 
-## How Has This Been Tested?
+<!-- A short, user-facing summary. Used for beta releases from this open PR.
+Describe what changes and any required action. No test commands or implementation details.
+Use a clear, user-facing PR title too: stable release notes use PR titles. -->
 
-<!-- Describe how you tested your changes -->
+## How was this checked?
 
-- [ ] Manual tests performed
-- [ ] Unit tests added/updated
-- [ ] Integration tests performed
-- [ ] Tested with Home Assistant version: ___
+<!-- Briefly describe the result. Put required exact commands/results in collapsed details.
+Clearly state any checks not run or known failures. -->
 
 ## Checklist
 
-- [ ] My code follows the code style guidelines of this project
-- [ ] I have performed a self-review of my code
-- [ ] I have commented my code, especially in complex areas
-- [ ] I have updated the documentation accordingly
-- [ ] My changes generate no new warnings
-- [ ] I have added tests that prove my fix works or the new feature is correct
-- [ ] New and existing unit tests pass locally
-- [ ] Dependent changes have been merged and published
-
-## Screenshots (if applicable)
-
-<!-- Add screenshots to demonstrate your changes -->
-
-## Additional Notes
-
-<!-- Any other information that is important for the review -->
+- [ ] I reviewed my changes.
+- [ ] Relevant tests and checks pass; known failures are explained above.
+- [ ] Documentation and upgrade instructions are updated where needed.

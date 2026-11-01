@@ -25,6 +25,7 @@ from .statistics.recorder import (
     _prediction_statistic_id,
     _validate_legacy_statistic_ids,
 )
+from .statistics.storage import async_save_verified
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,7 +55,11 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
     try:
         await coordinator.async_config_entry_first_refresh()
     except ConfigEntryNotReady:
-        if not known_installations or not any(known_installations.values()):
+        if (
+            not coordinator._statistics_state_loaded
+            or not known_installations
+            or not any(known_installations.values())
+        ):
             await api_client.close()
             raise
         coordinator.installations = known_installations["consumption"]
@@ -130,7 +135,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 target: {**state, "reset_pending": True}
                 for target, state in coordinator._external_migrations.items()
             }
-            await coordinator._external_migration_store.async_save(pending_reset)
+            await async_save_verified(hass, coordinator._external_migration_store, pending_reset)
             coordinator._external_migrations = pending_reset
             if not await _async_clear_statistics(hass, statistic_ids):
                 raise UpdateFailed(
@@ -143,9 +148,9 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator.last_prediction_sums = {}
             coordinator._sum_offsets = {}
             coordinator._daily_statistics = {}
-            await coordinator._source_resolution_store.async_save({})
+            await async_save_verified(hass, coordinator._source_resolution_store, {})
             coordinator._import_checkpoints = {}
-            await coordinator._import_checkpoint_store.async_save({})
+            await async_save_verified(hass, coordinator._import_checkpoint_store, {})
             coordinator.catching_up = {}
             coordinator.consumption_averages_raw = {}
             # Reset all prediction services
@@ -154,7 +159,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
             coordinator.prediction_services = {}
             coordinator._prediction_states = {}
             coordinator._prediction_initialized.clear()
-            await coordinator._prediction_store.async_save({})
+            await async_save_verified(hass, coordinator._prediction_store, {})
             for meta in (getattr(coordinator, "meta_entities", None) or {}).values():
                 meta.set_last_import(None)
                 meta._last_successful_import = None
@@ -187,7 +192,7 @@ async def async_setup_entry(hass: core.HomeAssistant, entry: ConfigEntry) -> boo
                 }
                 for target, state in coordinator._external_migrations.items()
             }
-            await coordinator._external_migration_store.async_save(completed_reset)
+            await async_save_verified(hass, coordinator._external_migration_store, completed_reset)
             coordinator._external_migrations = completed_reset
 
         # Lock released — now it's safe to schedule the re-import

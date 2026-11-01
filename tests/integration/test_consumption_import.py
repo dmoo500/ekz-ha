@@ -7,6 +7,7 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.ekz_ha.api.models import (
@@ -199,13 +200,14 @@ class TestConsumptionImportWithRealData:
             assert dt.tzinfo.tzname(dt) in ("UTC", "UTC+00:00"), f"Not UTC: {dt.tzinfo}"
 
 
-async def test_empty_discovery_is_retryable_and_production_only_is_supported():
+async def test_empty_discovery_is_retryable_and_production_only_is_supported(hass):
     production = InstallationSelectionData(
         contracts=[InstallationContract("", "", "", "solar", "", einzdat="2026-01-01")]
     )
     coordinator = SimpleNamespace(
-        _external_migration_store=Mock(async_load=AsyncMock(return_value={})),
-        _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
+        hass=hass,
+        _external_migration_store=Store(hass, 1, "test.discovery.migration"),
+        _statistic_id_store=Store(hass, 1, "test.discovery.ids"),
         api_client=SimpleNamespace(
             get_consumption_installations=AsyncMock(return_value=InstallationSelectionData()),
             get_production_installations=AsyncMock(

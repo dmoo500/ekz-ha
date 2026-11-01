@@ -1060,8 +1060,9 @@ async def test_persisted_daily_source_survives_recorder_round_trip(
     await _persist_source_resolution(before_restart, statistic_id, first["statistics"])
 
     after_restart = SimpleNamespace(
-        _external_migration_store=Mock(async_load=AsyncMock(return_value={})),
-        _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
+        hass=hass,
+        _external_migration_store=Store(hass, 1, "test.daily.migration"),
+        _statistic_id_store=Store(hass, 1, "test.daily.ids"),
         _source_resolution_store=Store(hass, 1, key),
         api_client=Mock(
             get_consumption_installations=AsyncMock(
@@ -1563,8 +1564,9 @@ async def test_import_checkpoint_restores_pending_and_partial_slots(
     rows = [{"start": start, "state": 0.5, "sum": 100.5, "slots": {hour: 0.5}}]
     await _persist_import_checkpoint(old, statistic_id, old_meta, rows)
     fresh = SimpleNamespace(
-        _external_migration_store=Mock(async_load=AsyncMock(return_value={})),
-        _statistic_id_store=Mock(async_load=AsyncMock(return_value={})),
+        hass=hass,
+        _external_migration_store=Store(hass, 1, "test.checkpoint.migration"),
+        _statistic_id_store=Store(hass, 1, "test.checkpoint.ids"),
         _import_checkpoint_store=Store(hass, 1, key),
         api_client=Mock(
             get_consumption_installations=AsyncMock(

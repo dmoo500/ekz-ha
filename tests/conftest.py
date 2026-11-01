@@ -1,11 +1,28 @@
 """Common test fixtures for EKZ integration tests."""
 
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.ekz_ha.api.models import ApiValue
+
+
+@pytest.fixture(autouse=True)
+def verified_storage_disk(hass_storage, monkeypatch):
+    """Mirror the HA fixture's disk documents without consulting Store's memory cache."""
+
+    def read_document(path):
+        key = Path(path).name
+        if key not in hass_storage:
+            raise FileNotFoundError(path)
+        return deepcopy(hass_storage[key])
+
+    monkeypatch.setattr(
+        "custom_components.ekz_ha.statistics.storage._read_saved_document", read_document
+    )
 
 
 @pytest.fixture

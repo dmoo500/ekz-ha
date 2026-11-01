@@ -33,6 +33,7 @@ from .statistics.migration import _async_prepare_energy_statistic
 from .statistics.prediction import PredictionService
 from .statistics.prediction_manager import async_extend_predictions, async_update_predictions
 from .statistics.production import ProductionImporter
+from .statistics.storage import async_load_verified
 
 ZRH = zoneinfo.ZoneInfo("Europe/Zurich")
 UTC = zoneinfo.ZoneInfo("UTC")
@@ -102,6 +103,7 @@ class EkzCoordinator(DataUpdateCoordinator):
         self._import_checkpoints: dict[str, dict[str, Any]] = {}
         self._statistic_ids: dict[str, str] = {}
         self._external_migrations: dict[str, dict[str, Any]] = {}
+        self._statistics_state_loaded = False
         self._external_migration_store = Store[dict[str, dict[str, Any]]](
             hass, 1, f"{DOMAIN}.{config.entry_id}.external_statistics"
         )
@@ -136,14 +138,18 @@ class EkzCoordinator(DataUpdateCoordinator):
 
     async def _async_setup(self):
         """Load installations on first start."""
-        self._statistic_ids = await self._statistic_id_store.async_load() or {}
-        self._external_migrations = await self._external_migration_store.async_load() or {}
+        self._statistics_state_loaded = False
+        self._statistic_ids = await async_load_verified(self.hass, self._statistic_id_store) or {}
+        self._external_migrations = (
+            await async_load_verified(self.hass, self._external_migration_store) or {}
+        )
         store = getattr(self, "_source_resolution_store", None)
         if store is not None:
-            self._daily_statistics = await store.async_load() or {}
+            self._daily_statistics = await async_load_verified(self.hass, store) or {}
         checkpoint_store = getattr(self, "_import_checkpoint_store", None)
         if checkpoint_store is not None:
-            self._import_checkpoints = await checkpoint_store.async_load() or {}
+            self._import_checkpoints = await async_load_verified(self.hass, checkpoint_store) or {}
+        self._statistics_state_loaded = True
         try:
             await self._async_discover_installations()
         except EkzAuthenticationError as err:

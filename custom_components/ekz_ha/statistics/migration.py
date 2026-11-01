@@ -31,6 +31,7 @@ from .recorder import (
     _prediction_statistic_id,
     _validate_legacy_statistic_ids,
 )
+from .storage import async_save_verified
 
 if TYPE_CHECKING:
     from ..coordinator import EkzCoordinator
@@ -137,7 +138,7 @@ async def async_initialize_migration(coordinator: EkzCoordinator) -> None:
                     "complete": False,
                     "tail": None,
                 }
-    await coordinator._external_migration_store.async_save(states)
+    await async_save_verified(coordinator.hass, coordinator._external_migration_store, states)
     coordinator._external_migrations = states
     if legacy_entities:
         ir.async_create_issue(
@@ -242,14 +243,18 @@ async def async_migrate_statistics(
                     "validation_tail": previous,
                 }
                 updated = {**coordinator._external_migrations, target: state}
-                await coordinator._external_migration_store.async_save(updated)
+                await async_save_verified(
+                    coordinator.hass, coordinator._external_migration_store, updated
+                )
                 coordinator._external_migrations = updated
                 boundary = stop
             state = {**state, "tail": previous}
             state.pop("validation_cursor", None)
             state.pop("validation_tail", None)
             updated = {**coordinator._external_migrations, target: state}
-            await coordinator._external_migration_store.async_save(updated)
+            await async_save_verified(
+                coordinator.hass, coordinator._external_migration_store, updated
+            )
             coordinator._external_migrations = updated
             _LOGGER.info("Completed beta-1 migration source joins revalidated for %s", target)
             return
@@ -328,7 +333,9 @@ async def async_migrate_statistics(
                     raise UpdateFailed(f"Could not verify migrated history for {target}")
             state = {**state, "cursor": stop.isoformat(), "tail": previous}
             updated = {**coordinator._external_migrations, target: state}
-            await coordinator._external_migration_store.async_save(updated)
+            await async_save_verified(
+                coordinator.hass, coordinator._external_migration_store, updated
+            )
             coordinator._external_migrations = updated
             start = stop
 
@@ -345,7 +352,7 @@ async def async_migrate_statistics(
                     raise UpdateFailed(f"Conflicting {attribute} during migration to {target}")
                 updated = {key: value for key, value in values.items() if key not in sources}
                 updated[target] = candidates[0]
-                await store.async_save(updated)
+                await async_save_verified(coordinator.hass, store, updated)
                 setattr(coordinator, attribute, updated)
         offsets = dict(coordinator._sum_offsets.get(target, {}))
         for source in sources:
@@ -358,7 +365,7 @@ async def async_migrate_statistics(
         for source in sources:
             coordinator._sum_offsets.pop(source, None)
         updated = {**coordinator._external_migrations, target: {**state, "complete": True}}
-        await coordinator._external_migration_store.async_save(updated)
+        await async_save_verified(coordinator.hass, coordinator._external_migration_store, updated)
         coordinator._external_migrations = updated
         _LOGGER.info(
             "External statistics migration completed for %s; legacy history retained", target

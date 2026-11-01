@@ -16,6 +16,10 @@ This integration allows you to import and analyze EKZ electricity meter data dir
 
 ## Installation via HACS
 
+Version **0.3.0 and later requires Home Assistant 2024.10.0 or newer**.
+Update Home Assistant before upgrading EKZ if you are using an older version.
+This requirement also applies to the 0.3.0 beta releases that declare it in HACS.
+
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=dmoo500&repository=ekz-ha&category=integration)
 
 1. Open HACS and select "Custom Repositories".
@@ -231,6 +235,11 @@ If your statistics are incorrect (e.g. after a timezone fix or a reinstall), you
 > **Warning:** This permanently deletes all previously imported EKZ statistics. The re-import will start automatically but takes multiple poll cycles to complete (depending on how much history needs to be re-fetched).
 
 If recorder deletion or a storage write fails during reset, the error is reported and a saved pending-reset marker blocks imports and prediction extensions, including after restart. Resolve the reported error and retry `ekz_ha.reset_statistics` to complete the reset. If the marker cannot be saved initially, statistics are not deleted.
+
+The integration reads saved progress back from disk before removing old entities,
+deleting statistics or finishing a reset. If saved progress cannot be loaded at
+startup, setup stops without replacing it; fixing the storage error allows a safe
+retry.
 
 ## Reporting a problem
 

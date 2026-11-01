@@ -12,9 +12,11 @@ from homeassistant.components.recorder.statistics import (
     get_metadata,
     statistics_during_period,
 )
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.util.file import WriteError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ekz_ha.api.models import ConsumptionData
@@ -568,6 +570,29 @@ async def test_setup_storage_failure_preserves_entities_and_closes_api(hass, mon
     assert er.async_get(hass).async_get(entity.entity_id) is not None
 
 
+async def test_suppressed_source_write_keeps_legacy_entities(hass, monkeypatch):
+    from custom_components.ekz_ha import async_setup_entry
+
+    entity = er.async_get(hass).async_get_or_create(
+        "sensor", DOMAIN, "ekz_electricity_consumption_test", suggested_object_id="renamed_energy"
+    )
+    api = Mock(close=AsyncMock())
+    monkeypatch.setattr("custom_components.ekz_ha.EkzApiClient", Mock(return_value=api))
+
+    async def discover(coordinator):
+        coordinator.installations = {"test": {"contract_start": "2024-03-10"}}
+        coordinator._external_migration_store._async_write_data = AsyncMock(
+            side_effect=WriteError("disk unavailable")
+        )
+
+    monkeypatch.setattr(EkzCoordinator, "async_config_entry_first_refresh", discover)
+    entry = Mock(entry_id="suppressed-source-write", data={"user": "test", "password": "test"})
+    with pytest.raises(ConfigEntryNotReady, match="Cannot persist external statistics migration"):
+        await async_setup_entry(hass, entry)
+    assert er.async_get(hass).async_get(entity.entity_id) is not None
+    api.close.assert_awaited_once()
+
+
 @pytest.mark.parametrize("next_sum", [3.0, 103.0, 203.0])
 @pytest.mark.parametrize("cross_batch", [False, True])
 async def test_disjoint_history_joins_validate_cumulative_baselines(
@@ -795,8 +820,9 @@ async def test_statistics_clear_propagates_recorder_errors(energy, monkeypatch):
     [(collision, None) for collision in (None, "fixed", "stored", "migration")]
     + [(None, failure) for failure in ("initial", "source", "checkpoint", "prediction", "final")],
 )
+@pytest.mark.parametrize("suppressed_write", [False, True])
 async def test_reset_reimports_from_contract_start_not_old_recorder_tail(
-    recorder_mock, hass, monkeypatch, kind, collision, save_failure
+    recorder_mock, hass, monkeypatch, kind, collision, save_failure, suppressed_write
 ):
     from custom_components.ekz_ha import async_setup_entry
     from custom_components.ekz_ha.statistics.consumption import ConsumptionImporter
@@ -860,19 +886,28 @@ async def test_reset_reimports_from_contract_start_not_old_recorder_tail(
             "prediction": coordinator._prediction_store,
             "final": coordinator._external_migration_store,
         }[save_failure]
-        original_save = store.async_save
+        original_save = store._async_write_data if suppressed_write else store.async_save
         calls = 0
 
-        async def failing_save(data):
+        async def failing_save(*args):
             nonlocal calls
             calls += 1
             if save_failure != "final" or calls == 2:
+                if suppressed_write:
+                    raise WriteError("reset storage failure")
                 raise OSError("reset storage failure")
-            await original_save(data)
+            await original_save(*args)
 
         with monkeypatch.context() as patch:
-            patch.setattr(store, "async_save", failing_save)
-            with pytest.raises(OSError, match="reset storage failure"):
+            patch.setattr(
+                store, "_async_write_data" if suppressed_write else "async_save", failing_save
+            )
+            with pytest.raises(
+                UpdateFailed if suppressed_write else OSError,
+                match="saved statistics state|not saved correctly"
+                if suppressed_write
+                else "reset storage failure",
+            ):
                 await hass.services.async_call(DOMAIN, "reset_statistics", {}, blocking=True)
         saved = await coordinator._external_migration_store.async_load()
         if save_failure == "initial":
