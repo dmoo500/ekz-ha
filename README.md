@@ -16,9 +16,9 @@ This integration allows you to import and analyze EKZ electricity meter data dir
 
 ## Installation via HACS
 
-Version **0.3.0 and later requires Home Assistant 2024.10.0 or newer**.
-Update Home Assistant before upgrading EKZ if you are using an older version.
-This applies to the stable 0.3.0 release and later versions.
+Version **0.3.1 and later require Home Assistant 2024.12.5 or newer**.
+Version 0.3.0 requires Home Assistant 2024.10.0 or newer. Update Home
+Assistant before upgrading EKZ if you are using an older version.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=dmoo500&repository=ekz-ha&category=integration)
 
