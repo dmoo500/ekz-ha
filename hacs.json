@@ -1,6 +1,6 @@
 {
   "name": "EKZ (Elektrizitätswerke des Kantons Zürich) Data Fetcher",
   "country": "CH",
-  "homeassistant": "2024.10.0",
+  "homeassistant": "2024.12.5",
   "persistent_directory": "userfiles"
 }

@@ -65,7 +65,7 @@ SKIP=mypy git commit -m "message"
 
 ## 🧪 Tests
 
-The minimum Home Assistant version for 0.3.0 is **2024.10.0**, declared in
+The minimum Home Assistant version for 0.3.1 is **2024.12.5**, declared in
 [`hacs.json`](hacs.json). Keep the minimum-version test job aligned with it;
 Python-version jobs alone do not prove compatibility with the oldest supported HA.
 Use a separate Python 3.12 environment for the minimum-version check:
@@ -75,8 +75,10 @@ pip install -e ".[dev]" -c tests/ha-minimum-constraints.txt
 pytest -q --tb=short
 ```
 
-The constraints retain the older HA release's compatible ACME dependency. Do not
-apply them to the regular development environment.
+The minimum-version environment currently resolves `josepy` 1.15.0 through
+Home Assistant's ACME dependency; `josepy<3` does not force a 2.x version. Do not
+apply these constraints to the regular development environment. The 0.3.0 release
+continues to support HA 2024.10.0.
 
 ```bash
 # Run all tests

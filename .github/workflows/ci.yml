@@ -44,7 +44,7 @@ jobs:
           - python-version: "3.12"
           - python-version: "3.13"
           - python-version: "3.12"
-            homeassistant: "2024.10.0"
+            homeassistant: "2024.12.5"
     steps:
       - uses: actions/checkout@v7
 
